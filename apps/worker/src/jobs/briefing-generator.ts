@@ -1,9 +1,15 @@
 import { createLogger } from '@skytwin/core';
+import { loadConfig } from '@skytwin/config';
 import { briefingRepository, appSuggestionRepository, lifebookRepository, mcpServerRepository, userRepository, query, memoryActionOpportunityRepository } from '@skytwin/db';
 import { runPrompt } from '@skytwin/policy-prompts';
 import type { LlmClient } from '@skytwin/llm-client';
-import type { MemoryActionLoopReport, MemoryActionOpportunityStatus } from '@skytwin/shared-types';
+import {
+  isAccountBackedIntegration,
+  type MemoryActionLoopReport,
+  type MemoryActionOpportunityStatus,
+} from '@skytwin/shared-types';
 import { fetchDailyMemorySuggestions } from './memory-suggestions.js';
+import { requireJobAdmission, runAdmitted } from './job-admission.js';
 
 const log = createLogger('worker:briefing-generator');
 
@@ -20,6 +26,7 @@ const MEMORY_STATUS_LABEL: Record<MemoryActionOpportunityStatus, string> = {
   blocked_by_policy: 'blocked by your rules',
   learning_needed: 'needs a new skill',
   execution_failed: "couldn't complete",
+  execution_ambiguous: 'needs reconciliation',
   noted_awareness: 'noted as FYI',
   skipped: 'skipped',
 };
@@ -61,6 +68,7 @@ export interface BriefingGeneratorJobDeps {
   userIds?: string[];
   /** Optional LlmClient for the adaptive briefing-prose path */
   llmClient?: LlmClient;
+  signal?: AbortSignal;
 }
 
 /**
@@ -73,6 +81,35 @@ export interface BriefingGeneratorJobDeps {
  * range scan.
  */
 const BRIEFING_USER_PAGE_SIZE = 500;
+
+interface PreviewServerDescriptor {
+  id: string;
+  registry_id?: string | null;
+  oauth_provider?: string | null;
+}
+
+async function isAccountFreePreviewServerBlocked(
+  connectionMode: string | undefined,
+  server: PreviewServerDescriptor,
+): Promise<boolean> {
+  if (isAccountBackedIntegration({
+    key: server.registry_id ?? undefined,
+    integration: server.oauth_provider ?? undefined,
+  })) return connectionMode !== 'experimental';
+  if (connectionMode === 'experimental') return false;
+
+  try {
+    const skills = await mcpServerRepository.listSkillNamesForServer(server.id);
+    if (skills.length === 0) return true;
+    return isAccountBackedIntegration({
+      key: server.registry_id ?? undefined,
+      integration: server.oauth_provider ?? undefined,
+      skills,
+    });
+  } catch {
+    return true;
+  }
+}
 
 async function getActiveUserIds(): Promise<string[]> {
   const allIds: string[] = [];
@@ -110,17 +147,39 @@ async function gatherBriefingData(userId: string, cadence: 'daily' | 'weekly') {
   const lookbackMs = cadence === 'daily' ? 7 * 24 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
   const since = new Date(Date.now() - lookbackMs);
 
-  const [suggestions, allServers, memorySuggestions, memoryActionReports] = await Promise.all([
+  const [allSuggestions, allServers, memorySuggestions, memoryActionReports] = await Promise.all([
     appSuggestionRepository.getPendingForUser(userId),
     mcpServerRepository.listForUser(userId),
     fetchDailyMemorySuggestions(userId, 5),
     memoryActionOpportunityRepository.listRecentReportsForUser(userId, since, 8),
   ]);
 
-  const active = allServers.filter(
+  const connectionMode = loadConfig().googleConnectionMode;
+  const blockedByServerId = new Map<string, boolean>();
+  await Promise.all(allServers.map(async (server) => {
+    blockedByServerId.set(
+      server.id,
+      await isAccountFreePreviewServerBlocked(connectionMode, server),
+    );
+  }));
+  const admittedServers = allServers.filter((server) => !blockedByServerId.get(server.id));
+  const admittedServerIds = new Set(admittedServers.map((server) => server.id));
+  const blockedRegistryIds = new Set(
+    allServers
+      .filter((server) => blockedByServerId.get(server.id))
+      .map((server) => server.registry_id)
+      .filter((registryId): registryId is string => typeof registryId === 'string'),
+  );
+  const suggestions = allSuggestions.filter((suggestion) =>
+    !blockedRegistryIds.has(suggestion.registry_id) &&
+    (connectionMode === 'experimental' || !isAccountBackedIntegration({
+      key: suggestion.registry_id,
+    })));
+
+  const active = admittedServers.filter(
     (s) => s.status === 'active' || s.status === 'installed' || s.status === 'authorized',
   );
-  const dormant = allServers.filter((s) => s.status === 'dormant' || s.status === 'paused');
+  const dormant = admittedServers.filter((s) => s.status === 'dormant' || s.status === 'paused');
 
   const recentlyInstalled = active.filter((s) => s.installed_at && s.installed_at > since);
 
@@ -131,6 +190,13 @@ async function gatherBriefingData(userId: string, cadence: 'daily' | 'weekly') {
      ORDER BY occurred_at DESC`,
     [userId, since],
   );
+  const admittedPromotionResult = connectionMode === 'experimental'
+    ? promotionResult
+    : {
+        ...promotionResult,
+        rows: promotionResult.rows.filter((row) =>
+          typeof row.server_id === 'string' && admittedServerIds.has(row.server_id)),
+      };
 
   // Pre-compute server_id → registry_id so filterDataByLifebook can
   // map tier-promotion rows (which carry server_id but not registry_id
@@ -139,11 +205,21 @@ async function gatherBriefingData(userId: string, cadence: 'daily' | 'weekly') {
   // tier_promotion never sets — so promotions were always dropped from
   // per-Lifebook briefings.
   const serverIdToRegistry = new Map<string, string>();
-  for (const s of allServers) {
+  for (const s of admittedServers) {
     if (s.registry_id) serverIdToRegistry.set(s.id, s.registry_id);
   }
 
-  return { suggestions, active, dormant, recentlyInstalled, promotionResult, serverIdToRegistry, since, memorySuggestions, memoryActionReports };
+  return {
+    suggestions,
+    active,
+    dormant,
+    recentlyInstalled,
+    promotionResult: admittedPromotionResult,
+    serverIdToRegistry,
+    since,
+    memorySuggestions,
+    memoryActionReports,
+  };
 }
 
 /**
@@ -474,6 +550,7 @@ async function generateBriefingProse(
 export async function runBriefingGeneratorJob(
   deps: BriefingGeneratorJobDeps = {},
 ): Promise<void> {
+  requireJobAdmission(deps.signal);
   const cadence = deps.cadence ?? 'daily';
   const { llmClient } = deps;
   log.info(`Running briefing generator (cadence=${cadence})`);
@@ -482,7 +559,7 @@ export async function runBriefingGeneratorJob(
   if (deps.userIds && deps.userIds.length > 0) {
     userIds = deps.userIds;
   } else {
-    userIds = await getActiveUserIds();
+    userIds = await runAdmitted(deps.signal, getActiveUserIds);
   }
 
   if (userIds.length === 0) {
@@ -496,13 +573,14 @@ export async function runBriefingGeneratorJob(
   let failed = 0;
 
   for (const userId of userIds) {
+    requireJobAdmission(deps.signal);
     try {
       // Gather once per user; share the bundle across global +
       // per-Lifebook briefings. Copilot round-2 on #258 flagged the
       // prior N+1 pattern (every per-Lifebook call hit
       // suggestion-repo, server-repo, and the promotion query
       // independently).
-      const sharedData = await gatherBriefingData(userId, cadence);
+      const sharedData = await runAdmitted(deps.signal, () => gatherBriefingData(userId, cadence));
 
       const { prose, sourceEventCount, llmProvider } = await generateBriefingProse(
         userId,
@@ -511,6 +589,7 @@ export async function runBriefingGeneratorJob(
         undefined,
         sharedData,
       );
+      requireJobAdmission(deps.signal);
       await briefingRepository.create({
         userId,
         cadence,
@@ -519,6 +598,7 @@ export async function runBriefingGeneratorJob(
         llmProvider,
         llmCostCents: undefined,
       });
+      requireJobAdmission(deps.signal);
       generated++;
 
       // #193 follow-up: emit per-Lifebook briefings for each visible
@@ -531,8 +611,10 @@ export async function runBriefingGeneratorJob(
         cadence,
         llmClient,
         sharedData,
+        deps.signal,
       );
     } catch (err) {
+      requireJobAdmission(deps.signal);
       failed++;
       log.warn('Failed to generate briefing for user', {
         error: err instanceof Error ? err.message : String(err),
@@ -540,6 +622,7 @@ export async function runBriefingGeneratorJob(
     }
   }
 
+  requireJobAdmission(deps.signal);
   log.info(
     `Briefing generator complete: ${generated} global, ${perDomainGenerated} per-Lifebook, ${failed} failed`,
   );
@@ -561,11 +644,13 @@ async function emitPerDomainBriefings(
   cadence: 'daily' | 'weekly',
   llmClient: LlmClient | undefined,
   sharedData: Awaited<ReturnType<typeof gatherBriefingData>>,
+  signal?: AbortSignal,
 ): Promise<number> {
   let lifebooks: Awaited<ReturnType<typeof lifebookRepository.listVisible>>;
   try {
-    lifebooks = await lifebookRepository.listVisible(userId);
+    lifebooks = await runAdmitted(signal, () => lifebookRepository.listVisible(userId));
   } catch (err) {
+    requireJobAdmission(signal);
     log.warn('Could not load lifebooks for per-domain briefings; skipping', {
       userId,
       error: err instanceof Error ? err.message : String(err),
@@ -576,6 +661,7 @@ async function emitPerDomainBriefings(
 
   let written = 0;
   for (const lb of lifebooks) {
+    requireJobAdmission(signal);
     try {
       const registryIds = new Set(
         Array.isArray(lb.suggested_capabilities) ? lb.suggested_capabilities : [],
@@ -592,6 +678,7 @@ async function emitPerDomainBriefings(
         { domainName: lb.domain_name, registryIds },
         sharedData,
       );
+      requireJobAdmission(signal);
 
       // Skip empty domains — "nothing happened in Health this week"
       // is noise, not a useful briefing. The user will see the
@@ -607,8 +694,10 @@ async function emitPerDomainBriefings(
         llmCostCents: undefined,
         domainName: lb.domain_name,
       });
+      requireJobAdmission(signal);
       written++;
     } catch (err) {
+      requireJobAdmission(signal);
       log.warn('Per-domain briefing failed for one lifebook; continuing', {
         userId,
         domain: lb.domain_name,
@@ -616,5 +705,6 @@ async function emitPerDomainBriefings(
       });
     }
   }
+  requireJobAdmission(signal);
   return written;
 }

@@ -14,17 +14,20 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "vitest run",
+    "test": "vitest run --exclude '**/dist/**'",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@lore-hex/trusted-router": "github:Lore-Hex/trusted-router-js#2aa1d1c36b758eb65caf6c931e58a82bc0dc53eb",
     "@skytwin/core": "workspace:*",
     "@skytwin/embedded-llm": "workspace:*",
-    "@skytwin/shared-types": "workspace:*"
+    "@skytwin/shared-types": "workspace:*",
+    "ipaddr.js": "^2.5.0",
+    "undici": "^6.28.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.10"
+    "vitest": "5.0.1"
   }
 }

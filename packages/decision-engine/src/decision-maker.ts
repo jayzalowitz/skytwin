@@ -33,6 +33,8 @@ import type { CandidateGenerator } from './strategies/candidate-strategy.js';
  * satisfy this contract at composition time.
  */
 export interface DecisionRepositoryPort {
+  /** Optional owner-scoped duplicate probe used before provider composition. */
+  findBySignalId?(userId: string, signalId: string): Promise<DecisionObject | null>;
   /**
    * Persist a decision, or return the existing one on a re-ingestion of
    * the same `(user_id, signal_id)`. Returns `{ decision, created }` —
@@ -219,7 +221,7 @@ export class DecisionMaker {
     }
 
     // Step 5: Load policies
-    const policies = await this.policyEvaluator.loadPolicies();
+    const policies = await this.policyEvaluator.loadPolicies(context.userId);
 
     // Step 6: Score and rank candidates
     const scoredCandidates = candidates
@@ -324,6 +326,28 @@ export class DecisionMaker {
     await this.decisionRepository.saveOutcome(outcome);
 
     return outcome;
+  }
+
+  /**
+   * Re-run risk, policy, ranking, and outcome persistence for a candidate set
+   * whose execution semantics were prepared by the composition layer. This is
+   * intentionally a full evaluation: callers must not carry policy authority
+   * across changes to action type, body, description, or reversibility.
+   */
+  async reevaluatePreparedCandidates(
+    context: DecisionContext,
+    candidates: CandidateAction[],
+  ): Promise<DecisionOutcome> {
+    const preparedGenerator: CandidateGenerator = {
+      generate: async () => candidates,
+    };
+    return new DecisionMaker(
+      this.twinService,
+      this.policyEvaluator,
+      this.decisionRepository,
+      preparedGenerator,
+      this.labelInferencePort ?? undefined,
+    ).evaluate(context);
   }
 
   /**
@@ -641,6 +665,10 @@ export class DecisionMaker {
         parameters: {
           emailId: emailId,
           replyType: 'acknowledgment',
+          replyToFrom: typeof decision.rawData['from'] === 'string'
+            ? decision.rawData['from'] : '',
+          replyToSubject: typeof decision.rawData['subject'] === 'string'
+            ? decision.rawData['subject'] : '',
         },
         estimatedCostCents: 0,
         reversible: false,

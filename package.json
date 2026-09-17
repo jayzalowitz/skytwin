@@ -1,6 +1,6 @@
 {
   "name": "skytwin",
-  "version": "0.6.102.0",
+  "version": "0.6.105.0",
   "description": "A delegated judgment layer that builds a digital twin of your preferences and acts on your behalf — with safety constraints, explanations, and progressive trust.",
   "private": true,
   "repository": {
@@ -31,6 +31,9 @@
     "db:migrate": "pnpm --filter @skytwin/db migrate",
     "db:seed": "pnpm --filter @skytwin/db seed",
     "demo:fixture": "pnpm --filter @skytwin/db demo:fixture",
+    "eval:adversarial": "pnpm --filter @skytwin/evals eval:adversarial",
+    "eval:workflow-authoring:managed": "pnpm --filter @skytwin/evals eval:workflow-authoring:managed",
+    "verify:adversarial-evidence": "node scripts/release-evidence/verify-adversarial-evidence.mjs artifacts/adversarial-evidence.json",
     "desktop": "pnpm --filter skytwin-desktop start",
     "desktop:dev": "pnpm --filter skytwin-desktop dev",
     "desktop:build:mac": "pnpm build && pnpm --filter skytwin-desktop package:mac",
@@ -38,31 +41,52 @@
     "desktop:build:linux": "pnpm build && pnpm --filter skytwin-desktop package:linux",
     "desktop:build:all": "pnpm build && pnpm --filter skytwin-desktop package:all",
     "test:e2e": "./bin/skytwin-e2e-test",
+    "check:encryption-inventory": "node --test scripts/security/validate-encryption-field-inventory.test.mjs && node scripts/security/validate-encryption-field-inventory.mjs",
     "demo:record": "cd scripts/demo && pnpm record",
     "demo:narrate": "cd scripts/demo && pnpm narrate",
-    "demo:install": "cd scripts/demo && pnpm install --ignore-workspace && pnpm exec playwright install chromium"
+    "demo:install": "cd scripts/demo && pnpm install --ignore-workspace && pnpm exec playwright install chromium",
+    "claims:check": "node scripts/release-claims/check-release-claims.mjs",
+    "claims:test": "vitest run scripts/release-claims/*.test.mjs",
+    "test:release-artifacts": "vitest run scripts/release-artifacts/*.test.mjs",
+    "audit:check": "node scripts/dependency-audit/check-dependency-audit.mjs",
+    "audit:test": "vitest run scripts/dependency-audit/*.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
-    "eslint": "^10.6.0",
-    "prettier": "^3.9.4",
-    "tsx": "^4.22.4",
-    "turbo": "^2.10.4",
+    "eslint": "^10.10.0",
+    "prettier": "^3.9.6",
+    "tsx": "^4.23.13",
+    "turbo": "^2.10.13",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.10"
+    "vitest": "5.0.1",
+    "yaml": "2.9.1"
   },
   "packageManager": "pnpm@9.1.0",
   "pnpm": {
     "overrides": {
+      "@expo/plist>@xmldom/xmldom": "0.8.15",
+      "@hono/node-server": "1.19.15",
+      "baseline-browser-mapping": "2.11.23",
+      "body-parser": "2.3.0",
+      "brace-expansion@>=4.0.0": "5.0.12",
+      "browserslist": "4.28.9",
       "esbuild": "0.28.1",
-      "fast-uri": "3.1.2",
-      "hono": "4.12.27",
-      "qs": "6.15.2",
-      "tar": "7.5.16",
-      "uuid": "11.1.1"
+      "fast-uri": "3.1.6",
+      "hono": "4.13.8",
+      "ip-address": "10.7.1",
+      "js-yaml": "4.3.2",
+      "nanoid": "3.3.18",
+      "plist": "3.1.1",
+      "plist>@xmldom/xmldom": "0.9.12",
+      "postcss": "8.5.28",
+      "qs": "6.16.0",
+      "shell-quote": "1.10.0",
+      "tar": "7.5.21",
+      "uuid": "11.1.1",
+      "vitest": "5.0.1"
     }
   },
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=20.19.4"
   }
 }

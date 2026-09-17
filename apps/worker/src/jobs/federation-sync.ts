@@ -1,13 +1,19 @@
 import { createLogger } from '@skytwin/core';
+import { loadConfig, type GoogleConnectionMode } from '@skytwin/config';
+import { requireJobAdmission, runAdmitted } from './job-admission.js';
 import {
   federationPeerRepository,
   mcpServerRepository,
   query,
   type FederationPeerRow,
 } from '@skytwin/db';
+import type { McpServerRow } from '@skytwin/db';
+import { isAccountBackedIntegration } from '@skytwin/shared-types';
+import { RegistryClient } from '@skytwin/registry-client';
 import nacl from 'tweetnacl';
 
 const log = createLogger('worker:federation-sync');
+const accountBoundaryRegistry = new RegistryClient({ smitheryEnabled: false });
 
 /**
  * Federation delta sync (#194 Child 1).
@@ -48,6 +54,9 @@ export interface FederationSyncDeps {
   fetcher?: (url: string, opts: RequestInit) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
   /** Override the peer-row updater (for tests). */
   markSyncResult?: typeof federationPeerRepository.markSyncResult;
+  /** Exact preview mode from the worker generation; inject for tests. */
+  googleConnectionMode?: GoogleConnectionMode;
+  signal?: AbortSignal;
 }
 
 export interface DeltaPayload {
@@ -66,45 +75,163 @@ export interface DeltaPayload {
   }>;
 }
 
+interface FederationProvenanceEdgeRow {
+  from_node_id: string;
+  to_node_id: string;
+  edge_type: string;
+  occurred_at: Date;
+  from_server_id: string | null;
+  to_server_id: string | null;
+  from_payload: unknown;
+  to_payload: unknown;
+}
+
+const PROVENANCE_REGISTRY_KEYS = ['registryId', 'registry_id'] as const;
+const PROVENANCE_PROVIDER_KEYS = [
+  'oauthProvider', 'oauth_provider', 'integration', 'service', 'provider',
+] as const;
+const PROVENANCE_SKILL_KEYS = [
+  'toolName', 'tool_name', 'mcpToolName', 'mcp_tool_name', 'actionType', 'action_type',
+] as const;
+
+function provenancePayloadIsAffirmativelyAccountFree(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const record = payload as Record<string, unknown>;
+  const values = (keys: readonly string[]): string[] => keys
+    .map((key) => record[key])
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  const adapter = record['adapter'];
+  const registryIds = values(PROVENANCE_REGISTRY_KEYS);
+  const integrations = values(PROVENANCE_PROVIDER_KEYS);
+  const skills = values(PROVENANCE_SKILL_KEYS);
+  const adapters = typeof adapter === 'string' && adapter.trim().length > 0 ? [adapter] : [];
+  const hasStableIdentifier = registryIds.length > 0 || integrations.length > 0 ||
+    skills.length > 0 || adapters.length > 0;
+
+  if (!hasStableIdentifier) return false;
+  return !registryIds.some((key) => isAccountBackedIntegration({ key })) &&
+    !adapters.some((value) => isAccountBackedIntegration({ adapter: value })) &&
+    !integrations.some((integration) => isAccountBackedIntegration({ integration })) &&
+    !skills.some((skill) => isAccountBackedIntegration({ skills: [skill] }));
+}
+
+function filterAccountFreeEdges(
+  edges: readonly FederationProvenanceEdgeRow[],
+  exportableServerIds: ReadonlySet<string>,
+): FederationProvenanceEdgeRow[] {
+  const endpointIsExportable = (serverId: string | null, payload: unknown): boolean =>
+    serverId !== null
+      ? exportableServerIds.has(serverId)
+      : provenancePayloadIsAffirmativelyAccountFree(payload);
+
+  return edges.filter((edge) =>
+    endpointIsExportable(edge.from_server_id, edge.from_payload) &&
+    endpointIsExportable(edge.to_server_id, edge.to_payload));
+}
+
 /**
  * Build the per-user delta payload that gets sealed-and-shipped to each
  * outbound peer. Pure read — no side effects on the local DB.
  */
-export async function buildDeltaPayload(userId: string): Promise<DeltaPayload> {
+export async function buildDeltaPayload(
+  userId: string,
+  googleConnectionMode: GoogleConnectionMode = loadConfig().googleConnectionMode,
+): Promise<DeltaPayload> {
   const [servers, edgesResult] = await Promise.all([
     mcpServerRepository.listForUser(userId),
-    query<{
-      from_node_id: string;
-      to_node_id: string;
-      edge_type: string;
-      occurred_at: Date;
-    }>(
-      `SELECT from_node_id, to_node_id, edge_type, occurred_at
-       FROM capability_provenance_edges
-       WHERE user_id = $1
-       ORDER BY occurred_at DESC
+    query<FederationProvenanceEdgeRow>(
+      `SELECT e.from_node_id, e.to_node_id, e.edge_type,
+              GREATEST(from_node.occurred_at, to_node.occurred_at) AS occurred_at,
+              from_node.server_id AS from_server_id,
+              to_node.server_id AS to_server_id,
+              from_node.payload AS from_payload,
+              to_node.payload AS to_payload
+       FROM capability_provenance_edges e
+       JOIN capability_provenance_nodes from_node ON from_node.id = e.from_node_id
+       JOIN capability_provenance_nodes to_node ON to_node.id = e.to_node_id
+       WHERE from_node.user_id = $1 AND to_node.user_id = $1
+       ORDER BY GREATEST(from_node.occurred_at, to_node.occurred_at) DESC
        LIMIT 100`,
       [userId],
     ),
   ]);
 
+  const eligibleServers = servers.filter((server) =>
+    server.registry_id !== null &&
+    (server.status === 'active' || server.status === 'installed' || server.status === 'authorized'));
+  const exportableServers = googleConnectionMode === 'experimental'
+    ? eligibleServers
+    : await filterAccountFreeServers(eligibleServers);
+  const exportableEdges = googleConnectionMode === 'experimental'
+    ? edgesResult.rows
+    : filterAccountFreeEdges(
+        edgesResult.rows,
+        new Set(exportableServers.map((server) => server.id)),
+      );
+
   return {
     syncedAt: new Date().toISOString(),
-    installedServers: servers
-      .filter((s) => s.registry_id !== null && (s.status === 'active' || s.status === 'installed' || s.status === 'authorized'))
+    installedServers: exportableServers
       .map((s) => ({
         registryId: s.registry_id ?? '',
         displayName: s.display_name,
         trustTier: String(s.trust_tier),
         status: String(s.status),
       })),
-    recentProvenanceEdges: edgesResult.rows.map((r) => ({
+    recentProvenanceEdges: exportableEdges.map((r) => ({
       fromNodeId: r.from_node_id,
       toNodeId: r.to_node_id,
       edgeType: r.edge_type,
       occurredAt: r.occurred_at.toISOString(),
     })),
   };
+}
+
+async function filterAccountFreeServers(servers: McpServerRow[]): Promise<McpServerRow[]> {
+  const exportable: McpServerRow[] = [];
+  for (const server of servers) {
+    if (isAccountBackedIntegration({
+      key: server.registry_id ?? undefined,
+      integration: server.oauth_provider ?? undefined,
+    })) {
+      continue;
+    }
+
+    try {
+      const skills = await mcpServerRepository.listSkillNamesForServer(server.id);
+      if (skills.length === 0) {
+        const trustedEntry = server.registry_id
+          ? await accountBoundaryRegistry.getById(server.registry_id)
+          : null;
+        // Unknown + empty cannot establish an account-free classification for
+        // an outbound disclosure. Bundled neighbors remain exportable.
+        if (!trustedEntry || isAccountBackedIntegration({
+          key: trustedEntry.id,
+          integration: trustedEntry.oauthProvider ?? undefined,
+        })) {
+          continue;
+        }
+      }
+      if (isAccountBackedIntegration({
+        key: server.registry_id ?? undefined,
+        integration: server.oauth_provider ?? undefined,
+        skills,
+      })) {
+        continue;
+      }
+    } catch (error) {
+      // Federation is an outbound disclosure path. If local classification
+      // state cannot be read, omit the row rather than sending it unchecked.
+      log.warn('Federation sync: omitting unclassified capability', {
+        serverId: server.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      continue;
+    }
+
+    exportable.push(server);
+  }
+  return exportable;
 }
 
 /**
@@ -156,7 +283,8 @@ export async function runFederationSyncJob(deps: FederationSyncDeps = {}): Promi
   pushed: number;
   failed: number;
 }> {
-  const peers = deps.peers ?? (await getActivePeersWithEndpoints());
+  requireJobAdmission(deps.signal);
+  const peers = deps.peers ?? (await runAdmitted(deps.signal, getActivePeersWithEndpoints));
   if (peers.length === 0) {
     log.info('No active peers with endpoints — federation-sync skipped');
     return { pushed: 0, failed: 0 };
@@ -164,16 +292,19 @@ export async function runFederationSyncJob(deps: FederationSyncDeps = {}): Promi
 
   const fetcher = deps.fetcher ?? defaultFetcher;
   const markSyncResult = deps.markSyncResult ?? federationPeerRepository.markSyncResult.bind(federationPeerRepository);
+  const googleConnectionMode = deps.googleConnectionMode ?? loadConfig().googleConnectionMode;
 
   log.info('Federation sync starting', { peerCount: peers.length });
   let pushed = 0;
   let failed = 0;
 
   for (const peer of peers) {
+    requireJobAdmission(deps.signal);
     const endpoint = peer.endpoint_url;
     if (endpoint === null) continue;
     try {
-      const payload = await buildDeltaPayload(peer.user_id);
+      const payload = await runAdmitted(deps.signal, () =>
+        buildDeltaPayload(peer.user_id, googleConnectionMode));
       const sealed = sealForPeer(payload, peer);
       const url = endpoint.replace(/\/$/, '') + '/api/federation/inbox';
       const res = await fetcher(url, {
@@ -185,6 +316,7 @@ export async function runFederationSyncJob(deps: FederationSyncDeps = {}): Promi
           ciphertext: sealed.ciphertextB64,
         }),
       });
+      requireJobAdmission(deps.signal);
       if (!res.ok) {
         const body = await res.text().catch(() => '');
         const errMsg = `peer responded ${res.status}: ${body.slice(0, 200)}`;
@@ -196,6 +328,7 @@ export async function runFederationSyncJob(deps: FederationSyncDeps = {}): Promi
       await markSyncResult({ peerId: peer.id, status: 'ok' });
       pushed++;
     } catch (err) {
+      requireJobAdmission(deps.signal);
       failed++;
       const msg = err instanceof Error ? err.message : String(err);
       try {

@@ -75,6 +75,7 @@ export {
   upsertSettings,
   enqueueEmbeddingJob,
   leaseEmbeddingJob,
+  completeEmbeddingJob,
   markJobDone,
   markJobFailed,
   pendingEmbeddingJobs,
@@ -87,5 +88,5 @@ export {
   findPagesMissingAuthoringTier,
   computeBidirectionalThreadCounts,
 } from './repository.js';
-export type { PageMissingTierRow } from './repository.js';
+export type { EmbeddingJobLease, PageMissingTierRow } from './repository.js';
 export type { HybridSearchOptions } from './repository.js';

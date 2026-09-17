@@ -1,4 +1,94 @@
-import type { AIProviderName } from '@skytwin/shared-types';
+import type {
+  AIProviderName,
+  InferenceFallbackV1,
+  InferenceReceiptStatus,
+  ProviderExecutionMetadata,
+  ProviderPricingCapability,
+  ReasoningMode,
+  ReceiptSignatureV1,
+} from '@skytwin/shared-types';
+
+export interface TrustedConfidentialVerification {
+  readonly outcome: 'verified';
+  readonly inferenceId?: string;
+  readonly attestationPolicyVersion: string;
+  readonly verifierVersion: string;
+  readonly evidence: Readonly<Uint8Array>;
+  readonly measurementIdentity: string;
+  readonly responseSignature: ReceiptSignatureV1;
+  readonly verifiedAt: string;
+  readonly freshUntil: string;
+}
+
+/**
+ * Provider output that has already crossed a verifier-owned boundary. The
+ * request/response fields are the exact HTTP body bytes covered by the remote
+ * receipt; ordinary providers continue to return a string.
+ */
+export interface VerifiedProviderOutput {
+  readonly content: string;
+  readonly requestBytes: Readonly<Uint8Array>;
+  readonly responseBytes: Readonly<Uint8Array>;
+  readonly endpointIdentity: string;
+  readonly providerRequestId: string;
+  readonly resolvedModel: string;
+  readonly verification: TrustedConfidentialVerification;
+}
+
+export interface ExactOllamaRuntimeIdentity {
+  readonly provider: 'ollama';
+  /** Exact version string reported before and after this inference. */
+  readonly serverVersion: string;
+  /** Full SHA-256 manifest digest selected for this inference. */
+  readonly modelDigestSha256: string;
+}
+
+/** Ollama output bound to a stable local server/model identity. */
+export interface ExactOllamaProviderOutput {
+  readonly content: string;
+  readonly resolvedModel: string;
+  readonly runtimeIdentity: ExactOllamaRuntimeIdentity;
+}
+
+export type ProviderGenerateOutput = string | VerifiedProviderOutput | ExactOllamaProviderOutput;
+
+export interface RejectedConfidentialVerification {
+  outcome: 'verification_failed' | 'verification_unavailable' | 'verification_stale';
+  verifierVersion: string;
+  reason: string;
+}
+
+export type ConfidentialVerificationResult =
+  | TrustedConfidentialVerification
+  | RejectedConfidentialVerification;
+
+export interface ConfidentialInferenceVerifier {
+  verify(input: {
+    provider: AIProviderName;
+    model: string;
+    endpointIdentity: string;
+    request: Uint8Array;
+    response: Uint8Array;
+  }): Promise<ConfidentialVerificationResult>;
+}
+
+/** Canonical logical input/output bytes and provider facts captured by one client instance. */
+export interface InferenceTrace {
+  readonly id: string;
+  readonly status: InferenceReceiptStatus;
+  /** Selected mode plus adapter-derived runtime facts for this exact call. */
+  readonly execution: ProviderExecutionMetadata;
+  readonly endpointIdentity: string;
+  readonly request: Readonly<Uint8Array>;
+  readonly response: Readonly<Uint8Array>;
+  readonly cost: { readonly basis: 'exact'; readonly currency: string; readonly amountMinor: number }
+    | { readonly basis: 'unknown' };
+  readonly createdAt: string;
+  readonly verifierVersion: string;
+  readonly fallback?: InferenceFallbackV1;
+  readonly verification?: TrustedConfidentialVerification;
+  readonly verificationFailureReason?: string;
+}
 
 /**
  * Configuration for a single provider in the chain.
@@ -10,6 +100,17 @@ export interface ProviderEntry {
   baseUrl?: string;
 }
 
+export interface LlmClientOptions {
+  onInferenceTrace?: (trace: InferenceTrace) => void;
+  now?: () => Date;
+}
+
+/** Credential-free pricing view of the exact frozen provider chain. */
+export interface ProviderPricingSnapshot {
+  provider: AIProviderName;
+  pricing: ProviderPricingCapability;
+}
+
 /**
  * Options for a generate call.
  */
@@ -18,6 +119,14 @@ export interface GenerateOptions {
   maxTokens?: number;
   systemPrompt?: string;
   timeoutMs?: number;
+  /** User-present calls may use explicitly selected providers with unknown price. */
+  invocationKind?: 'interactive' | 'unattended';
+  /** Provider-neutral structured-output hint; embedded llama.cpp enforces it. */
+  jsonSchema?: string;
+  /** Suppress model reasoning tokens for strict machine-readable responses. */
+  disableReasoning?: boolean;
+  /** Fail local providers closed unless the exact responding runtime/model is identified. */
+  requireExactRuntimeIdentity?: boolean;
 }
 
 /**
@@ -28,6 +137,10 @@ export interface LlmResponse {
   provider: AIProviderName;
   model: string;
   latencyMs: number;
+  /** Additive provenance for routing, spend and future receipt persistence. */
+  execution: ProviderExecutionMetadata;
+  /** Present only when the responding local provider returned an exact identity. */
+  runtimeIdentity?: ExactOllamaRuntimeIdentity;
 }
 
 /**
@@ -59,8 +172,8 @@ export type ProviderGenerateFn = (
   apiKey: string,
   model: string,
   prompt: string | ChatMessage[],
-  options: GenerateOptions & { baseUrl?: string },
-) => Promise<string>;
+  options: GenerateOptions & { baseUrl?: string; reasoningMode?: ReasoningMode },
+) => Promise<ProviderGenerateOutput>;
 
 /**
  * One streaming event yielded by `LlmClient.generateStream`.
@@ -73,7 +186,14 @@ export type ProviderGenerateFn = (
  */
 export type LlmStreamEvent =
   | { type: 'chunk'; content: string }
-  | { type: 'done'; content: string; provider: AIProviderName; model: string; latencyMs: number };
+  | {
+    type: 'done';
+    content: string;
+    provider: AIProviderName;
+    model: string;
+    latencyMs: number;
+    execution: ProviderExecutionMetadata;
+  };
 
 /**
  * Provider-level streaming function signature. Returns an async iterable
@@ -89,5 +209,5 @@ export type ProviderStreamFn = (
   apiKey: string,
   model: string,
   prompt: string | ChatMessage[],
-  options: GenerateOptions & { baseUrl?: string },
+  options: GenerateOptions & { baseUrl?: string; reasoningMode?: ReasoningMode },
 ) => AsyncIterable<string>;

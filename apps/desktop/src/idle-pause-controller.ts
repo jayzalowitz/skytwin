@@ -90,8 +90,8 @@ export class IdlePauseController {
       }
       // next === 'active'
       if (!this.autoPausedByIdle) return 'noop' as const;
-      this.autoPausedByIdle = false;
       await this.deps.resumeServices();
+      this.autoPausedByIdle = false;
       return 'resume' as const;
     });
   }
@@ -116,8 +116,8 @@ export class IdlePauseController {
   onEnabledChanged(enabled: boolean): Promise<IdlePauseAction> {
     return this.enqueue(async () => {
       if (!enabled && this.autoPausedByIdle) {
-        this.autoPausedByIdle = false;
         await this.deps.resumeServices();
+        this.autoPausedByIdle = false;
         return 'resume' as const;
       }
       return 'noop' as const;

@@ -1,5 +1,9 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
-import { userRepository, userPurgeRepository } from '@skytwin/db';
+import {
+  ActiveExecutionAdmissionError,
+  userRepository,
+  userPurgeRepository,
+} from '@skytwin/db';
 import { TwinService } from '@skytwin/twin-model';
 import { TwinRepositoryAdapter, PatternRepositoryAdapter } from '@skytwin/db';
 import { ConfidenceLevel } from '@skytwin/shared-types';
@@ -452,7 +456,9 @@ export function createUsersRouter(): Router {
    * chained children that FK to those tables via non-user-id columns
    * (`candidate_actions.decision_id`, `execution_plans.decision_id`,
    * `twin_profile_versions.profile_id`, etc.). Failure anywhere
-   * rolls the whole thing back — no partial-delete state.
+   * rolls the whole thing back — no partial-delete state. Active or ambiguous
+   * execution admission returns 409 so deletion cannot erase the only durable
+   * reconciliation record while an external effect may still continue.
    *
    * The caller's own session middleware (`sessionAuth` plus the user-param
    * ownership check above) gates this to the user themselves — a session token for user A cannot
@@ -509,6 +515,14 @@ export function createUsersRouter(): Router {
         totalRows: result.total,
       });
     } catch (error) {
+      if (error instanceof ActiveExecutionAdmissionError) {
+        res.status(409).json({
+          error: error.code,
+          message: 'Account deletion is paused while an admitted execution is active or awaiting reconciliation.',
+          activeAdmissions: error.activeAdmissions,
+        });
+        return;
+      }
       next(error);
     }
   });

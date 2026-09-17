@@ -1,15 +1,31 @@
 import { Router } from 'express';
-import { mcpServerRepository, appSuggestionRepository, provenanceRepository, mcpServerMetricsRepository, mcpServerChangelogRepository, executionRepository, query } from '@skytwin/db';
+import { loadConfig } from '@skytwin/config';
+import {
+  mcpServerRepository,
+  appSuggestionRepository,
+  provenanceRepository,
+  mcpServerMetricsRepository,
+  mcpServerChangelogRepository,
+  executionRepository,
+  oauthRepository,
+  CredentialDispatchConflictError,
+  query,
+} from '@skytwin/db';
 import type { McpServerRow } from '@skytwin/db';
 import type { Request } from 'express';
 import { createLogger } from '@skytwin/core';
 import { RegistryClient } from '@skytwin/registry-client';
 import { TrustTierEngine } from '@skytwin/policy-engine';
 import type { TrustTier } from '@skytwin/shared-types';
-import { PROMOTION_THRESHOLDS } from '@skytwin/shared-types';
+import {
+  classifyGmailArchiveGenericAction,
+  isAccountBackedIntegration,
+  isAccountBackedRegistryIdentifier,
+  PROMOTION_THRESHOLDS,
+} from '@skytwin/shared-types';
 import { runPrompt } from '@skytwin/policy-prompts';
-import { getLlmClientFromConfig } from '../lib/llm-client-factory.js';
-import { getExecutionRouter } from '../execution-setup.js';
+import { resolveUserLlmClient } from '../lib/user-llm-client.js';
+import { isAccountFreePreviewServerBlocked, isGoogleCapabilityBlocked } from '../lib/google-capability-boundary.js';
 // SSE event constants — imported for re-export and for use in callers that
 // wire the promotion ceremony (e.g. promotion-eligibility-check.ts).
 // sseManager and SSE_CAPABILITY_PROMOTION_OFFERED are imported here so they
@@ -23,6 +39,68 @@ const log = createLogger('api:capabilities');
 
 import { UUID_REGEX } from '../middleware/validate-uuid.js';
 
+interface RegretActionIdentity {
+  readonly actionId: string;
+  readonly actionType: string;
+}
+
+function snapshotRegretActionIdentity(value: unknown): Readonly<RegretActionIdentity> | null {
+  try {
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Object.prototype ||
+      Object.getOwnPropertySymbols(value).length !== 0
+    )
+      return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const actionId = descriptors['actionId'];
+    const actionType = descriptors['actionType'];
+    if (
+      !actionId ||
+      !Object.prototype.hasOwnProperty.call(actionId, 'value') ||
+      actionId.enumerable !== true ||
+      typeof actionId.value !== 'string' ||
+      actionId.value.length === 0 ||
+      !actionType ||
+      !Object.prototype.hasOwnProperty.call(actionType, 'value') ||
+      actionType.enumerable !== true ||
+      typeof actionType.value !== 'string' ||
+      actionType.value.length === 0
+    )
+      return null;
+    return Object.freeze({
+      actionId: actionId.value,
+      actionType: actionType.value,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function snapshotIrreversibleReason(value: unknown): string | null {
+  try {
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Object.prototype ||
+      Object.getOwnPropertySymbols(value).length !== 0
+    )
+      return null;
+    const descriptor = Object.getOwnPropertyDescriptor(value, 'irreversibleReason');
+    return descriptor &&
+      Object.prototype.hasOwnProperty.call(descriptor, 'value') &&
+      descriptor.enumerable === true &&
+      typeof descriptor.value === 'string'
+      ? descriptor.value
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PII redaction helper — shared by audit (#183), provenance-graph (#184), and
 // evidence-preview (#184) paths. Stored lowercase; keys are lowercased before
@@ -30,14 +108,24 @@ import { UUID_REGEX } from '../middleware/validate-uuid.js';
 // skillName, recipeName remain visible in the audit trail.
 // ─────────────────────────────────────────────────────────────────────────────
 const PII_FIELDS = new Set([
-  'email', 'phone', 'password', 'token', 'secret', 'ssn', 'credit_card',
-  'card_number', 'cvv', 'api_key', 'apikey', 'authorization', 'credential',
-  'access_token', 'refresh_token',
+  'email',
+  'phone',
+  'password',
+  'token',
+  'secret',
+  'ssn',
+  'credit_card',
+  'card_number',
+  'cvv',
+  'api_key',
+  'apikey',
+  'authorization',
+  'credential',
+  'access_token',
+  'refresh_token',
 ]);
 
-export function redactPayload(
-  obj: Record<string, unknown> | null | undefined,
-): Record<string, unknown> | null {
+export function redactPayload(obj: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj ?? null;
   return redactUnknown(obj) as Record<string, unknown>;
 }
@@ -89,10 +177,7 @@ export function buildEvidencePreview(signal: Record<string, unknown>): EvidenceP
     const rawSubject = typeof signal['subject'] === 'string' ? signal['subject'] : '';
     const rawBody = typeof signal['body'] === 'string' ? signal['body'] : '';
     // Redact PII from subject before sending
-    const subject = rawSubject.replace(
-      /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
-      '[email]',
-    );
+    const subject = rawSubject.replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, '[email]');
     // Server-side redact: max 80 chars, strip PII patterns
     const snippet = rawBody
       .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, '[email]')
@@ -103,9 +188,12 @@ export function buildEvidencePreview(signal: Record<string, unknown>): EvidenceP
 
   if (kind === 'calendar') {
     const eventTitle = typeof signal['title'] === 'string' ? signal['title'] : '';
-    const startTime = typeof signal['start_time'] === 'string' ? signal['start_time']
-      : signal['start_time'] instanceof Date ? (signal['start_time'] as Date).toISOString()
-      : undefined;
+    const startTime =
+      typeof signal['start_time'] === 'string'
+        ? signal['start_time']
+        : signal['start_time'] instanceof Date
+          ? (signal['start_time'] as Date).toISOString()
+          : undefined;
     return { kind: 'calendar', eventTitle, startTime };
   }
 
@@ -118,7 +206,13 @@ export function buildEvidencePreview(signal: Record<string, unknown>): EvidenceP
     // Only include image thumbnails for image MIME types at or under 512KB
     if (mimeType.startsWith('image/') && fileSizeBytes <= 512 * 1024) {
       const dataUrl = typeof signal['data_url'] === 'string' ? signal['data_url'] : undefined;
-      return { kind: 'file_image', fileName, fileExt, fileSizeBytes, thumbnailDataUrl: dataUrl };
+      return {
+        kind: 'file_image',
+        fileName,
+        fileExt,
+        fileSizeBytes,
+        thumbnailDataUrl: dataUrl,
+      };
     }
     return { kind: 'file_other', fileName, fileExt, fileSizeBytes };
   }
@@ -126,9 +220,7 @@ export function buildEvidencePreview(signal: Record<string, unknown>): EvidenceP
   if (kind === 'code_file') {
     const language = typeof signal['language'] === 'string' ? signal['language'] : '';
     const rawImports = Array.isArray(signal['imports']) ? signal['imports'] : [];
-    const firstImports = rawImports
-      .filter((imp): imp is string => typeof imp === 'string')
-      .slice(0, 10);
+    const firstImports = rawImports.filter((imp): imp is string => typeof imp === 'string').slice(0, 10);
     // NO raw code content — only structured fingerprint
     return { kind: 'code_file', language, firstImports };
   }
@@ -141,22 +233,122 @@ export function buildEvidencePreview(signal: Record<string, unknown>): EvidenceP
 // avoids re-parsing the file on every request.
 const registryClient = new RegistryClient();
 function getCapabilityUserId(req: Request): string | undefined {
-  return (req as unknown as { user?: { id?: string } }).user?.id
-    ?? (req.query['userId'] as string | undefined);
+  return (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
 }
 
 async function getOwnedCapabilityServer(
   id: string,
   userId: string,
-): Promise<{ status: 200; server: McpServerRow } | { status: 403 | 404; error: string }> {
+): Promise<{ status: 200; server: McpServerRow } | { status: 403 | 404 | 503; error: string }> {
   const server = await mcpServerRepository.getById(id);
   if (!server || server.status === 'uninstalled') {
     return { status: 404, error: 'Capability server not found' };
   }
   if (server.user_id !== userId) {
-    return { status: 403, error: 'Forbidden: you do not own this capability server' };
+    return {
+      status: 403,
+      error: 'Forbidden: you do not own this capability server',
+    };
+  }
+  if (
+    await isAccountFreePreviewServerBlocked(loadConfig().googleConnectionMode, server, (serverId) =>
+      mcpServerRepository.listSkillNamesForServer(serverId),
+    )
+  ) {
+    return {
+      status: 503,
+      error: 'This capability is unavailable while account connections are disabled.',
+    };
   }
   return { status: 200, server };
+}
+
+interface CapabilityHistoryNode {
+  server_id: string | null;
+  payload: unknown;
+}
+
+interface CapabilityAuditRow extends CapabilityHistoryNode {
+  id: string;
+  node_type: string;
+  ref_table: string;
+  ref_id: string;
+  occurred_at: Date;
+}
+
+const HISTORY_REGISTRY_KEYS = ['registryId', 'registry_id'] as const;
+const HISTORY_ADAPTER_KEYS = ['adapter'] as const;
+const HISTORY_PROVIDER_KEYS = ['oauthProvider', 'oauth_provider', 'integration', 'service', 'provider'] as const;
+const HISTORY_SKILL_KEYS = [
+  'toolName',
+  'tool_name',
+  'mcpToolName',
+  'mcp_tool_name',
+  'actionType',
+  'action_type',
+] as const;
+
+function historyPayloadHasAccountIdentifier(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const record = payload as Record<string, unknown>;
+  const stringsFor = (keys: readonly string[]): string[] =>
+    keys
+      .map((key) => record[key])
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+
+  return (
+    stringsFor(HISTORY_REGISTRY_KEYS).some((key) => isAccountBackedIntegration({ key })) ||
+    stringsFor(HISTORY_ADAPTER_KEYS).some((adapter) => isAccountBackedIntegration({ adapter })) ||
+    stringsFor(HISTORY_PROVIDER_KEYS).some((integration) => isAccountBackedIntegration({ integration })) ||
+    stringsFor(HISTORY_SKILL_KEYS).some((skill) => isAccountBackedIntegration({ skills: [skill] }))
+  );
+}
+
+/**
+ * Hide retained account-backed history before it reaches audit or graph output.
+ * Server-bound nodes use current owned server metadata and cached inventory;
+ * unbound historic nodes use only stable payload identifiers, never labels.
+ */
+async function filterCapabilityHistoryNodes<T extends CapabilityHistoryNode>(
+  nodes: readonly T[],
+  userId: string,
+  googleConnectionMode: string | undefined,
+  serverVisibility = new Map<string, Promise<boolean>>(),
+): Promise<T[]> {
+  if (googleConnectionMode === 'experimental') return [...nodes];
+
+  const isServerVisible = (serverId: string): Promise<boolean> => {
+    const cached = serverVisibility.get(serverId);
+    if (cached) return cached;
+    const resolved = (async () => {
+      try {
+        const server = await mcpServerRepository.getById(serverId);
+        if (!server || server.user_id !== userId || server.status === 'uninstalled') return false;
+        return !(await isAccountFreePreviewServerBlocked(googleConnectionMode, server, (id) =>
+          mcpServerRepository.listSkillNamesForServer(id),
+        ));
+      } catch {
+        return false;
+      }
+    })();
+    serverVisibility.set(serverId, resolved);
+    return resolved;
+  };
+
+  const visible: boolean[] = [];
+  const classificationBatchSize = 8;
+  for (let start = 0; start < nodes.length; start += classificationBatchSize) {
+    const batch = nodes.slice(start, start + classificationBatchSize);
+    visible.push(
+      ...(await Promise.all(
+        batch.map(async (node) => {
+          if (node.server_id) return isServerVisible(node.server_id);
+          return !historyPayloadHasAccountIdentifier(node.payload);
+        }),
+      )),
+    );
+  }
+  return nodes.filter((_node, index) => visible[index]);
 }
 
 function parseOptionalCents(value: unknown): number | null | undefined {
@@ -184,10 +376,7 @@ function nullableNumber(value: unknown): number | null {
  * review), leaking all of these. The capability UI only consumes display
  * metadata + spend limits, so redact the sensitive fields here.
  */
-type RedactedCapabilityServer = Omit<
-  McpServerRow,
-  'command' | 'args' | 'env' | 'url' | 'oauth_token_id'
->;
+type RedactedCapabilityServer = Omit<McpServerRow, 'command' | 'args' | 'env' | 'url' | 'oauth_token_id'>;
 
 function serializeCapabilityServer(server: McpServerRow): RedactedCapabilityServer {
   const safe: Partial<McpServerRow> = { ...server };
@@ -234,7 +423,8 @@ const CAPABILITY_RECIPES: CapabilityRecipe[] = [
   {
     slug: 'developer-pack',
     displayName: 'Developer pack',
-    description: 'Everything you need to work with code: GitHub, Linear, Notion, Slack, filesystem access, Git, and SQLite.',
+    description:
+      'Everything you need to work with code: GitHub, Linear, Notion, Slack, filesystem access, Git, and SQLite.',
     registryIds: [
       '@modelcontextprotocol/server-github',
       'linear-mcp',
@@ -261,7 +451,8 @@ const CAPABILITY_RECIPES: CapabilityRecipe[] = [
   {
     slug: 'travel-pack',
     displayName: 'Travel pack',
-    description: 'Plan and book travel. Community MCPs for Booking, Expedia, and flight search — install once they publish.',
+    description:
+      'Plan and book travel. Community MCPs for Booking, Expedia, and flight search — install once they publish.',
     registryIds: [
       // TODO: replace with real IDs once Booking/Expedia MCPs are published
       'booking-mcp-placeholder',
@@ -274,11 +465,7 @@ const CAPABILITY_RECIPES: CapabilityRecipe[] = [
     slug: 'research-pack',
     displayName: 'Research pack',
     description: 'Augment your thinking with web search, Brave Search, and Exa semantic search.',
-    registryIds: [
-      '@modelcontextprotocol/server-brave-search',
-      'exa-mcp-server',
-      '@modelcontextprotocol/server-fetch',
-    ],
+    registryIds: ['@modelcontextprotocol/server-brave-search', 'exa-mcp-server', '@modelcontextprotocol/server-fetch'],
     category: 'developer',
   },
   {
@@ -307,6 +494,55 @@ const CAPABILITY_RECIPES: CapabilityRecipe[] = [
   },
 ];
 
+function googleCapabilitySurfaceAvailable(): boolean {
+  return loadConfig().googleConnectionMode === 'experimental';
+}
+
+function isBlockedGoogleRegistryEntry(entry: { id: string; oauthProvider?: string | null }): boolean {
+  return isGoogleCapabilityBlocked(loadConfig().googleConnectionMode, {
+    registryId: entry.id,
+    oauthProvider: entry.oauthProvider,
+  });
+}
+
+function isBlockedGoogleOptIn(
+  optIn: {
+    server_registry_id: string | null;
+    server_oauth_provider?: string | null;
+    skill_name: string;
+  },
+  googleConnectionMode = loadConfig().googleConnectionMode,
+): boolean {
+  return isGoogleCapabilityBlocked(googleConnectionMode, {
+    registryId: optIn.server_registry_id,
+    oauthProvider: optIn.server_oauth_provider,
+    skills: [optIn.skill_name],
+  });
+}
+
+function filterRecipeForGoogleBoundary(
+  recipe: CapabilityRecipe,
+  additionallyBlockedIds: ReadonlySet<string> = new Set(),
+): CapabilityRecipe | null {
+  if (googleCapabilitySurfaceAvailable()) return recipe;
+  const registryIds = recipe.registryIds.filter(
+    (registryId) => !isAccountBackedRegistryIdentifier(registryId) && !additionallyBlockedIds.has(registryId),
+  );
+  if (registryIds.length === 0) return null;
+  if (registryIds.length === recipe.registryIds.length) return recipe;
+  return {
+    ...recipe,
+    description: `${recipe.displayName} capabilities available in this preview.`,
+    registryIds,
+  };
+}
+
+function availableCapabilityRecipes(): CapabilityRecipe[] {
+  return CAPABILITY_RECIPES.map((recipe) => filterRecipeForGoogleBoundary(recipe)).filter(
+    (recipe): recipe is CapabilityRecipe => recipe !== null,
+  );
+}
+
 /**
  * Write an audit node into capability_provenance_nodes.
  * Every mutation in this module calls this to maintain the audit trail
@@ -316,7 +552,17 @@ const CAPABILITY_RECIPES: CapabilityRecipe[] = [
  */
 async function writeProvenanceNode(opts: {
   userId: string;
-  nodeType: 'uninstall' | 'action' | 'feedback' | 'signal' | 'entity' | 'suggestion' | 'install' | 'tier_promotion' | 'external_agent' | 'manual_install';
+  nodeType:
+    | 'uninstall'
+    | 'action'
+    | 'feedback'
+    | 'signal'
+    | 'entity'
+    | 'suggestion'
+    | 'install'
+    | 'tier_promotion'
+    | 'external_agent'
+    | 'manual_install';
   refTable: string;
   refId: string;
   serverId: string | null;
@@ -343,7 +589,7 @@ async function writeProvenanceNode(opts: {
  * Endpoints (all under /api/capabilities/…):
  *
  *   POST /:id/uninstall     — soft-delete; optionally revoke OAuth + drop signals
- *   POST /:id/regret        — attempt rollback of actions executed via this server
+ *   POST /:id/regret        — report rollback candidates without changing external state
  *   POST /:id/time-machine  — replay a decision without this server (read-only)
  *   POST /:id/rehearse      — show what would have auto-executed if trust tier were higher
  *
@@ -500,8 +746,8 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
@@ -529,12 +775,20 @@ export function createCapabilitiesRouter(): Router {
           // Delete the oauth_tokens row — this removes the credential from the
           // SkyTwin DB. Best-effort provider-side revocation is a TODO for the
           // connector layer (#178 follow-up).
-          await query(
-            'DELETE FROM oauth_tokens WHERE id = $1',
-            [server.oauth_token_id],
-          );
-          log.info('Revoked OAuth token for MCP server', { serverId: id, tokenId: server.oauth_token_id });
+          await oauthRepository.deleteById(userId, server.oauth_token_id);
+          log.info('Revoked OAuth token for MCP server', {
+            serverId: id,
+            tokenId: server.oauth_token_id,
+          });
         } catch (err) {
+          if (err instanceof CredentialDispatchConflictError) {
+            res.status(409).json({
+              error: err.message,
+              code: err.code,
+              retryAfter: err.retryAfter?.toISOString() ?? null,
+            });
+            return;
+          }
           // OAuth revocation failure should not block the uninstall
           log.warn('Failed to revoke OAuth token during uninstall', {
             serverId: id,
@@ -549,10 +803,9 @@ export function createCapabilitiesRouter(): Router {
         try {
           // Deletes capability_provenance_nodes WHERE server_id = :id;
           // capability_provenance_edges cascade via FK on node deletion.
-          await query(
-            `DELETE FROM capability_provenance_nodes WHERE server_id = $1 AND node_type != 'uninstall'`,
-            [id],
-          );
+          await query(`DELETE FROM capability_provenance_nodes WHERE server_id = $1 AND node_type != 'uninstall'`, [
+            id,
+          ]);
           log.info('Dropped provenance nodes for MCP server', { serverId: id });
         } catch (err) {
           log.warn('Failed to drop provenance nodes during uninstall', {
@@ -563,7 +816,10 @@ export function createCapabilitiesRouter(): Router {
       }
 
       // Step 5: Soft-delete the server record
-      await mcpServerRepository.softDelete(id, { revokedOauth: revokeOauth, droppedSignals: dropSignals });
+      await mcpServerRepository.softDelete(id, {
+        revokedOauth: revokeOauth,
+        droppedSignals: dropSignals,
+      });
 
       // Step 6: Write audit provenance node (hard rail)
       await writeProvenanceNode({
@@ -592,15 +848,19 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
       }
 
+      // Regret is intentionally report-only until durable replay protection
+      // exists: it never calls an adapter or changes external state. Keep this
+      // local cleanup/audit surface available for retained servers without
+      // consulting (or activating) their cached account-backed tool inventory.
       const server = await mcpServerRepository.getById(id);
-      if (!server) {
+      if (!server || server.status === 'uninstalled') {
         res.status(404).json({ error: 'Capability server not found' });
         return;
       }
@@ -610,141 +870,97 @@ export function createCapabilitiesRouter(): Router {
       }
 
       const body = req.body as { withinHours?: number; reverseActions?: boolean } | undefined;
-      const withinHours = typeof body?.withinHours === 'number' && body.withinHours > 0
-        ? body.withinHours
-        : 24;
+      const withinHours = typeof body?.withinHours === 'number' && body.withinHours > 0 ? body.withinHours : 24;
 
       const sinceDate = new Date(Date.now() - withinHours * 60 * 60 * 1000);
 
       // Resolve rollback targets via the #324 join repo method:
       // capability_provenance_nodes (server↔action attribution) →
       // decision_outcomes.execution_plan_id (the #324 FK) → the real plan ID,
-      // plus the adapter that executed it (execution_results.adapter_used) so
-      // rollback routes back to the SAME adapter. The duplication-safe LIMIT-1
-      // subquery + lateral join live in the repo method now (was an inline
-      // query here before #324's adapter wiring landed).
+      // plus the successful reversible result's recorded adapter. This is a
+      // report-only read; no row returned here authorizes remote rollback.
       const targets = await executionRepository.getRollbackTargetsByServer({
         serverId: id,
         userId,
         since: sinceDate,
       });
+      const seenTargets = new Set<string>();
+      const boundTargets = targets
+        .map((target) => {
+          const actionIdentity = snapshotRegretActionIdentity(target);
+          return Object.freeze({
+            target,
+            actionIdentity,
+            irreversibleReason: snapshotIrreversibleReason(target.payload),
+            classification: classifyGmailArchiveGenericAction(actionIdentity),
+          });
+        })
+        .filter(({ target, actionIdentity }) => {
+          const key = JSON.stringify([actionIdentity?.actionId ?? target.actionId, target.executionPlanId]);
+          if (seenTargets.has(key)) return false;
+          seenTargets.add(key);
+          return true;
+        });
 
-      // Result enum:
-      //   - 'rolled_back'      — adapter.rollback(planId) succeeded.
-      //   - 'rollback_failed'  — the adapter ran but reported failure (e.g.
-      //                          the plan had no rollback steps, or the
-      //                          executing adapter is no longer registered).
-      //   - 'no_plan_linkage'  — the #324 FK lookup returned NULL; no plan to
-      //                          target, so nothing to dispatch. Honest
-      //                          reporting beats claiming a rollback happened.
-      const undone: Array<{
+      // Generic rollback remains report-only until #695 provides a durable,
+      // owner-bound, one-winner admission lifecycle. Merely having a provider
+      // plan id is not authority to dispatch: a concurrent request or lost
+      // response could otherwise repeat the same external reversal.
+      const unavailable: Array<{
         actionId: string;
         planId: string | null;
         adapterUsed: string | null;
-        result: 'rolled_back' | 'rollback_failed' | 'no_plan_linkage';
-        message?: string;
+        result: 'rollback_unavailable';
+        message: string;
       }> = [];
       const irreversible: Array<{ actionId: string; reason: string }> = [];
 
-      // Resolve the execution router once for the whole batch. If it can't be
-      // constructed (no adapters configured), treat every reversible action as
-      // a rollback failure rather than throwing the whole request — the user
-      // still gets an honest per-action report.
-      let router: Awaited<ReturnType<typeof getExecutionRouter>> | null = null;
-      let routerError: string | null = null;
-      const hasReversibleTarget = targets.some(
-        (t) => (t.payload?.['reversible'] === true) && t.executionPlanId,
-      );
-      if (hasReversibleTarget) {
-        try {
-          router = await getExecutionRouter();
-        } catch (err) {
-          routerError = err instanceof Error ? err.message : String(err);
-          log.warn('Execution router unavailable for regret rollback', { serverId: id, error: routerError });
-        }
-      }
+      for (const { target, actionIdentity, irreversibleReason, classification } of boundTargets) {
+        const reversible = target.reversible === true;
 
-      for (const target of targets) {
-        const payload = target.payload;
-        const reversible = payload?.['reversible'] === true;
+        // Dedicated archive rollback must never re-enter a generic adapter,
+        // including legacy rows that predate archive quarantine. Missing or
+        // malformed action identity also carries no rollback authority.
+        if (!actionIdentity || classification.kind !== 'other') {
+          unavailable.push({
+            actionId: actionIdentity?.actionId ?? target.actionId,
+            planId: target.executionPlanId ?? null,
+            adapterUsed: target.adapterUsed ?? null,
+            result: 'rollback_unavailable',
+            message:
+              classification.kind === 'archive'
+                ? 'Archive rollback is reserved for its dedicated execution lifecycle.'
+                : 'Rollback action identity could not be validated.',
+          });
+          continue;
+        }
 
         if (!reversible) {
           irreversible.push({
             actionId: target.actionId,
-            reason: typeof payload?.['irreversibleReason'] === 'string'
-              ? payload['irreversibleReason']
-              : 'Action was marked irreversible at execution time',
+            reason: irreversibleReason ?? 'Action was marked irreversible at execution time',
           });
           continue;
         }
 
-        if (!target.executionPlanId) {
-          undone.push({
-            actionId: target.actionId,
-            planId: null,
-            adapterUsed: null,
-            result: 'no_plan_linkage',
-          });
-          continue;
-        }
-
-        // Dispatch the rollback through the execution router, targeting the
-        // adapter that executed the plan (#324).
-        if (!router) {
-          undone.push({
-            actionId: target.actionId,
-            planId: target.executionPlanId,
-            adapterUsed: target.adapterUsed,
-            result: 'rollback_failed',
-            message: routerError
-              ? `Execution router unavailable: ${routerError}`
-              : 'Execution router unavailable',
-          });
-          continue;
-        }
-
-        const rollback = await router.rollback(target.executionPlanId, target.adapterUsed);
-
-        undone.push({
+        unavailable.push({
           actionId: target.actionId,
-          planId: target.executionPlanId,
-          adapterUsed: rollback.adapterUsed,
-          result: rollback.result.success ? 'rolled_back' : 'rollback_failed',
-          message: rollback.result.message,
+          planId: target.executionPlanId ?? null,
+          adapterUsed: target.adapterUsed ?? null,
+          result: 'rollback_unavailable',
+          message: target.executionPlanId
+            ? 'Automatic rollback is unavailable until durable replay protection is enabled.'
+            : 'Automatic rollback is unavailable and this action has no exact execution plan linkage.',
         });
-
-        // Audit trail (Safety Invariant #2): record every rollback attempt as
-        // a provenance node so the reversal is explainable. A rollback is the
-        // user reversing an action — recorded under the existing 'feedback'
-        // node type (no schema change) with a descriptive payload.
-        try {
-          await writeProvenanceNode({
-            userId,
-            nodeType: 'feedback',
-            refTable: 'execution_plans',
-            refId: target.executionPlanId,
-            serverId: id,
-            payload: {
-              kind: 'rollback',
-              actionId: target.actionId,
-              adapterUsed: rollback.adapterUsed,
-              success: rollback.result.success,
-              message: rollback.result.message,
-              withinHours,
-            },
-          });
-        } catch (auditErr) {
-          // Audit write failure must not mask a successful rollback — log and
-          // continue. The rollback result is still reported to the caller.
-          log.warn('Failed to write rollback provenance node', {
-            serverId: id,
-            planId: target.executionPlanId,
-            error: auditErr instanceof Error ? auditErr.message : String(auditErr),
-          });
-        }
       }
 
-      res.json({ undone, irreversible });
+      res.json({
+        status: 'report_only',
+        code: 'generic_rollback_report_only',
+        undone: [],
+        unavailable,
+        irreversible,
+      });
     } catch (err) {
       next(err);
     }
@@ -761,22 +977,19 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
       }
 
-      const server = await mcpServerRepository.getById(id);
-      if (!server) {
-        res.status(404).json({ error: 'Capability server not found' });
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
         return;
       }
-      if (server.user_id !== userId) {
-        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
-        return;
-      }
+      const server = owned.server;
 
       const body = req.body as { decisionId?: string; withoutCapability?: boolean } | undefined;
       const { decisionId, withoutCapability = true } = body ?? {};
@@ -836,27 +1049,22 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
       }
 
-      const server = await mcpServerRepository.getById(id);
-      if (!server) {
-        res.status(404).json({ error: 'Capability server not found' });
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
         return;
       }
-      if (server.user_id !== userId) {
-        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
-        return;
-      }
+      const server = owned.server;
 
       const body = req.body as { daysBack?: number } | undefined;
-      const daysBack = typeof body?.daysBack === 'number' && body.daysBack > 0
-        ? body.daysBack
-        : 30;
+      const daysBack = typeof body?.daysBack === 'number' && body.daysBack > 0 ? body.daysBack : 30;
 
       const sinceDate = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
 
@@ -906,8 +1114,8 @@ export function createCapabilitiesRouter(): Router {
   // ─────────────────────────────────────────────────────────────────────────
   router.get('/', async (req, res, next) => {
     try {
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
@@ -917,13 +1125,30 @@ export function createCapabilitiesRouter(): Router {
         mcpServerRepository.listForUser(userId),
         appSuggestionRepository.getPendingForUser(userId),
       ]);
+      const googleConnectionMode = loadConfig().googleConnectionMode;
 
-      const installed = allServers.filter(
+      const visibleServers: McpServerRow[] = [];
+      for (const server of allServers) {
+        if (
+          !(await isAccountFreePreviewServerBlocked(googleConnectionMode, server, (serverId) =>
+            mcpServerRepository.listSkillNamesForServer(serverId),
+          ))
+        )
+          visibleServers.push(server);
+      }
+      const visibleSuggestions = suggestions.filter(
+        (suggestion) =>
+          !isGoogleCapabilityBlocked(googleConnectionMode, {
+            registryId: suggestion.registry_id,
+          }),
+      );
+
+      const installed = visibleServers.filter(
         (s) => s.status === 'active' || s.status === 'installed' || s.status === 'authorized',
       );
-      const dormant = allServers.filter((s) => s.status === 'dormant' || s.status === 'paused');
+      const dormant = visibleServers.filter((s) => s.status === 'dormant' || s.status === 'paused');
 
-      res.json({ installed, suggestions, dormant });
+      res.json({ installed, suggestions: visibleSuggestions, dormant });
     } catch (err) {
       next(err);
     }
@@ -937,14 +1162,20 @@ export function createCapabilitiesRouter(): Router {
   // ─────────────────────────────────────────────────────────────────────────
   router.get('/suggestions', async (req: Request, res, next) => {
     try {
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
       }
 
-      const suggestions = await appSuggestionRepository.getPendingForUser(userId);
+      const googleConnectionMode = loadConfig().googleConnectionMode;
+      const suggestions = (await appSuggestionRepository.getPendingForUser(userId)).filter(
+        (suggestion) =>
+          !isGoogleCapabilityBlocked(googleConnectionMode, {
+            registryId: suggestion.registry_id,
+          }),
+      );
 
       // Project safe fields explicitly — never spread the row, because
       // `evidence_sources` is the JSONB array of raw signals (with PII) and
@@ -953,7 +1184,9 @@ export function createCapabilitiesRouter(): Router {
       const suggestionsWithEvidence = suggestions.map((s) => {
         const rawSources: unknown[] = Array.isArray(s.evidence_sources) ? s.evidence_sources : [];
         const evidence: EvidencePreview[] = rawSources
-          .filter((src): src is Record<string, unknown> => src !== null && typeof src === 'object' && !Array.isArray(src))
+          .filter(
+            (src): src is Record<string, unknown> => src !== null && typeof src === 'object' && !Array.isArray(src),
+          )
           .map((src) => buildEvidencePreview(src));
         return {
           id: s.id,
@@ -993,8 +1226,8 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
@@ -1036,17 +1269,15 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
       }
 
       const body = req.body as { untilDays?: number } | undefined;
-      const untilDays = typeof body?.untilDays === 'number' && body.untilDays > 0
-        ? body.untilDays
-        : 7;
+      const untilDays = typeof body?.untilDays === 'number' && body.untilDays > 0 ? body.untilDays : 7;
 
       const allSuggestions = await appSuggestionRepository.getActiveForUser(userId);
       const suggestion = allSuggestions.find((s) => s.id === id);
@@ -1076,8 +1307,8 @@ export function createCapabilitiesRouter(): Router {
   // ─────────────────────────────────────────────────────────────────────────
   router.get('/registry', async (req, res, next) => {
     try {
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
@@ -1087,6 +1318,10 @@ export function createCapabilitiesRouter(): Router {
       const category = typeof req.query['category'] === 'string' ? req.query['category'] : '';
 
       let entries = await registryClient.search(q);
+
+      if (!googleCapabilitySurfaceAvailable()) {
+        entries = entries.filter((entry) => !isBlockedGoogleRegistryEntry(entry));
+      }
 
       if (category) {
         entries = entries.filter((e) => e.category === category);
@@ -1106,24 +1341,29 @@ export function createCapabilitiesRouter(): Router {
   // ─────────────────────────────────────────────────────────────────────────
   router.get('/recipes', async (req, res, next) => {
     try {
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
       }
 
       // Adaptive path: ask the LLM for personalised recipe recommendations.
-      const llmClient = getLlmClientFromConfig();
+      const llmResolution = await resolveUserLlmClient(userId);
+      const llmClient = llmResolution.client;
       if (llmClient) {
         try {
           // Build a lightweight registry summary so the prompt has context.
           const allEntries = await registryClient.getAll();
-          const registrySummary = allEntries.slice(0, 50).map((e) => ({
-            id: e.id,
-            displayName: e.displayName,
-            category: e.category,
-          }));
+          const blockedRegistryIds = new Set(allEntries.filter(isBlockedGoogleRegistryEntry).map((entry) => entry.id));
+          const registrySummary = allEntries
+            .filter((entry) => !isBlockedGoogleRegistryEntry(entry))
+            .slice(0, 50)
+            .map((e) => ({
+              id: e.id,
+              displayName: e.displayName,
+              category: e.category,
+            }));
 
           // Template expects {{registry}}, {{detected_services}}, {{risk_profile}}.
           // Output type is a list of {registryId, name, reason,
@@ -1145,22 +1385,33 @@ export function createCapabilitiesRouter(): Router {
             },
             user: { userId },
             llmClient,
+            invocationKind: 'interactive',
           });
 
           if (!result.fellBackToDeterministic && Array.isArray(result.output) && result.output.length > 0) {
+            const availableOutput = googleCapabilitySurfaceAvailable()
+              ? result.output
+              : result.output.filter(
+                  (recommendation) =>
+                    !isAccountBackedRegistryIdentifier(recommendation.registryId) &&
+                    !blockedRegistryIds.has(recommendation.registryId),
+                );
             // Synthesize a single recipe from the LLM's ordered registry list.
             // CapabilityRecipe (local-defined above) is the API response shape;
             // it doesn't have a slot for per-item rationale, so we fold the
             // reasons into the description and order the registryIds by the
             // LLM's priority.
-            const recipe: CapabilityRecipe = {
-              slug: 'llm-recommended',
-              displayName: 'Recommended for you',
-              description: result.output.map((r) => `${r.name}: ${r.reason}`).join('\n'),
-              registryIds: result.output.map((r) => r.registryId),
-              category: 'productivity',
-            };
-            return res.json({ recipes: [recipe] });
+            const recipe: CapabilityRecipe | null = filterRecipeForGoogleBoundary(
+              {
+                slug: 'llm-recommended',
+                displayName: 'Recommended for you',
+                description: availableOutput.map((r) => `${r.name}: ${r.reason}`).join('\n'),
+                registryIds: availableOutput.map((r) => r.registryId),
+                category: 'productivity',
+              },
+              blockedRegistryIds,
+            );
+            if (recipe) return res.json({ recipes: [recipe] });
           }
         } catch (err) {
           log.warn('recipe-recommendation prompt failed, using hardcoded fallback', {
@@ -1170,7 +1421,7 @@ export function createCapabilitiesRouter(): Router {
       }
 
       // Deterministic fallback: 6 hardcoded recipes.
-      res.json({ recipes: CAPABILITY_RECIPES });
+      res.json({ recipes: availableCapabilityRecipes() });
     } catch (err) {
       next(err);
     }
@@ -1189,8 +1440,8 @@ export function createCapabilitiesRouter(): Router {
   // ─────────────────────────────────────────────────────────────────────────
   router.post('/reverse-capability-intent', async (req, res, next) => {
     try {
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
@@ -1206,8 +1457,14 @@ export function createCapabilitiesRouter(): Router {
       const installedRegistryIds = Array.isArray(body?.installedRegistryIds)
         ? (body.installedRegistryIds as unknown[]).filter((x): x is string => typeof x === 'string')
         : [];
+      const connectionMode = loadConfig().googleConnectionMode;
+      const admittedRegistryIds = installedRegistryIds.filter(
+        (registryId) => !isGoogleCapabilityBlocked(connectionMode, { registryId }),
+      );
+      const admittedRegistryIdSet = new Set(admittedRegistryIds);
 
-      const llmClient = getLlmClientFromConfig();
+      const llmResolution = await resolveUserLlmClient(userId);
+      const llmClient = llmResolution.client;
       if (llmClient) {
         try {
           // Template expects {{user_message}}, {{installed_capabilities}},
@@ -1220,26 +1477,53 @@ export function createCapabilitiesRouter(): Router {
             promptName: 'reverse-capability-intent',
             inputs: {
               user_message: body.userMessage,
-              installed_capabilities: installedRegistryIds,
+              installed_capabilities: admittedRegistryIds,
               risk_profile: '',
             },
             user: { userId },
             llmClient,
+            invocationKind: 'interactive',
           });
 
           if (!result.fellBackToDeterministic) {
-            return res.json(result.output);
+            const candidateCapabilities = Array.isArray(result.output.candidate_capabilities)
+              ? result.output.candidate_capabilities.filter(
+                  (registryId): registryId is string =>
+                    typeof registryId === 'string' && admittedRegistryIdSet.has(registryId),
+                )
+              : [];
+            return res.json({
+              ...result.output,
+              candidate_capabilities: candidateCapabilities,
+            });
           }
+          return res.json({
+            action: 'unknown',
+            candidate_capabilities: [],
+            confidence: 0,
+            reason: 'provider_unavailable',
+          });
         } catch (err) {
           log.warn('reverse-capability-intent prompt failed, using deterministic fallback', {
             error: err instanceof Error ? err.message : String(err),
+          });
+          return res.json({
+            action: 'unknown',
+            candidate_capabilities: [],
+            confidence: 0,
+            reason: 'prompt_failed',
           });
         }
       }
 
       // Deterministic fallback: heuristic match against installed registry.
       // v1: no heuristic — return unknown. The LLM path is the value add here.
-      res.json({ action: 'unknown', candidate_capabilities: [], confidence: 0 });
+      res.json({
+        action: 'unknown',
+        candidate_capabilities: [],
+        confidence: 0,
+        reason: llmResolution.state,
+      });
     } catch (err) {
       next(err);
     }
@@ -1257,16 +1541,26 @@ export function createCapabilitiesRouter(): Router {
     try {
       const { slug } = req.params;
 
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
       }
 
-      const recipe = CAPABILITY_RECIPES.find((r) => r.slug === slug);
-      if (!recipe) {
+      const sourceRecipe = CAPABILITY_RECIPES.find((r) => r.slug === slug);
+      const recipe = sourceRecipe ? filterRecipeForGoogleBoundary(sourceRecipe) : null;
+      if (!sourceRecipe) {
         res.status(404).json({ error: `Recipe '${slug}' not found` });
+        return;
+      }
+      if (!recipe) {
+        res.status(503).json({
+          error: 'This capability recipe is unavailable while account connections are disabled.',
+          code: 'ACCOUNT_CONNECTION_DISABLED',
+          available: false,
+          mode: 'disabled',
+        });
         return;
       }
 
@@ -1278,7 +1572,11 @@ export function createCapabilitiesRouter(): Router {
         status: 'pending_user_oauth' as const,
       }));
 
-      log.info('Recipe install requested', { userId, slug, count: jobs.length });
+      log.info('Recipe install requested', {
+        userId,
+        slug,
+        count: jobs.length,
+      });
       res.json({ jobs });
     } catch (err) {
       next(err);
@@ -1295,8 +1593,8 @@ export function createCapabilitiesRouter(): Router {
   // ─────────────────────────────────────────────────────────────────────────
   router.get('/dependency-graph', async (req, res, next) => {
     try {
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
@@ -1311,14 +1609,26 @@ export function createCapabilitiesRouter(): Router {
 
       try {
         const installedServers = await mcpServerRepository.listForUser(userId);
-        const installedIds = new Set(
-          installedServers
-            .filter((s) => s.status === 'active' || s.status === 'installed' || s.status === 'authorized')
-            .map((s) => s.id),
+        const googleConnectionMode = loadConfig().googleConnectionMode;
+        const eligibleServers = installedServers.filter(
+          (server) => server.status === 'active' || server.status === 'installed' || server.status === 'authorized',
         );
+        const allowedServers = await Promise.all(
+          eligibleServers.map(async (server) => ({
+            server,
+            blocked: await isAccountFreePreviewServerBlocked(googleConnectionMode, server, (serverId) =>
+              mcpServerRepository.listSkillNamesForServer(serverId),
+            ),
+          })),
+        );
+        const installedIds = new Set(allowedServers.filter(({ blocked }) => !blocked).map(({ server }) => server.id));
 
         // Pull skills from mcp_server_skills for installed servers
-        const skillResult = await query<{ server_id: string; skill_name: string; server_display_name: string }>(
+        const skillResult = await query<{
+          server_id: string;
+          skill_name: string;
+          server_display_name: string;
+        }>(
           `SELECT mss.server_id, mss.skill_name, ms.display_name AS server_display_name
            FROM mcp_server_skills mss
            JOIN mcp_servers ms ON ms.id = mss.server_id
@@ -1333,6 +1643,13 @@ export function createCapabilitiesRouter(): Router {
         const skillNodes = new Map<string, { id: string; label: string; installed: boolean }>();
 
         for (const row of skillResult.rows) {
+          if (
+            !installedIds.has(row.server_id) ||
+            isGoogleCapabilityBlocked(googleConnectionMode, {
+              skills: [row.skill_name],
+            })
+          )
+            continue;
           const serverId = `server:${row.server_id}`;
           const skillId = `skill:${row.skill_name}`;
 
@@ -1345,7 +1662,11 @@ export function createCapabilitiesRouter(): Router {
           }
 
           if (!skillNodes.has(skillId)) {
-            skillNodes.set(skillId, { id: skillId, label: row.skill_name, installed: true });
+            skillNodes.set(skillId, {
+              id: skillId,
+              label: row.skill_name,
+              installed: true,
+            });
           }
 
           edges.push({ from: serverId, to: skillId });
@@ -1361,7 +1682,7 @@ export function createCapabilitiesRouter(): Router {
       // If we have nothing (no mcp_server_skills rows yet), return a
       // deterministic example shape so the D3 vis always renders.
       if (nodes.length === 0) {
-        nodes = [
+        const fallbackNodes = [
           { id: 'server:github', label: 'GitHub', installed: false },
           { id: 'server:gmail', label: 'Gmail', installed: false },
           { id: 'server:notion', label: 'Notion', installed: false },
@@ -1369,11 +1690,18 @@ export function createCapabilitiesRouter(): Router {
           { id: 'skill:read_email', label: 'Read email', installed: false },
           { id: 'skill:write_page', label: 'Write page', installed: false },
         ];
-        edges = [
+        const fallbackEdges = [
           { from: 'server:github', to: 'skill:create_issue' },
           { from: 'server:gmail', to: 'skill:read_email' },
           { from: 'server:notion', to: 'skill:write_page' },
         ];
+        if (googleCapabilitySurfaceAvailable()) {
+          nodes = fallbackNodes;
+          edges = fallbackEdges;
+        } else {
+          nodes = fallbackNodes.filter((node) => node.id !== 'server:gmail' && node.id !== 'skill:read_email');
+          edges = fallbackEdges.filter((edge) => edge.from !== 'server:gmail');
+        }
       }
 
       res.json({ nodes, edges });
@@ -1390,8 +1718,8 @@ export function createCapabilitiesRouter(): Router {
   // ─────────────────────────────────────────────────────────────────────────
   router.post('/pause-all', async (req, res, next) => {
     try {
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
@@ -1413,7 +1741,10 @@ export function createCapabilitiesRouter(): Router {
         ),
       );
 
-      log.info('Paused all capability servers', { userId, count: pausedServers.length });
+      log.info('Paused all capability servers', {
+        userId,
+        count: pausedServers.length,
+      });
       res.json({ pausedCount: pausedServers.length });
     } catch (err) {
       next(err);
@@ -1427,16 +1758,43 @@ export function createCapabilitiesRouter(): Router {
   // ─────────────────────────────────────────────────────────────────────────
   router.post('/resume-all', async (req, res, next) => {
     try {
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
       }
 
-      const resumedServers = await mcpServerRepository.markAllResumedForUser(userId);
+      let resumedServers: McpServerRow[];
+      if (googleCapabilitySurfaceAvailable()) {
+        resumedServers = await mcpServerRepository.markAllResumedForUser(userId);
+      } else {
+        const googleConnectionMode = loadConfig().googleConnectionMode;
+        const pausedServers: McpServerRow[] = [];
+        for (const server of await mcpServerRepository.listForUser(userId)) {
+          if (
+            server.status !== 'paused' ||
+            (await isAccountFreePreviewServerBlocked(googleConnectionMode, server, (serverId) =>
+              mcpServerRepository.listSkillNamesForServer(serverId),
+            ))
+          )
+            continue;
+          pausedServers.push(server);
+        }
+        if (pausedServers.length === 0) {
+          resumedServers = [];
+        } else {
+          resumedServers = await mcpServerRepository.markResumedForUserByIds(
+            userId,
+            pausedServers.map((server) => server.id),
+          );
+        }
+      }
 
-      log.info('Resumed all capability servers', { userId, count: resumedServers.length });
+      log.info('Resumed all capability servers', {
+        userId,
+        count: resumedServers.length,
+      });
       res.json({ resumedCount: resumedServers.length });
     } catch (err) {
       next(err);
@@ -1461,8 +1819,8 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
@@ -1475,15 +1833,12 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const server = await mcpServerRepository.getById(id);
-      if (!server || server.status === 'uninstalled') {
-        res.status(404).json({ error: 'Capability server not found' });
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
         return;
       }
-      if (server.user_id !== userId) {
-        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
-        return;
-      }
+      const server = owned.server;
 
       const currentTier = server.trust_tier as TrustTier;
 
@@ -1581,7 +1936,12 @@ export function createCapabilitiesRouter(): Router {
         },
       });
 
-      log.info('Capability tier promoted', { userId, serverId: id, from: currentTier, to: toTier });
+      log.info('Capability tier promoted', {
+        userId,
+        serverId: id,
+        from: currentTier,
+        to: toTier,
+      });
       res.json({ server: updatedServer });
     } catch (err) {
       next(err);
@@ -1605,27 +1965,22 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
       }
 
-      const server = await mcpServerRepository.getById(id);
-      if (!server || server.status === 'uninstalled') {
-        res.status(404).json({ error: 'Capability server not found' });
-        return;
-      }
-      if (server.user_id !== userId) {
-        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
         return;
       }
 
       const body = req.body as { disableForDays?: number } | undefined;
-      const disableForDays = typeof body?.disableForDays === 'number' && body.disableForDays > 0
-        ? body.disableForDays
-        : 14;
+      const disableForDays =
+        typeof body?.disableForDays === 'number' && body.disableForDays > 0 ? body.disableForDays : 14;
 
       const untilDate = new Date(Date.now() + disableForDays * 24 * 60 * 60 * 1000);
       const updatedServer = await mcpServerRepository.pauseAutoPromotion(id, untilDate);
@@ -1634,8 +1989,15 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      log.info('Auto-promotion ceremony paused', { userId, serverId: id, untilDate });
-      res.json({ server: updatedServer, autoPromotePausedUntil: untilDate.toISOString() });
+      log.info('Auto-promotion ceremony paused', {
+        userId,
+        serverId: id,
+        untilDate,
+      });
+      res.json({
+        server: updatedServer,
+        autoPromotePausedUntil: untilDate.toISOString(),
+      });
     } catch (err) {
       next(err);
     }
@@ -1655,20 +2017,16 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
       }
 
-      const server = await mcpServerRepository.getById(id);
-      if (!server) {
-        res.status(404).json({ error: 'Capability server not found' });
-        return;
-      }
-      if (server.user_id !== userId) {
-        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
         return;
       }
 
@@ -1689,8 +2047,8 @@ export function createCapabilitiesRouter(): Router {
   // ─────────────────────────────────────────────────────────────────────────
   router.post('/install', async (req, res, next) => {
     try {
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
@@ -1703,12 +2061,35 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
+      if (!googleCapabilitySurfaceAvailable() && isAccountBackedRegistryIdentifier(registryId)) {
+        res.status(503).json({
+          error: 'Account-backed capabilities are unavailable in this preview.',
+          code: 'ACCOUNT_CONNECTION_DISABLED',
+          available: false,
+          mode: 'disabled',
+        });
+        return;
+      }
+
       // Look up the registry entry for metadata
       const entries = await registryClient.search(registryId);
       const entry = entries.find((e) => e.id === registryId);
+      if (entry && isBlockedGoogleRegistryEntry(entry)) {
+        res.status(503).json({
+          error: 'Account-backed capabilities are unavailable in this preview.',
+          code: 'ACCOUNT_CONNECTION_DISABLED',
+          available: false,
+          mode: 'disabled',
+        });
+        return;
+      }
       const displayName = entry?.displayName ?? registryId;
 
-      log.info('Capability install requested', { userId, registryId, displayName });
+      log.info('Capability install requested', {
+        userId,
+        registryId,
+        displayName,
+      });
 
       // Write a provenance install node as the audit record
       await provenanceRepository.writeNode({
@@ -1740,8 +2121,8 @@ export function createCapabilitiesRouter(): Router {
   // ─────────────────────────────────────────────────────────────────────────
   router.get('/audit', async (req, res, next) => {
     try {
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
@@ -1781,44 +2162,91 @@ export function createCapabilitiesRouter(): Router {
 
       const where = conditions.join(' AND ');
 
-      const countResult = await query<{ count: string }>(
-        `SELECT COUNT(*) AS count FROM capability_provenance_nodes WHERE ${where}`,
-        params,
-      );
-      const total = parseInt(countResult.rows[0]?.count ?? '0', 10);
-
-      params.push(limit, offset);
-      const dataResult = await query<{
-        id: string;
-        node_type: string;
-        ref_table: string;
-        ref_id: string;
-        server_id: string | null;
-        occurred_at: Date;
-        payload: unknown;
-      }>(
-        `SELECT id, node_type, ref_table, ref_id, server_id, occurred_at, payload
-         FROM capability_provenance_nodes
-         WHERE ${where}
-         ORDER BY occurred_at DESC
-         LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
-        params,
-      );
-
-      let nodes = dataResult.rows.map((row) => ({
-        ...row,
-        payload: redactPayload(row.payload as Record<string, unknown> | null),
-      }));
-
-      // Free-text filter on redacted payload string (post-redaction for safety)
-      if (q) {
-        nodes = nodes.filter((n) => {
-          const payloadStr = n.payload ? JSON.stringify(n.payload).toLowerCase() : '';
-          return n.node_type.includes(q) || payloadStr.includes(q);
-        });
+      const googleConnectionMode = loadConfig().googleConnectionMode;
+      // Account-free filtering and free-text matching happen in application
+      // code. Scan fixed-size raw batches for those modes so both the reported
+      // total and offset are defined over visible rows, never over a raw page
+      // that may contain hidden history. Keyset pagination prevents a newer
+      // concurrent audit row from shifting later batches and duplicating or
+      // skipping an entry. Exact totals require visiting every matching row,
+      // but response memory and each database read remain bounded.
+      const requiresFullVisibilityScan = googleConnectionMode !== 'experimental' || q.length > 0;
+      let total = 0;
+      if (!requiresFullVisibilityScan) {
+        const countResult = await query<{ count: string }>(
+          `SELECT COUNT(*) AS count FROM capability_provenance_nodes WHERE ${where}`,
+          params,
+        );
+        total = parseInt(countResult.rows[0]?.count ?? '0', 10);
       }
+      const serverVisibility = new Map<string, Promise<boolean>>();
+      const visibleNodesFor = async (rows: readonly CapabilityAuditRow[]) => {
+        const visibleRows = await filterCapabilityHistoryNodes(rows, userId, googleConnectionMode, serverVisibility);
+        let visibleNodes = visibleRows.map((row) => ({
+          ...row,
+          payload: redactPayload(row.payload as Record<string, unknown> | null),
+        }));
+        // Free-text filtering intentionally follows redaction so a match does
+        // not disclose that a secret value existed in a hidden payload field.
+        if (q)
+          visibleNodes = visibleNodes.filter((n) => {
+            const payloadStr = n.payload ? JSON.stringify(n.payload).toLowerCase() : '';
+            return n.node_type.includes(q) || payloadStr.includes(q);
+          });
+        return visibleNodes;
+      };
 
-      res.json({ nodes, total, limit, offset });
+      let visibleTotal = total;
+      let pageNodes: Array<
+        CapabilityAuditRow & {
+          payload: Record<string, unknown> | null;
+        }
+      > = [];
+      if (!requiresFullVisibilityScan) {
+        const dataResult = await query<CapabilityAuditRow>(
+          `SELECT id, node_type, ref_table, ref_id, server_id, occurred_at, payload
+           FROM capability_provenance_nodes
+           WHERE ${where}
+           ORDER BY occurred_at DESC, id DESC
+           LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
+          [...params, limit, offset],
+        );
+        pageNodes = await visibleNodesFor(dataResult.rows);
+      } else {
+        const scanBatchSize = 200;
+        visibleTotal = 0;
+        let cursor: { occurredAt: Date; id: string } | null = null;
+        while (true) {
+          const cursorCondition: string = cursor ? ` AND (occurred_at, id) < ($${paramIdx}, $${paramIdx + 1})` : '';
+          const scanParams: unknown[] = cursor
+            ? [...params, cursor.occurredAt, cursor.id, scanBatchSize]
+            : [...params, scanBatchSize];
+          const limitParamIdx: number = paramIdx + (cursor ? 2 : 0);
+          const dataResult: {
+            rows: CapabilityAuditRow[];
+            rowCount: number | null;
+          } = await query<CapabilityAuditRow>(
+            `SELECT id, node_type, ref_table, ref_id, server_id, occurred_at, payload
+               FROM capability_provenance_nodes
+               WHERE ${where}${cursorCondition}
+               ORDER BY occurred_at DESC, id DESC
+               LIMIT $${limitParamIdx}`,
+            scanParams,
+          );
+          if (dataResult.rows.length === 0) break;
+
+          const visibleBatch = await visibleNodesFor(dataResult.rows);
+          for (const node of visibleBatch) {
+            if (visibleTotal >= offset && pageNodes.length < limit) pageNodes.push(node);
+            visibleTotal += 1;
+          }
+          const lastRow: CapabilityAuditRow | undefined = dataResult.rows[dataResult.rows.length - 1];
+          if (!lastRow) break;
+          cursor = { occurredAt: lastRow.occurred_at, id: lastRow.id };
+          if (dataResult.rows.length < scanBatchSize) break;
+        }
+      }
+      res.json({ nodes: pageNodes, total: visibleTotal, limit, offset });
     } catch (err) {
       next(err);
     }
@@ -1838,20 +2266,16 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
       }
 
-      const server = await mcpServerRepository.getById(id);
-      if (!server) {
-        res.status(404).json({ error: 'Capability server not found' });
-        return;
-      }
-      if (server.user_id !== userId) {
-        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
         return;
       }
 
@@ -1887,8 +2311,8 @@ export function createCapabilitiesRouter(): Router {
   // ─────────────────────────────────────────────────────────────────────────
   router.get('/provenance-graph', async (req: Request, res, next) => {
     try {
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
@@ -1903,9 +2327,7 @@ export function createCapabilitiesRouter(): Router {
       // a lifebook linkage) are filtered out.
       const wingId = typeof req.query['wing'] === 'string' ? req.query['wing'] : null;
       const limitRaw = typeof req.query['limit'] === 'string' ? parseInt(req.query['limit'], 10) : 200;
-      const limit = Number.isFinite(limitRaw) && limitRaw > 0
-        ? Math.min(limitRaw, 500)
-        : 200;
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : 200;
 
       // Validate serverId if provided
       if (serverId && !UUID_REGEX.test(serverId)) {
@@ -1966,23 +2388,30 @@ export function createCapabilitiesRouter(): Router {
         params,
       );
 
-      const nodeIds = new Set(nodeResult.rows.map((n) => n.id));
+      const visibleRows = await filterCapabilityHistoryNodes(
+        nodeResult.rows,
+        userId,
+        loadConfig().googleConnectionMode,
+      );
+      const nodeIds = new Set(visibleRows.map((n) => n.id));
 
       // Build nodes with redacted payloads
-      const nodes = nodeResult.rows.map((n) => {
-        const rawPayload = n.payload !== null && typeof n.payload === 'object' && !Array.isArray(n.payload)
-          ? redactPayload(n.payload as Record<string, unknown>)
-          : (n.payload as object | null) ?? {};
+      const nodes = visibleRows.map((n) => {
+        const rawPayload =
+          n.payload !== null && typeof n.payload === 'object' && !Array.isArray(n.payload)
+            ? redactPayload(n.payload as Record<string, unknown>)
+            : ((n.payload as object | null) ?? {});
 
         // Build a human-readable label from the payload or node_type
         const payloadObj = (rawPayload as Record<string, unknown>) ?? {};
-        const label: string = typeof payloadObj['displayName'] === 'string'
-          ? payloadObj['displayName']
-          : typeof payloadObj['registryId'] === 'string'
-          ? payloadObj['registryId']
-          : typeof payloadObj['toolName'] === 'string'
-          ? payloadObj['toolName']
-          : n.node_type;
+        const label: string =
+          typeof payloadObj['displayName'] === 'string'
+            ? payloadObj['displayName']
+            : typeof payloadObj['registryId'] === 'string'
+              ? payloadObj['registryId']
+              : typeof payloadObj['toolName'] === 'string'
+                ? payloadObj['toolName']
+                : n.node_type;
 
         return {
           id: n.id,
@@ -1995,7 +2424,12 @@ export function createCapabilitiesRouter(): Router {
       });
 
       // Fetch edges where both endpoints are in the node set
-      let edges: Array<{ id: string; from: string; to: string; relation: string }> = [];
+      let edges: Array<{
+        id: string;
+        from: string;
+        to: string;
+        relation: string;
+      }> = [];
       if (nodeIds.size > 0) {
         const nodeIdsArray = Array.from(nodeIds);
         const edgeResult = await query<{
@@ -2038,20 +2472,16 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
       }
 
-      const server = await mcpServerRepository.getById(id);
-      if (!server) {
-        res.status(404).json({ error: 'Capability server not found' });
-        return;
-      }
-      if (server.user_id !== userId) {
-        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
         return;
       }
 
@@ -2076,14 +2506,17 @@ export function createCapabilitiesRouter(): Router {
   // ─────────────────────────────────────────────────────────────────────────
   router.get('/pending-opt-ins', async (req, res, next) => {
     try {
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
       }
 
-      const optIns = await mcpServerChangelogRepository.listPendingOptInsForUser(userId);
+      const googleConnectionMode = loadConfig().googleConnectionMode;
+      const optIns = (await mcpServerChangelogRepository.listPendingOptInsForUser(userId)).filter(
+        (optIn) => !isBlockedGoogleOptIn(optIn, googleConnectionMode),
+      );
       res.json({ optIns });
     } catch (err) {
       next(err);
@@ -2106,8 +2539,8 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
@@ -2122,13 +2555,28 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
+      if (isBlockedGoogleOptIn(optIn)) {
+        res.status(503).json({
+          error: 'This capability is unavailable while account connections are disabled.',
+          code: 'ACCOUNT_CONNECTION_DISABLED',
+          available: false,
+          mode: 'disabled',
+        });
+        return;
+      }
+
       const result = await mcpServerChangelogRepository.acceptOptIn(id);
       if (!result.found) {
         res.status(409).json({ error: 'Opt-in already accepted or rejected' });
         return;
       }
 
-      log.info('Skill opt-in accepted', { userId, optInId: id, skillName: optIn.skill_name, serverId: optIn.server_id });
+      log.info('Skill opt-in accepted', {
+        userId,
+        optInId: id,
+        skillName: optIn.skill_name,
+        serverId: optIn.server_id,
+      });
       res.status(204).end();
     } catch (err) {
       next(err);
@@ -2149,8 +2597,8 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
@@ -2170,7 +2618,12 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      log.info('Skill opt-in rejected', { userId, optInId: id, skillName: optIn.skill_name, serverId: optIn.server_id });
+      log.info('Skill opt-in rejected', {
+        userId,
+        optInId: id,
+        skillName: optIn.skill_name,
+        serverId: optIn.server_id,
+      });
       res.status(204).end();
     } catch (err) {
       next(err);
@@ -2197,23 +2650,19 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
       }
 
-      const server = await mcpServerRepository.getById(id);
-      if (!server || server.status === 'uninstalled') {
-        res.status(404).json({ error: 'Capability server not found' });
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
         return;
       }
-
-      if (server.user_id !== userId) {
-        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
-        return;
-      }
+      const server = owned.server;
 
       const previousValue = server.zero_trust_mode;
       const updatedServer = await mcpServerRepository.setZeroTrustMode(id, true);
@@ -2248,23 +2697,19 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const userId: string | undefined = (req as unknown as { user?: { id?: string } }).user?.id
-        ?? (req.query['userId'] as string | undefined);
+      const userId: string | undefined =
+        (req as unknown as { user?: { id?: string } }).user?.id ?? (req.query['userId'] as string | undefined);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
         return;
       }
 
-      const server = await mcpServerRepository.getById(id);
-      if (!server || server.status === 'uninstalled') {
-        res.status(404).json({ error: 'Capability server not found' });
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
         return;
       }
-
-      if (server.user_id !== userId) {
-        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
-        return;
-      }
+      const server = owned.server;
 
       const previousValue = server.zero_trust_mode;
       const updatedServer = await mcpServerRepository.setZeroTrustMode(id, false);

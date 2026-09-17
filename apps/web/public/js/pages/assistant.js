@@ -3,6 +3,8 @@ import {
   fetchAssistantThread,
   deleteAssistantThread,
   sendAssistantMessageStream,
+  resolveAssistantRequestIdentity,
+  shouldRetireAssistantRequestIdentity,
   searchCapabilityRegistry,
   installCapability,
   requestInstallSuggestion,
@@ -12,9 +14,16 @@ import {
   renderApiError,
   wireApiRetry,
 } from '../api-client.js';
-import { assistantDraftKey, KEY_USER_ID } from '../storage-keys.js';
+import { assistantDraftKey } from '../storage-keys.js';
+import {
+  clearPendingAssistantRequest,
+  readPendingAssistantRequest,
+  writePendingAssistantRequest,
+} from '../assistant-request-store.js';
+import { getEffectiveUserId } from '../sample-session.js';
 import { showToast } from '../toast.js';
 import { renderTierPromotionModal } from '../components/tier-promotion-modal.js';
+import { isGoogleAccountIntegration } from '../google-preview-boundary.js';
 
 // State for the currently-rendered thread. Module-scope because the click
 // delegator (singleton, document-level) needs to read the active thread to
@@ -40,13 +49,41 @@ let _state = {
   // in the finally block. handleStop calls .abort() to interrupt a long
   // generation. The Send button swaps to a Stop button while non-null.
   streamController: null,
+  // Retained only across an ambiguous transport failure. A retry of the same
+  // content in the same thread must carry the same requestId so the server can
+  // replay the durable result instead of admitting a duplicate action.
+  pendingRequest: null,
 };
 
 let _assistantListenerWired = false;
 let _watchDraft = null;
+let _renderGeneration = 0;
 
 export async function renderAssistant(container, userId) {
+  const renderGeneration = ++_renderGeneration;
+  const isCurrentRender = () =>
+    renderGeneration === _renderGeneration &&
+    _state.userId === userId &&
+    isOnAssistantRoute();
+  const previousUserId = _state.userId;
+  if (previousUserId && previousUserId !== userId) {
+    _state.streamController?.abort();
+    _state.streamController = null;
+    _state.activeThreadId = null;
+    _state.messages = [];
+    _state.threads = [];
+    _state.sending = false;
+  }
   _state.userId = userId;
+  if (!_state.sending) {
+    _state.pendingRequest = readPendingAssistantRequest(userId);
+    if (_state.pendingRequest) {
+      _state.activeThreadId = _state.pendingRequest.threadId;
+      if (!readDraft(_state.pendingRequest.threadId)) {
+        writeDraft(_state.pendingRequest.threadId, _state.pendingRequest.content);
+      }
+    }
+  }
   ensureAssistantListener();
   wirePromotionSseListener();
 
@@ -54,8 +91,10 @@ export async function renderAssistant(container, userId) {
   let threads = [];
   try {
     const data = await fetchAssistantThreads(userId);
+    if (!isCurrentRender()) return;
     threads = Array.isArray(data?.threads) ? data.threads : [];
   } catch (err) {
+    if (!isCurrentRender()) return;
     container.innerHTML = renderApiError(err, {
       context: "Couldn't load the assistant.",
       retry: () => renderAssistant(container, userId),
@@ -68,15 +107,18 @@ export async function renderAssistant(container, userId) {
   // Default-select the most recent thread on first render of an existing
   // session. If there are no threads, leave the right pane on the empty
   // state and the composer ready to start a new conversation.
-  if (!_state.activeThreadId && threads.length > 0) {
+  if (!_state.activeThreadId && !_state.pendingRequest && threads.length > 0) {
     _state.activeThreadId = threads[0].id;
   }
 
   if (_state.activeThreadId) {
+    const threadIdToLoad = _state.activeThreadId;
     try {
-      const data = await fetchAssistantThread(_state.activeThreadId, userId);
+      const data = await fetchAssistantThread(threadIdToLoad, userId);
+      if (!isCurrentRender() || _state.activeThreadId !== threadIdToLoad) return;
       _state.messages = Array.isArray(data?.messages) ? data.messages : [];
     } catch {
+      if (!isCurrentRender() || _state.activeThreadId !== threadIdToLoad) return;
       // Thread might've been deleted in another tab — clear and continue
       // rendering the empty state so the user isn't stuck.
       _state.activeThreadId = null;
@@ -86,6 +128,7 @@ export async function renderAssistant(container, userId) {
     _state.messages = [];
   }
 
+  if (!isCurrentRender()) return;
   paint(container);
 }
 
@@ -426,8 +469,8 @@ function renderError(err) {
 //      reason, confidence }[]` with model-judged suggestions and
 //      "this is a capability gap" vs "this is a policy refusal /
 //      not-a-tool-action" disambiguation built into the prompt.
-//   2. Heuristic fallback — when the server signals `no_llm_configured`
-//      (the user hasn't set up any AI provider), OR when the fetch
+//   2. Heuristic fallback — when the server reports no configured provider
+//      or a provider/prompt failure, OR when the fetch
 //      itself fails, fall through to the keyword scan + service-name
 //      hint table below. Demo flows still work without an LLM:
 //        - "create a Linear issue"   → no Linear installed → "Connect Linear"
@@ -454,10 +497,7 @@ const SERVICE_HINTS = [
   { keywords: ['linear', 'linear issue', 'linear ticket'], registryId: 'linear-mcp', displayName: 'Linear' },
   { keywords: ['notion', 'notion page', 'notion doc'], registryId: '@notionhq/notion-mcp-server', displayName: 'Notion' },
   { keywords: ['github', 'github pr', 'github issue', 'pull request'], registryId: '@modelcontextprotocol/server-github', displayName: 'GitHub' },
-  { keywords: ['gmail', 'google mail', 'email'], registryId: 'gmail-mcp', displayName: 'Gmail' },
-  { keywords: ['google calendar', 'calendar', 'gcal'], registryId: 'google-calendar-mcp', displayName: 'Google Calendar' },
   { keywords: ['slack'], registryId: '@modelcontextprotocol/server-slack', displayName: 'Slack' },
-  { keywords: ['google drive', 'gdrive', 'drive'], registryId: '@modelcontextprotocol/server-google-drive', displayName: 'Google Drive' },
   { keywords: ['sqlite', 'database', 'db'], registryId: '@modelcontextprotocol/server-sqlite', displayName: 'SQLite' },
   { keywords: ['filesystem', 'files', 'file system'], registryId: '@modelcontextprotocol/server-filesystem', displayName: 'Filesystem' },
 ];
@@ -507,6 +547,9 @@ function detectServiceHints(userMessage) {
  * caller provided per-suggestion reasons.
  */
 function renderInstallAffordances(suggestions, container, leadIn) {
+  suggestions = suggestions.filter(suggestion => !isGoogleAccountIntegration({
+    key: suggestion.registryId,
+  }));
   if (suggestions.length === 0) return;
   const msgRegion = container.querySelector('[data-region="messages"]');
   if (!msgRegion) return;
@@ -544,7 +587,7 @@ function renderInstallAffordances(suggestions, container, leadIn) {
 
 /**
  * Heuristic fallback (legacy): keyword scan + service-name hint table.
- * Used when the LLM endpoint signals `no_llm_configured` OR when the
+ * Used when the LLM endpoint reports no provider/prompt availability OR when the
  * fetch itself fails. Same shape as the original v1 detector, lifted
  * unchanged so demo flows keep working without an LLM provider.
  */
@@ -564,7 +607,7 @@ function runHeuristicReverseCapability(userMessage, replyText, container) {
 }
 
 async function checkReverseCapabilityFlow(userMessage, replyText, container) {
-  const userId = localStorage.getItem(KEY_USER_ID) || _state.userId || '';
+  const userId = getEffectiveUserId() || _state.userId || '';
   if (!userId) return;
 
   try {
@@ -574,7 +617,7 @@ async function checkReverseCapabilityFlow(userMessage, replyText, container) {
     // hint table. Confidence-gated to >=0.5 so low-confidence guesses
     // don't surface as "Connect X" buttons that lead nowhere useful.
     const result = await requestInstallSuggestion(userId, userMessage, replyText);
-    if (result?.reason === 'no_llm_configured') {
+    if (['no_llm_configured', 'provider_unavailable', 'prompt_failed'].includes(result?.reason)) {
       runHeuristicReverseCapability(userMessage, replyText, container);
       return;
     }
@@ -606,7 +649,11 @@ async function checkReverseCapabilityFlow(userMessage, replyText, container) {
  * Calls POST /api/capabilities/install and shows a toast.
  */
 async function handleReverseCapabilityInstall(registryId, displayName) {
-  const userId = localStorage.getItem(KEY_USER_ID) || _state.userId || '';
+  if (isGoogleAccountIntegration({ key: registryId })) {
+    showToast('Account-backed capabilities are unavailable in this preview.', { kind: 'info' });
+    return;
+  }
+  const userId = getEffectiveUserId() || _state.userId || '';
   if (!userId) {
     showToast('Log in to connect capabilities.', { kind: 'warning' });
     return;
@@ -667,7 +714,7 @@ function renderWatchDraftAffordance(parsed, sourceText, container) {
 }
 
 async function checkWatchDraftFlow(userMessage, container) {
-  const userId = localStorage.getItem(KEY_USER_ID) || _state.userId || '';
+  const userId = getEffectiveUserId() || _state.userId || '';
   if (!userId || !userMessage) return;
   const parsed = await parseWatchText(userMessage);
   if (!parsed?.matched) return;
@@ -675,7 +722,7 @@ async function checkWatchDraftFlow(userMessage, container) {
 }
 
 async function handleCreateWatchFromChat(status) {
-  const userId = localStorage.getItem(KEY_USER_ID) || _state.userId || '';
+  const userId = getEffectiveUserId() || _state.userId || '';
   if (!userId || !_watchDraft?.spec) return;
   const buttons = document.querySelectorAll('.assistant-watch-draft button');
   buttons.forEach((b) => { b.disabled = true; });
@@ -879,6 +926,11 @@ function ensureAssistantListener() {
     const target = e.target instanceof Element ? e.target : null;
     if (!target) return;
     if (target.getAttribute('data-region') !== 'composer-input') return;
+    const nextContent = /** @type {HTMLTextAreaElement} */ (target).value.trim();
+    if (_state.pendingRequest && nextContent !== _state.pendingRequest.content) {
+      clearPendingAssistantRequest(_state.userId);
+      _state.pendingRequest = null;
+    }
     writeDraft(_state.activeThreadId, /** @type {HTMLTextAreaElement} */ (target).value);
   });
 }
@@ -890,6 +942,8 @@ function isOnAssistantRoute() {
 // ── Handlers ────────────────────────────────────────────────────────
 
 function handleNewThread() {
+  clearPendingAssistantRequest(_state.userId);
+  _state.pendingRequest = null;
   _state.activeThreadId = null;
   _state.messages = [];
   const container = document.getElementById('page-content');
@@ -914,6 +968,8 @@ function handleSuggestion(prompt) {
 
 async function handleSelectThread(threadId) {
   if (threadId === _state.activeThreadId) return;
+  clearPendingAssistantRequest(_state.userId);
+  _state.pendingRequest = null;
   _state.activeThreadId = threadId;
   _state.messages = [];
   const container = document.getElementById('page-content');
@@ -1014,6 +1070,21 @@ async function handleSend() {
   const input = container?.querySelector('[data-region="composer-input"]');
   const content = (input?.value ?? '').trim();
   if (!content) return;
+  const requestUserId = _state.userId;
+  const requestThreadId = _state.activeThreadId;
+
+  const requestIdentity = resolveAssistantRequestIdentity(
+    _state.pendingRequest,
+    content,
+    requestThreadId,
+  );
+  if (!writePendingAssistantRequest(requestUserId, requestIdentity)) {
+    showToast('This message cannot be sent safely because its retry identity could not be saved.', {
+      kind: 'danger',
+    });
+    return;
+  }
+  _state.pendingRequest = requestIdentity;
 
   _state.sending = true;
   // Optimistic user bubble — render locally so the chat feels responsive
@@ -1052,21 +1123,33 @@ async function handleSend() {
   // race between abort + done doesn't leave a dangling controller.
   const controller = new AbortController();
   _state.streamController = controller;
+  const isCurrentSend = () =>
+    _state.userId === requestUserId &&
+    _state.streamController === controller &&
+    _state.pendingRequest?.requestId === requestIdentity.requestId &&
+    isOnAssistantRoute();
 
   try {
-    await sendAssistantMessageStream(_state.userId, content, _state.activeThreadId, {
+    await sendAssistantMessageStream(requestUserId, content, requestThreadId, {
       onThread: (thread) => {
+        if (!isCurrentSend()) return;
         if (thread?.isNew && thread?.id) {
           _state.activeThreadId = thread.id;
         }
+        if (_state.pendingRequest?.requestId === requestIdentity.requestId && thread?.id) {
+          _state.pendingRequest.threadId = thread.id;
+          writePendingAssistantRequest(requestUserId, _state.pendingRequest);
+        }
       },
       onUserMessage: (userMessage) => {
+        if (!isCurrentSend()) return;
         _state.messages = _state.messages
           .filter((m) => m.id !== 'optimistic')
           .concat([userMessage]);
         if (container) paint(container);
       },
       onChunk: (chunk) => {
+        if (!isCurrentSend()) return;
         streamingContent += chunk;
         if (!receivedFirstChunk) {
           // First chunk: insert the streaming bubble + drop the typing dots.
@@ -1103,6 +1186,9 @@ async function handleSend() {
         }
       },
       onDone: (assistantMessage) => {
+        clearPendingAssistantRequest(requestUserId, requestIdentity.requestId);
+        if (!isCurrentSend()) return;
+        _state.pendingRequest = null;
         // Replace the streaming bubble with the persisted one.
         _state.messages = _state.messages
           .filter((m) => m.id !== streamingAssistantId)
@@ -1117,6 +1203,24 @@ async function handleSend() {
         checkWatchDraftFlow(content, container).catch(() => {});
       },
       onError: ({ message, partialContent }) => {
+        // A terminal generation failure permits a new logical request. An
+        // ambiguous persistence result retains the request identity so a retry
+        // can only reconcile, never invoke the provider a second time.
+        const isDefiniteGenerationFailure = [
+          'assistant_stream_failed',
+          'assistant_providers_failed',
+          'assistant_generation_failed',
+        ].includes(message);
+        if (isDefiniteGenerationFailure) {
+          clearPendingAssistantRequest(requestUserId, requestIdentity.requestId);
+        }
+        if (!isCurrentSend()) return;
+        if (
+          isDefiniteGenerationFailure &&
+          _state.pendingRequest?.requestId === requestIdentity.requestId
+        ) {
+          _state.pendingRequest = null;
+        }
         // Mid-stream error — keep the partial content if any, append an
         // error caveat in a separate bubble so the user sees both what
         // landed and what went wrong.
@@ -1131,18 +1235,24 @@ async function handleSend() {
             },
           ]);
         }
+        const friendlyStreamError = {
+          assistant_stream_failed: 'The reply stopped unexpectedly.',
+          assistant_providers_failed: 'Every configured AI provider failed. Try again shortly.',
+          assistant_generation_failed: 'The assistant could not generate a reply. Try again shortly.',
+          assistant_response_reconciliation_required: 'The reply was shown but could not be saved safely. If it does not appear in history, start a new chat or edit the message before sending again.',
+        }[message] ?? 'The reply stopped unexpectedly.';
         _state.messages = _state.messages.concat([
           {
             id: `error-${Date.now()}`,
             role: 'assistant',
-            content: `Couldn't finish the reply — ${message}`,
+            content: friendlyStreamError,
             createdAt: new Date().toISOString(),
           },
         ]);
         if (input && !partialContent) input.value = content;
         if (container) paint(container);
       },
-    }, { signal: controller.signal });
+    }, { signal: controller.signal, requestId: requestIdentity.requestId });
 
     // After a successful stream, refresh the threads list so a new thread
     // shows up in the left rail or an existing one bumps to the top. We
@@ -1150,11 +1260,18 @@ async function handleSend() {
     // free of network round-trips.
     try {
       const data = await fetchAssistantThreads(_state.userId);
-      _state.threads = Array.isArray(data?.threads) ? data.threads : _state.threads;
+      if (
+        _state.userId === requestUserId &&
+        _state.streamController === controller &&
+        isOnAssistantRoute()
+      ) {
+        _state.threads = Array.isArray(data?.threads) ? data.threads : _state.threads;
+      }
     } catch {
       /* keep stale threads list — will refresh on next render */
     }
   } catch (err) {
+    if (!isCurrentSend()) return;
     // User-initiated stop: keep whatever streamed so far as a real
     // assistant bubble (no error caveat), drop the optimistic placeholder
     // tag so it stops looking transient. The server may still have
@@ -1170,7 +1287,22 @@ async function handleSend() {
           content: streamingContent || '(stopped)',
         };
       }
+      if (input) input.value = content;
       return;
+    }
+    if (err?.code === 'assistant_request_recovery_required' && err?.threadId) {
+      _state.activeThreadId = err.threadId;
+      if (_state.pendingRequest?.requestId === requestIdentity.requestId) {
+        _state.pendingRequest.threadId = err.threadId;
+        writePendingAssistantRequest(requestUserId, _state.pendingRequest);
+      }
+    } else if (shouldRetireAssistantRequestIdentity(err?.status, err?.code)) {
+      // Retire only definite pre-admission/client rejections or typed terminal
+      // generation failures. Generic 5xx can follow a durable side effect.
+      if (_state.pendingRequest?.requestId === requestIdentity.requestId) {
+        clearPendingAssistantRequest(requestUserId, requestIdentity.requestId);
+        _state.pendingRequest = null;
+      }
     }
     // Transport-level failure (network down, 4xx/5xx pre-stream). Drop
     // the optimistic bubble, restore input, surface error in an
@@ -1197,14 +1329,18 @@ async function handleSend() {
     _state.messages = _state.messages.concat([errorBubble]);
     if (input) input.value = content;
   } finally {
-    _state.sending = false;
     // Clear only if it's still ours — defensive in case a race somehow
     // started a second send before we got here (shouldn't be possible
     // because handleSend bails when _state.sending is true, but cheap).
-    if (_state.streamController === controller) {
+    const ownsController = _state.streamController === controller;
+    if (ownsController) {
+      _state.sending = false;
       _state.streamController = null;
     }
-    if (container) paint(container);
+    if (
+      container && _state.userId === requestUserId && ownsController &&
+      isOnAssistantRoute()
+    ) paint(container);
   }
 }
 

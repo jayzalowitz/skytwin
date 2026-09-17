@@ -68,6 +68,7 @@ export class InMemoryBrainStore {
     pageId: string;
     status: 'pending' | 'in_progress' | 'completed' | 'failed';
     leasedUntil?: Date;
+    leaseToken?: string;
     attempts: number;
     error?: string;
   }> = [];
@@ -588,37 +589,85 @@ export class InMemoryBrainStore {
     userId: string;
     pageId: string;
     pageContent: string;
+    leaseToken: string;
   } | null {
     const now = Date.now();
+    for (const job of this.jobs) {
+      const isAvailable =
+        job.status === 'pending' ||
+        (job.status === 'in_progress' && !!job.leasedUntil && job.leasedUntil.getTime() < now);
+      if (job.attempts >= 3 && isAvailable) {
+        job.status = 'failed';
+        job.error = 'maximum embedding attempts exhausted after lease expiry';
+        job.leasedUntil = undefined;
+        job.leaseToken = undefined;
+      }
+    }
     const candidate = this.jobs.find(
       (j) =>
-        j.status === 'pending' &&
-        (!j.leasedUntil || j.leasedUntil.getTime() < now),
+        j.attempts < 3 &&
+        ((j.status === 'pending' && (!j.leasedUntil || j.leasedUntil.getTime() < now)) ||
+          (j.status === 'in_progress' && !!j.leasedUntil && j.leasedUntil.getTime() < now)),
     );
     if (!candidate) return null;
     candidate.status = 'in_progress';
     candidate.attempts++;
     candidate.leasedUntil = new Date(now + 5 * 60 * 1000);
+    candidate.leaseToken = candidate.leasedUntil.toISOString();
     const page = this.pages.get(candidate.pageId);
     return {
       id: candidate.id,
       userId: candidate.userId,
       pageId: candidate.pageId,
       pageContent: `${page?.title ?? ''}\n${page?.content ?? ''}`.trim(),
+      leaseToken: candidate.leaseToken,
     };
   }
 
-  markJobDone(jobId: string): void {
-    const job = this.jobs.find((j) => j.id === jobId);
-    if (job) job.status = 'completed';
+  private hasActiveLease(
+    job: (typeof this.jobs)[number],
+    leaseToken: string,
+  ): boolean {
+    return (
+      job.status === 'in_progress' &&
+      job.leaseToken === leaseToken &&
+      !!job.leasedUntil &&
+      job.leasedUntil.getTime() > Date.now()
+    );
   }
 
-  markJobFailed(jobId: string, errMsg: string): void {
+  markJobDone(jobId: string, leaseToken: string): boolean {
     const job = this.jobs.find((j) => j.id === jobId);
-    if (!job) return;
+    if (!job || !this.hasActiveLease(job, leaseToken)) return false;
+    job.status = 'completed';
+    job.leasedUntil = undefined;
+    job.leaseToken = undefined;
+    return true;
+  }
+
+  markJobFailed(jobId: string, leaseToken: string, errMsg: string): boolean {
+    const job = this.jobs.find((j) => j.id === jobId);
+    if (!job || !this.hasActiveLease(job, leaseToken)) return false;
     job.error = errMsg;
     job.status = job.attempts >= 3 ? 'failed' : 'pending';
     job.leasedUntil = undefined;
+    job.leaseToken = undefined;
+    return true;
+  }
+
+  completeEmbeddingJob(
+    jobId: string,
+    leaseToken: string,
+    embedding: number[],
+    model: string,
+  ): boolean {
+    const job = this.jobs.find((candidate) => candidate.id === jobId);
+    if (!job || !this.hasActiveLease(job, leaseToken)) return false;
+    this.updatePageEmbedding(job.pageId, embedding, model);
+    job.status = 'completed';
+    job.leasedUntil = undefined;
+    job.leaseToken = undefined;
+    return true;
   }
 
   pendingEmbeddingJobs(userId?: string): number {

@@ -16,16 +16,23 @@
  * post-render side effects); this file owns presentation.
  */
 
-import { askTwin, escapeHtml, fetchDemoRecipes } from '../api-client.js';
+import {
+  askTwin,
+  beginDemoSessionExit,
+  cancelDemoSessionExit,
+  DEMO_USER_ID,
+  endSampleSimulation,
+  escapeHtml,
+  fetchDemoRecipes,
+} from '../api-client.js';
 import { dismissTierLadderIntro } from '../components/tier-ladder-intro.js';
 import {
-  KEY_USER_ID,
-  KEY_ONBOARDED,
-  KEY_TOUR_MODE,
   KEY_NOTIF_DISMISSED,
   KEY_NOTIF_ASKED,
   clearKeysForSuffix,
 } from '../storage-keys.js';
+import { clearSampleSession, readSampleSession } from '../sample-session.js';
+import { isGoogleAccountIntegration } from '../google-preview-boundary.js';
 
 export function situationLabel(type) {
   if (!type) return 'something';
@@ -486,42 +493,98 @@ export function handleTryRecipe(userId, situation) {
 
 export function renderTourBanner() {
   return `
-    <div class="card" style="border-left: 3px solid var(--warning, #e6a700); background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);">
+    <div class="card" data-tour-banner style="border-left: 3px solid var(--warning, #e6a700); background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);">
       <div class="card-header">
         <span class="card-title">You're exploring with a sample profile</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 0.75rem;">
-        Everything you see — the decisions, the learnings, the approvals — belongs to a fictional user named Alex.
+        Everything you see — the decisions, the learnings, the approvals — belongs to a fictional sample profile.
         Click around freely, then start your own when you're ready. Nothing you do here touches your real accounts.
       </div>
       <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
         <button class="btn btn-primary btn-sm" data-action="exit-tour">Start my own setup</button>
-        <a class="btn btn-outline btn-sm" href="#/decisions">See what Alex's twin has been doing</a>
-        <a class="btn btn-outline btn-sm" href="#/twin">See what it learned about Alex</a>
+        <a class="btn btn-outline btn-sm" href="#/sample">Try the interactive sample</a>
+        <a class="btn btn-outline btn-sm" href="#/decisions">See what the sample twin has been doing</a>
+        <a class="btn btn-outline btn-sm" href="#/twin">See what the sample twin learned</a>
       </div>
     </div>
   `;
 }
 
-export function skyTwinExitTour() {
-  // Hard-cleanup everything the tour wrote so a future tour starts
-  // fresh (no stale "first decision" toast, no stale tier celebration,
-  // no stale notification dismissal). Sweeps both the fixed-name flags
-  // and any per-user key whose suffix matches the demo uid.
-  const demoUid = (() => { try { return localStorage.getItem(KEY_USER_ID) || ''; } catch { return ''; } })();
-  clearKeysForSuffix(demoUid, [
-    KEY_TOUR_MODE,
-    KEY_USER_ID,
-    KEY_ONBOARDED,
-    KEY_NOTIF_DISMISSED,
-    KEY_NOTIF_ASKED,
-  ]);
+/** Make the dashboard tour-exit wait visible and announced to assistive tech. */
+export function setTourExitPending(trigger, pending, settledMessage = '') {
+  const region = trigger?.closest?.('[data-tour-banner]');
+  if (!region) return;
+  const button = region.querySelector('[data-action="exit-tour"]');
+  if (button) button.disabled = pending;
+  if (!pending) {
+    region.removeAttribute('aria-busy');
+    const status = region.querySelector('[data-tour-exit-status]');
+    if (settledMessage) {
+      if (status) status.textContent = settledMessage;
+    } else {
+      status?.remove();
+    }
+    return;
+  }
+  region.setAttribute('aria-busy', 'true');
+  let status = region.querySelector('[data-tour-exit-status]');
+  if (!status) {
+    status = document.createElement('p');
+    status.className = 'sample-operation-status';
+    status.setAttribute('data-tour-exit-status', '');
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    region.append(status);
+  }
+  status.textContent = 'Discarding the sample and opening your setup…';
+}
+
+export async function skyTwinExitTour() {
+  beginDemoSessionExit();
+  const sampleSnapshot = readSampleSession();
+  if (
+    sampleSnapshot.userId !== DEMO_USER_ID ||
+    sampleSnapshot.tourMode !== '1'
+  ) {
+    // A stale sample view must not mutate real authentication.
+    window.location.reload();
+    return true;
+  }
+  if (!sampleSnapshot.token) {
+    clearSampleSession();
+    clearKeysForSuffix(DEMO_USER_ID);
+    window.location.reload();
+    return true;
+  }
+  try {
+    await endSampleSimulation(sampleSnapshot.token);
+  } catch (error) {
+    if (error?.status === 401 || error?.status === 403) {
+      // The server has proven the disposable authority is unusable. There is
+      // no live session this browser can revoke, so leave sample mode safely.
+      clearSampleSession();
+      clearKeysForSuffix(DEMO_USER_ID);
+      window.location.reload();
+      return true;
+    }
+    cancelDemoSessionExit();
+    // Keep the only credential and local state when the server cannot confirm
+    // disposal. The user can retry instead of leaving live state behind until
+    // the signed authority expires.
+    return false;
+  }
+  // Only tab-local disposable state and demo-user presentation flags are
+  // removed. Real account authentication in localStorage is never touched.
+  clearSampleSession();
+  clearKeysForSuffix(DEMO_USER_ID);
   window.location.reload();
+  return true;
 }
 
 export function renderJustConnectedCelebration({ justConnectedProvider, justConnectedAccount, recentDecisionsCount, learnedCount }) {
-  if (!justConnectedProvider) return '';
-  const providerLabel = justConnectedProvider === 'google' ? 'Google' : justConnectedProvider;
+  if (!justConnectedProvider || justConnectedProvider === 'google') return '';
+  const providerLabel = justConnectedProvider;
   const accountLine = justConnectedAccount
     ? `<div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">Connected ${escapeHtml(justConnectedAccount)}</div>`
     : '';
@@ -560,129 +623,24 @@ export function renderJustConnectedCelebration({ justConnectedProvider, justConn
   `;
 }
 
-export function renderConnectGoogleHero({ googleConnected, googleSystemConfigured, userId }) {
-  if (googleConnected) return '';
-
-  const safeUserId = escapeHtml(userId);
-
-  if (!googleSystemConfigured) {
-    return `
-      <div class="card" style="border-left: 3px solid var(--primary); background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);">
-        <div class="card-header">
-          <span class="card-title">Let's get you connected</span>
-        </div>
-        <div class="card-subtitle" style="margin-bottom: 1rem;">
-          To start handling email and calendar for you, SkyTwin needs to be linked to your Google account.
-          The one-time setup takes about 5 minutes — we'll walk you through every click.
-        </div>
-        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-          <a class="btn btn-primary" href="#/setup">Set up Google access →</a>
-          <a class="btn btn-outline" href="#/decisions">See what it can do first</a>
-        </div>
-      </div>
-    `;
-  }
-
+export function renderConnectGoogleHero(_state) {
   return `
-    <div class="card" style="border-left: 3px solid var(--primary); background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);">
+    <div class="card">
       <div class="card-header">
-        <span class="card-title">One last step — connect your Google account</span>
+        <span class="card-title">Google accounts</span>
+        <span style="font-size: 0.75rem; color: var(--text-dim);">Unavailable in preview</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 1rem;">
-        Your twin is ready, but it can't see anything yet. Connect Google so it can start learning from your inbox and calendar.
+        Gmail and Google Calendar are not connected on this preview surface.
+        Explore the isolated sample without sharing account data or credentials.
       </div>
-      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-        <button class="btn btn-primary" data-action="connect-google" data-user-id="${safeUserId}">Connect Google</button>
-        <a class="btn btn-outline" href="#/settings">Manage connections</a>
-      </div>
+      <a class="btn btn-primary" href="#/sample">Open the sample</a>
     </div>
   `;
 }
 
-/**
- * Follow-up CTA for users who completed the bundled-client sign-in
- * (Calendar + identity granted) but haven't yet wired Gmail through
- * their own OAuth credentials.
- *
- * Why this exists as its own card and not as a tab in Settings:
- *   The dashboard is the first thing users see post-sign-in. SkyTwin's
- *   marquee features — content-aware inbox triage, draft replies,
- *   body summarisation — all require Gmail's restricted scopes, which
- *   the bundled client can't grant (see docs/google-verification.md).
- *   The user needs to be told this immediately, not 15 minutes later
- *   when they wonder why no emails are showing up. The wizard at
- *   /#/connect-gmail is the entire fix; this card is just the visible
- *   nudge that gets them there.
- *
- * Returns the empty string in three cases that all mean "no nudge
- * needed": tour mode (user is exploring sample data); Gmail is already
- * connected (one of the scopes includes gmail.); or Google itself
- * isn't connected yet (in which case the renderConnectGoogleHero card
- * above takes priority).
- */
-export function renderConnectGmailHero({ googleConnected, googleScopes }) {
-  if (!googleConnected) return '';
-  const scopes = Array.isArray(googleScopes) ? googleScopes : [];
-  const gmailConnected = scopes.some((s) => typeof s === 'string' && s.includes('gmail'));
-  if (gmailConnected) return '';
-
-  return `
-    <div class="card" style="border-left: 3px solid var(--primary); background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);">
-      <div class="card-header">
-        <span class="card-title">Calendar connected — now hook up Gmail</span>
-      </div>
-      <div class="card-subtitle" style="margin-bottom: 1rem;">
-        SkyTwin's inbox triage, draft replies, and content summarisation
-        all need Gmail body access. That's a Google-restricted OAuth scope
-        we can't grant from the bundled client yet — so we walk you
-        through pasting in your own Google Cloud OAuth credentials
-        instead. Five minutes, one time, totally free.
-      </div>
-      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-        <a class="btn btn-primary" href="#/connect-gmail">Connect Gmail (5 min) →</a>
-        <a class="btn btn-outline" href="https://jayzalowitz.github.io/skytwin/connect-gmail.html" target="_blank" rel="noopener">Why is this step needed?</a>
-      </div>
-    </div>
-  `;
-}
-
-export async function handleConnectGoogleFromDashboard(userId) {
-  try {
-    const { startGoogleSignIn } = await import('../google-signin.js');
-    const result = await startGoogleSignIn({
-      userId,
-      // Desktop opens OAuth in the system browser and polls — without an
-      // onComplete the dashboard would never react to the connection
-      // landing. Re-render so the "connect Google" hero is replaced.
-      onComplete: async (connected) => {
-        if (!connected) return;
-        const { renderDashboard, invalidateDashboardCache } = await import('./dashboard.js');
-        // Re-check AFTER the await, not before. The poll runs for up to
-        // 5 minutes, so by the time it fires the user may have navigated
-        // to another route OR switched to a different user (the dev
-        // user-switcher rewrites KEY_USER_ID). Either way, don't render
-        // this poll's stale (route, userId) pair over what's current.
-        const onDashboard = ((window.location.hash.slice(1) || '/').split('?')[0] || '/') === '/';
-        const stillCurrentUser = localStorage.getItem(KEY_USER_ID) === userId;
-        if (!onDashboard || !stillCurrentUser) return;
-        const container = document.getElementById('page-content');
-        if (!container) return;
-        // The dashboard caches the OAuth status in a 30s slowFetch cache.
-        // Bust it first, otherwise the re-render reads the stale
-        // "not connected" status and the hero never goes away. (The web
-        // flow dodges this — it's a full page reload with a fresh cache.)
-        invalidateDashboardCache();
-        await renderDashboard(container, userId);
-      },
-    });
-    if (result.status === 'error') {
-      console.error('Could not start Google connect flow:', result.error);
-      window.location.hash = '#/settings';
-    }
-  } catch (err) {
-    console.error('Could not start Google connect flow:', err);
-    window.location.hash = '#/settings';
-  }
+export function renderConnectGmailHero(_state) {
+  return '';
 }
 
 // ── Bootstrap (called once from app.js) ────────────────────────────────
@@ -705,8 +663,8 @@ export function initDashboardGlobals() {
   //
   // Hash-route gate: the SPA reuses one #page-content container across
   // routes, so without this check our data-action names would collide
-  // with data-action="connect-google" on settings.js and similar.
-  document.addEventListener('click', (ev) => {
+  // with actions on other pages.
+  document.addEventListener('click', async (ev) => {
     const hash = (window.location.hash || '').split('?')[0] || '#/';
     if (hash !== '#/' && hash !== '#') return;
     const target = ev.target instanceof Element ? ev.target : null;
@@ -747,10 +705,17 @@ export function initDashboardGlobals() {
       const uid = askInput?.getAttribute('data-user-id');
       if (uid && situation) handleTryRecipe(uid, situation);
     } else if (action === 'exit-tour') {
-      skyTwinExitTour();
-    } else if (action === 'connect-google') {
-      const uid = el.getAttribute('data-user-id');
-      if (uid) handleConnectGoogleFromDashboard(uid);
+      setTourExitPending(el, true);
+      let exitMessage = '';
+      try {
+        if (!(await skyTwinExitTour())) {
+          exitMessage = 'Could not discard the sample. Check your connection and try again.';
+        }
+      } finally {
+        // Production reloads on success; restore the control if navigation is
+        // suppressed or fails in an embedded/test environment.
+        setTourExitPending(el, false, exitMessage);
+      }
     } else if (action === 'dismiss-tier-ladder-intro') {
       const key = el.getAttribute('data-key');
       if (key) dismissTierLadderIntro(key);
@@ -775,7 +740,15 @@ export function initDashboardGlobals() {
 }
 
 export function renderUnmetCredentials(unmetCredsResult) {
-  const unmet = unmetCredsResult.status === 'fulfilled' ? (unmetCredsResult.value.unmet ?? []) : [];
+  const unmet = unmetCredsResult.status === 'fulfilled'
+    ? (unmetCredsResult.value.unmet ?? []).filter(item =>
+        !isGoogleAccountIntegration({
+          key: item.key,
+          adapter: item.adapter,
+          integration: item.integration,
+          skills: item.skills,
+        }))
+    : [];
   if (unmet.length === 0) return '';
 
   return `

@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { generate as anthropicGenerate } from '../providers/anthropic.js';
+import {
+  generate as anthropicGenerate,
+  streamGenerate as anthropicStreamGenerate,
+} from '../providers/anthropic.js';
 import { generate as openaiGenerate } from '../providers/openai.js';
 import { generate as googleGenerate } from '../providers/google.js';
 import { generate as ollamaGenerate } from '../providers/ollama.js';
+import { canonicalizeProviderBaseUrl } from '@skytwin/shared-types';
 
 // Issue #149 — verify each provider correctly translates `string |
 // ChatMessage[]` into its native chat-completion wire format. Tests
@@ -28,12 +32,86 @@ function captureFetch(responseBody: unknown): { spy: typeof fetch; captured: Cap
   return { spy, captured };
 }
 
+function captureVerifiedLocalOllamaFetch(
+  chatResponseBody: unknown,
+  version: unknown = '0.18.0',
+): { spy: typeof fetch; captured: CapturedRequest[] } {
+  const captured: CapturedRequest[] = [];
+  const spy = (async (input: string | URL | { url: string }, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    const body = init?.body ? JSON.parse(init.body as string) : {};
+    captured.push({ url, body });
+    return new Response(JSON.stringify(
+      url.endsWith('/api/version') ? { version } : chatResponseBody,
+    ), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }) as typeof fetch;
+  return { spy, captured };
+}
+
+function captureExactLocalOllamaFetch(
+  chatResponseBody: unknown,
+  modelSnapshots: readonly unknown[],
+  versionSnapshots: readonly unknown[] = ['0.18.1', '0.18.1'],
+  runningModels: unknown = modelSnapshots[0],
+): { spy: typeof fetch; captured: CapturedRequest[] } {
+  const captured: CapturedRequest[] = [];
+  let versionIndex = 0;
+  let modelIndex = 0;
+  const spy = (async (input: string | URL | { url: string }, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    const body = init?.body ? JSON.parse(init.body as string) : {};
+    captured.push({ url, body });
+    const responseBody = url.endsWith('/api/version')
+      ? { version: versionSnapshots[versionIndex++] }
+      : url.endsWith('/api/tags')
+        ? { models: modelSnapshots[modelIndex++] }
+        : url.endsWith('/api/ps')
+          ? { models: runningModels }
+          : chatResponseBody;
+    return new Response(JSON.stringify(responseBody), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+  return { spy, captured };
+}
+
 describe('Anthropic provider — multi-turn translation', () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
   });
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it('aborts and cancels a custom stream when its consumer stops early', async () => {
+    const encoded = new TextEncoder().encode(
+      'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"first"}}\n\n',
+    );
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoded);
+      },
+      cancel,
+    });
+    const request: { signal?: AbortSignal } = {};
+    vi.stubGlobal('fetch', vi.fn(async (_input, init?: RequestInit) => {
+      request.signal = init?.signal as AbortSignal;
+      return new Response(body, { status: 200 });
+    }));
+
+    const stream = anthropicStreamGenerate(
+      'key',
+      'claude-test',
+      'hello',
+      { baseUrl: 'https://93.184.216.34' },
+    )[Symbol.asyncIterator]();
+    await expect(stream.next()).resolves.toEqual({ done: false, value: 'first' });
+    await stream.return?.(undefined);
+
+    expect(request.signal?.aborted).toBe(true);
+    expect(cancel).toHaveBeenCalledOnce();
   });
 
   it('wraps a string prompt as a single user-role message', async () => {
@@ -102,6 +180,33 @@ describe('OpenAI provider — multi-turn translation', () => {
       { role: 'system', content: 'Be brief.' },
       { role: 'user', content: 'hello' },
     ]);
+  });
+
+  it('appends one API path separator to a canonical origin-only base URL', async () => {
+    const { spy, captured } = captureFetch({ choices: [{ message: { content: 'ok' } }] });
+    vi.stubGlobal('fetch', spy);
+    await openaiGenerate('key', 'gpt-test', 'hello', {
+      baseUrl: canonicalizeProviderBaseUrl('https://93.184.216.34/'),
+    });
+    expect(captured[0]!.url).toBe('https://93.184.216.34/v1/chat/completions');
+  });
+
+  it('appends one API path separator after a canonical custom base path', async () => {
+    const { spy, captured } = captureFetch({ choices: [{ message: { content: 'ok' } }] });
+    vi.stubGlobal('fetch', spy);
+    await openaiGenerate('key', 'gpt-test', 'hello', {
+      baseUrl: canonicalizeProviderBaseUrl('https://93.184.216.34/gateway///'),
+    });
+    expect(captured[0]!.url).toBe('https://93.184.216.34/gateway/v1/chat/completions');
+  });
+
+  it('canonicalizes a raw custom base URL at the provider boundary', async () => {
+    const { spy, captured } = captureFetch({ choices: [{ message: { content: 'ok' } }] });
+    vi.stubGlobal('fetch', spy);
+    await openaiGenerate('key', 'gpt-test', 'hello', {
+      baseUrl: 'https://93.184.216.34/gateway///',
+    });
+    expect(captured[0]!.url).toBe('https://93.184.216.34/gateway/v1/chat/completions');
   });
 
   it('passes a ChatMessage[] through unchanged', async () => {
@@ -218,12 +323,265 @@ describe('Ollama provider — switched to /api/chat', () => {
   });
 
   it('hits /api/chat (not /api/generate) and sends a messages array', async () => {
+    const { spy, captured } = captureVerifiedLocalOllamaFetch({ message: { content: 'ok' } });
+    vi.stubGlobal('fetch', spy);
+    await ollamaGenerate('', 'llama-test', 'hello', { reasoningMode: 'on_device' });
+    expect(captured[0]!.url).toContain('/api/version');
+    expect(captured[1]!.url).toContain('/api/chat');
+    expect(captured[1]!.url).not.toContain('/api/generate');
+    expect(captured[1]!.body.model).toBe('llama-test:local');
+    expect(captured[1]!.body.messages).toEqual([{ role: 'user', content: 'hello' }]);
+  });
+
+  it('uses Ollama-native schema output and reasoning controls for workflows', async () => {
+    const { spy, captured } = captureVerifiedLocalOllamaFetch({ message: { content: '{"ok":true}' } });
+    vi.stubGlobal('fetch', spy);
+    const schema = { type: 'object', required: ['ok'], properties: { ok: { const: true } } };
+
+    await ollamaGenerate('', 'llama-test', 'return JSON', {
+      reasoningMode: 'on_device',
+      jsonSchema: JSON.stringify(schema),
+      disableReasoning: true,
+    });
+
+    expect(captured[1]!.body.format).toEqual(schema);
+    expect(captured[1]!.body.think).toBe(false);
+  });
+
+  it('rejects malformed workflow schemas before sending the prompt', async () => {
+    const { spy, captured } = captureVerifiedLocalOllamaFetch({ message: { content: 'must not run' } });
+    vi.stubGlobal('fetch', spy);
+
+    await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
+      reasoningMode: 'on_device',
+      jsonSchema: 'not-json',
+    })).rejects.toThrow('valid JSON Schema object');
+    expect(captured.map(({ url }) => new URL(url).pathname)).toEqual(['/api/version']);
+  });
+
+  it('canonicalizes a raw loopback base URL before appending API paths', async () => {
+    const { spy, captured } = captureVerifiedLocalOllamaFetch({ message: { content: 'ok' } });
+    vi.stubGlobal('fetch', spy);
+    await ollamaGenerate('', 'llama-test', 'hello', {
+      baseUrl: 'http://127.1:11434///',
+      reasoningMode: 'on_device',
+    });
+    expect(captured[0]!.url).toBe('http://127.0.0.1:11434/api/version');
+    expect(captured[1]!.url).toBe('http://127.0.0.1:11434/api/chat');
+  });
+
+  it('rejects redirects from the default loopback endpoint', async () => {
+    const spy = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ version: '0.18.0' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response('', {
+        status: 307, headers: { Location: 'https://external.example/collect' },
+      }));
+    vi.stubGlobal('fetch', spy);
+
+    await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
+      reasoningMode: 'on_device',
+    })).rejects.toThrow(
+      'Redirects are not allowed',
+    );
+    expect(spy).toHaveBeenLastCalledWith(
+      'http://127.0.0.1:11434/api/chat',
+      expect.objectContaining({ redirect: 'manual', dispatcher: expect.any(Object) }),
+    );
+  });
+
+  it('source-qualifies arbitrary aliases for on-device execution', async () => {
+    const { spy, captured } = captureVerifiedLocalOllamaFetch({ message: { content: 'ok' } });
+    vi.stubGlobal('fetch', spy);
+    await ollamaGenerate('', 'private-alias', 'private prompt', {
+      reasoningMode: 'on_device',
+    });
+    expect(captured[1]!.body.model).toBe('private-alias:local');
+  });
+
+  it('does not add a second local source selector', async () => {
+    const { spy, captured } = captureVerifiedLocalOllamaFetch({ message: { content: 'ok' } });
+    vi.stubGlobal('fetch', spy);
+    await ollamaGenerate('', 'llama-test:LOCAL', 'private prompt', {
+      reasoningMode: 'on_device',
+    });
+    expect(captured[1]!.body.model).toBe('llama-test:local');
+  });
+
+  it('rejects explicit cloud selectors before making an on-device request', async () => {
+    const spy = vi.fn();
+    vi.stubGlobal('fetch', spy);
+    await expect(ollamaGenerate('', 'gpt-oss:120b-cloud', 'private prompt', {
+      reasoningMode: 'on_device',
+    })).rejects.toThrow('not eligible for on-device reasoning');
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('preserves the configured model for bring-your-own-provider requests', async () => {
     const { spy, captured } = captureFetch({ message: { content: 'ok' } });
     vi.stubGlobal('fetch', spy);
-    await ollamaGenerate('', 'llama-test', 'hello');
-    expect(captured[0]!.url).toContain('/api/chat');
-    expect(captured[0]!.url).not.toContain('/api/generate');
-    expect(captured[0]!.body.messages).toEqual([{ role: 'user', content: 'hello' }]);
+    await ollamaGenerate('', 'qwen3:cloud', 'intentional remote prompt', {
+      reasoningMode: 'bring_your_own_provider',
+    });
+    expect(captured[0]!.body.model).toBe('qwen3:cloud');
+  });
+
+  it('refuses an old or malformed Ollama version before sending a prompt', async () => {
+    for (const version of ['0.17.6', 'unknown', null]) {
+      const { spy, captured } = captureVerifiedLocalOllamaFetch(
+        { message: { content: 'must not run' } },
+        version,
+      );
+      vi.stubGlobal('fetch', spy);
+      await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
+        reasoningMode: 'on_device',
+      })).rejects.toThrow('requires version 0.18.0 or newer');
+      expect(captured.map(({ url }) => url)).toEqual([
+        'http://127.0.0.1:11434/api/version',
+      ]);
+    }
+  });
+
+  it('binds an untagged alias to one stable exact local runtime and model digest', async () => {
+    const digest = 'a'.repeat(64);
+    const models = [{ name: 'llama-test:latest', model: 'llama-test:latest', digest }];
+    const { spy, captured } = captureExactLocalOllamaFetch(
+      {
+        model: 'llama-test:local',
+        digest,
+        provider_version: '0.18.1',
+        message: { content: 'exact reply' },
+      },
+      [models, models],
+    );
+    vi.stubGlobal('fetch', spy);
+
+    await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
+      reasoningMode: 'on_device',
+      requireExactRuntimeIdentity: true,
+    })).resolves.toEqual({
+      content: 'exact reply',
+      resolvedModel: 'llama-test',
+      runtimeIdentity: {
+        provider: 'ollama',
+        serverVersion: '0.18.1',
+        modelDigestSha256: digest,
+      },
+    });
+    expect(captured.map(({ url }) => new URL(url).pathname)).toEqual([
+      '/api/version',
+      '/api/tags',
+      '/api/chat',
+      '/api/ps',
+      '/api/version',
+      '/api/tags',
+    ]);
+  });
+
+  it('fails closed when a local model alias resolves ambiguously', async () => {
+    const models = [
+      { name: 'llama-test:latest', model: 'llama-test:latest', digest: 'a'.repeat(64) },
+      { name: 'private-alias:latest', model: 'llama-test:latest', digest: 'b'.repeat(64) },
+    ];
+    const { spy, captured } = captureExactLocalOllamaFetch(
+      {
+        model: 'llama-test:local',
+        digest: 'a'.repeat(64),
+        provider_version: '0.18.1',
+        message: { content: 'must not run' },
+      },
+      [models],
+    );
+    vi.stubGlobal('fetch', spy);
+
+    await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
+      reasoningMode: 'on_device',
+      requireExactRuntimeIdentity: true,
+    })).rejects.toThrow('resolves ambiguously');
+    expect(captured.map(({ url }) => new URL(url).pathname)).toEqual([
+      '/api/version',
+      '/api/tags',
+    ]);
+  });
+
+  it.each([
+    ['malformed digest', [{ name: 'llama-test:latest', model: 'llama-test:latest', digest: 'short' }], ['0.18.1', '0.18.1']],
+    ['changed digest', [{ name: 'llama-test:latest', model: 'llama-test:latest', digest: 'a'.repeat(64) }], ['0.18.1', '0.18.1']],
+    ['changed runtime', [{ name: 'llama-test:latest', model: 'llama-test:latest', digest: 'a'.repeat(64) }], ['0.18.1', '0.18.2']],
+  ] as const)('fails closed on an unstable or %s identity', async (label, firstModels, versions) => {
+    const secondModels = label === 'changed digest'
+      ? [{ name: 'llama-test:latest', model: 'llama-test:latest', digest: 'b'.repeat(64) }]
+      : firstModels;
+    const { spy } = captureExactLocalOllamaFetch(
+      {
+        model: 'llama-test:local',
+        digest: 'a'.repeat(64),
+        provider_version: versions[0],
+        message: { content: 'must not return' },
+      },
+      [firstModels, secondModels],
+      versions,
+    );
+    vi.stubGlobal('fetch', spy);
+
+    await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
+      reasoningMode: 'on_device',
+      requireExactRuntimeIdentity: true,
+    })).rejects.toThrow(/identity|changed/u);
+  });
+
+  it('rejects a served manifest digest that differs from the stable alias snapshots', async () => {
+    const tagged = [
+      { name: 'llama-test:latest', model: 'llama-test:latest', digest: 'a'.repeat(64) },
+    ];
+    const running = [
+      { name: 'llama-test:latest', model: 'llama-test:latest', digest: 'b'.repeat(64) },
+    ];
+    const { spy } = captureExactLocalOllamaFetch(
+      {
+        model: 'llama-test:local',
+        digest: 'a'.repeat(64),
+        provider_version: '0.18.1',
+        message: { content: 'must not return' },
+      },
+      [tagged, tagged],
+      ['0.18.1', '0.18.1'],
+      running,
+    );
+    vi.stubGlobal('fetch', spy);
+
+    await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
+      reasoningMode: 'on_device',
+      requireExactRuntimeIdentity: true,
+    })).rejects.toThrow('changed during inference');
+  });
+
+  it('fails closed when Ollama does not attest the served digest in the chat response', async () => {
+    const digest = 'a'.repeat(64);
+    const models = [{ name: 'llama-test:latest', model: 'llama-test:latest', digest }];
+    const { spy } = captureExactLocalOllamaFetch(
+      { model: 'llama-test:local', message: { content: 'must not return' } },
+      [models, models],
+    );
+    vi.stubGlobal('fetch', spy);
+
+    await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
+      reasoningMode: 'on_device',
+      requireExactRuntimeIdentity: true,
+    })).rejects.toThrow('omitted its exact served model digest or runtime version');
+  });
+
+  it('rejects unexpected remote-execution metadata on an on-device response', async () => {
+    const { spy } = captureVerifiedLocalOllamaFetch({
+      message: { content: 'must not return' },
+      remote_host: 'https://ollama.com',
+      remote_model: 'remote-model',
+    });
+    vi.stubGlobal('fetch', spy);
+    await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
+      reasoningMode: 'on_device',
+    })).rejects.toThrow('reported remote inference');
   });
 
   it('passes a multi-turn ChatMessage[] through unchanged', async () => {

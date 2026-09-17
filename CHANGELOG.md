@@ -1,26 +1,960 @@
 All notable changes to SkyTwin will be documented in this file.
 
-## [Unreleased] — Proposal-only Inbox boundary
-
-### Fixed
-
-- Gmail Inbox proposals using the reserved mutation schema now fail closed in the generic approval responder. Until the dedicated consent-to-admission lifecycle is enabled, those rows cannot be resolved, produce feedback, read credentials, enter the execution router, or contact a provider.
-
-## [Unreleased] — Canonical Gmail archive proposals
+## [0.6.105.0] - 2026-09-16
 
 ### Added
 
-- Added a default-off, proposal-only builder for one canonical Gmail Inbox archive candidate. The builder derives its opaque target solely from a trusted decision's repository-issued message reference, rejects alternate authority fields, emits the exact downstream persistence shape and a complete risk assessment, and leaves capability provenance unset. `SKYTWIN_GMAIL_ARCHIVE_ENABLED=true` enables proposal construction only; no route, persistence, dispatch, worker, provider call, or runtime registration is included.
+- **You can evaluate SkyTwin from a public, source-grounded documentation site
+  before connecting an account.** New start, walkthrough, workflow, inference,
+  data, integration, safety, operations, contributor, agent, FAQ, glossary, and
+  reference pages explain the fictional sample and link back to canonical
+  source contracts. Fresh audited captures show onboarding, briefing, decision
+  history, settings, and the fail-closed Watches cold start.
+- **Pull requests now produce the same viewable Pages payload the project would
+  publish.** The documentation preview builds Jekyll output from the synthetic
+  merge commit, rejects source or artifact symlinks, excludes internal evidence
+  files, checks public semantics and local links, and uploads only the bounded
+  static site plus its manifest.
 
 ### Changed
 
-- A single-message `archive_email` action is now classified as destructive and requires one explicit confirmation, including when reversible and triggered by untrusted inbound content. It cannot pass the injection guard for auto-execution.
+- **The public guides now reflect current adaptive-workflow, inference, memory,
+  and CockroachDB boundaries.** They distinguish ordinary local inference from
+  workflow-authoring qualification, interactive fail-closed TrustedRouter from
+  unavailable NEAR AI, SkyTwin's CRDB-native gbrain-compatible backend from the
+  opt-in upstream CLI adapter, and portable workflow state from installation-
+  local Watch run evidence.
 
-## [Unreleased] — Account-free sample browsing
+### Fixed (post-review)
+
+- **The disposable sample no longer makes credential-inventory or OAuth-status
+  requests it is not authorized to read.** Its dashboard substitutes explicit
+  empty credential states while normal user profiles retain all three requests;
+  a regression test covers both sides of the boundary.
+- **The walkthrough no longer implies that sample credentials can open Settings
+  or Watches.** It directs evaluators to leave the sample and select the seeded
+  development profile before inspecting full-product controls.
+- **The preview workflow and public claims now pass their executable gates.** A
+  malformed shell terminator was corrected, backup v6 no longer claims to carry
+  exact Watch run evidence, and README describes the admitted interactive
+  TrustedRouter path instead of declaring every attested route unavailable.
+- **Twin MCP guidance and results now expose their real boundary.** A dispatched
+  registered handler attempts a provenance write, but schema-invalid, unknown,
+  or scope-hidden calls never reach that hook. The proposal tool reports its
+  record as non-executing instead of claiming it entered the approval queue,
+  and memory results mask exact PII-named fields plus embedded email addresses
+  without promising a general free-text secret scanner.
+
+## [0.6.104.0] - 2026-09-16
 
 ### Added
 
-- **Packaged desktop builds can initialize and open a synthetic sample profile without enabling the development authentication bypass.** A short-lived credential is fixed to the reserved `is_demo` identity and an explicit read allowlist; it cannot enumerate users, read credentials or settings, invoke inference-bearing Lifebook layout routes, mutate state, or execute actions. Clean packaged installs provision only against the bundled loopback database and ingest fictional signals through the authenticated event boundary with stable deduplication IDs. This is the safe browsing foundation for the public-beta sample loop; approve, reject, correct, and learn interactions remain follow-up work under [#630](https://github.com/jayzalowitz/skytwin/issues/630).
+- **You can teach SkyTwin a recurring read-only digest, replay it against real
+  evidence, and activate the exact version you reviewed.** The Watches page now
+  guides a plain-language request through one bounded clarification, immutable
+  proposals, cited replay, explicit activation, minimal feedback revisions,
+  semantic comparison, and atomic rollback. See
+  [Versioned adaptive workflows](./docs/adaptive-workflows.md) for the user flow,
+  API, runtime behavior, and backup boundary.
+- **Adaptive workflows remain local-first without pretending an unqualified
+  model is ready.** Managed artifacts must pass the checked-in safety,
+  semantic, revision-preservation, latency, artifact, and runtime-build gate
+  before they can author a workflow. The current pinned model remains usable
+  for ordinary local inference but fails closed for this feature. Ordinary
+  Ollama chat remains supported, while adaptive Ollama calls are staged and
+  fail closed until the runtime supplies response-bound digest/version
+  attestation.
+
+### Fixed (post-/review)
+
+- **Every adaptive run now stays bound to the version and evidence it actually
+  evaluated.** CockroachDB slots retain immutable workflow/compiler snapshots,
+  a commitment over the complete deterministic evidence set, and a bounded
+  display sample. Scheduled local summaries require the pinned embedded or
+  Ollama artifact/runtime identity and fall back to cited deterministic output
+  if that identity changes or inference is unavailable.
+- **Retries and upgrades no longer create ambiguous workflow history.** Draft
+  and revision mutations use durable owner-scoped idempotency keys, activation
+  uses a serializable compare-and-swap, legacy Watches are reconciled without
+  inventing historical attribution, and backup schema v6 validates complete
+  workflow lineage before restore.
+- **First-run choices now work from deep links such as Watches.** The global
+  onboarding modal scopes its controls to the visible dialog instead of the
+  root route, so every choice responds from the page a user opened. Dismissing
+  preserves that page; starting the sample or setup navigates to its intended
+  destination.
+
+## [0.6.103.1] - 2026-09-16
+
+### Fixed
+
+- **Desktop live integration checks now follow the hardened device-pairing
+  contract.** They verify that minting a pairing token requires an existing
+  human session and that the public consume route validates its one-time token,
+  instead of expecting the retired unauthenticated long-lived session flow.
+
+## [0.6.103.0] - 2026-09-16
+
+### Changed
+
+- **You can configure verified private-cloud reasoning from Settings or the
+  first-run screen.** TrustedRouter now verifies the live gateway and signed
+  response receipt against workload identity pinned in this SkyTwin build
+  before showing an answer. NEAR AI appears as verification-pending but remains
+  unavailable because its public evidence does not yet pin the dynamically
+  selected inference workload. All failure paths stop without falling back to
+  a conventional provider.
+
+### Fixed (post-review)
+
+- **TrustedRouter now accepts the only SDK status produced by its pinned-policy
+  verification path.** Compact receipts still require their signed attestation
+  hash and receipt-key workload binding to verify independently before output
+  is released.
+- **CockroachDB integration suites no longer compete for runner resources in
+  the package-wide test job.** Unit files still run in parallel, then the four
+  fresh-node integration files run serially in their own Vitest project.
+
+## [Unreleased] — Fail-closed action entry paths
+
+### Fixed (post-review)
+
+- **CockroachDB account-binding migrations now fail closed on drift and
+  interruption.** Migrations 088 and 094 verify the exact catalog shape of
+  every security-critical identity, owner, cursor, and Gmail evidence
+  constraint after creation. The migration runner restores
+  `connector_cursors.schema_locked` if an authorized run fails inside the
+  narrow schema-change window, and migration 088 removes CockroachDB's
+  preserved legacy global cursor key so separate Gmail accounts can each own
+  a `history_id` cursor.
+
+- **Clean installs seed only account-bound synthetic OAuth grants.** Both demo
+  seed paths now create an explicit unverified synthetic connected account and
+  bind the token row through `connector_account_id`; clean install and rerun
+  seeding no longer violate the migration 088 non-null ownership boundary.
+
+- **An in-flight connector refresh can no longer reintroduce plaintext after
+  vault initialization.** Account-qualified token refresh now repeats the
+  vault-existence fence inside its compare-and-swap update, matching the
+  single-account path and preventing a late refresh write across the vault
+  activation boundary.
+
+- **Generic approval preflight exits now persist an explanation before they
+  return.** Current-policy denial, a current pause, and a newly required dual
+  confirmation are recorded atomically against the still-pending,
+  owner-scoped approval and exact stored/current action, risk, policy, and
+  adapter snapshots. Approval state remains unconsumed and no adapter request
+  may start; the reserved v2 successor stays non-claiming until its separate
+  append-only activation review.
+
+- **Release materials now state the blocked beta status at their public entry
+  points.** README, the launch-readiness report, the demo walkthrough, and the
+  GitHub Pages index link the machine-checked claim ledger instead of implying
+  that a qualifying `v0.7.0-beta` release exists. Historical captures remain
+  present for audit provenance but are explicitly quarantined as prohibited
+  stale assets; no replacement screenshots or claim-state changes are implied.
+
+- **Broad hosted release-claim tests now retain the history required for
+  adversarial evidence ancestry checks.** The release-claim job checks out full
+  history so GitHub's synthetic pull-request merge commit can prove its trusted
+  predecessor ancestry, and the canonical workflow checker rejects a return to
+  a shallow checkout. The verifier remains fail closed.
+
+- **Immutable source-candidate installation now stays inside the extracted
+  archive.** The documented command opts into a fail-closed archive mode that
+  derives its install directory from `install.sh`, ignores inherited install
+  destinations, refuses Git metadata, and cannot enter clone, fetch, or merge
+  handling or require a Git binary. An executable regression runs the
+  documented path with a decoy home/install directory and a deliberately
+  Git-free `PATH`, proving the extracted source reaches dependency setup
+  without consulting moving `main`.
+
+### Changed
+
+- **Gmail archive now has a dedicated, owner-bound proposal and consent
+  boundary without claiming mailbox execution.** The default-off source
+  experiment persists an opaque account/message reference, canonical
+  `MODERATE`-risk proposal, explanation, approval response, joined receipt,
+  and one-shot pre-effect reservation. The response is truthful
+  (`execution: null`) and cannot enter generic IronClaw, OpenClaw, Direct, or
+  PWA offline-replay paths. Mutation caller composition, recovery-worker
+  scheduling, and twin-feedback projection remain intentionally unwired.
+
+- **Connected-account and Watch evidence is now durable and owner-bound in
+  CockroachDB.** Verified provider identities anchor credentials, cursors, and
+  signals; Gmail signals expose only opaque application references outside the
+  repository boundary. Every verified Google account expands to Gmail and
+  Calendar, every verified Microsoft account expands to Outlook mail and
+  Calendar, and account identity participates in deduplication. The Watch
+  scheduler reserves an immutable exact-window slot before reading signals,
+  uses database-clock leases and fencing for retry safety, projects only
+  positive completed runs, and prunes internal zero-match audit slots after 30
+  days.
+
+- **The encryption-boundary inventory now covers migrations 086–094 and their
+  complete SQL callsite surface.** New receipt, pre-effect, Gmail evidence,
+  recovery, and feedback-projection tables are classified conservatively;
+  provider identifiers, diagnostic/provider evidence, and recoverable lease
+  bearers are not mislabeled as harmless metadata. The validator now models
+  the reviewed CockroachDB DDL forms used by those migrations while retaining
+  fail-closed corpus and semantic hashes.
+
+- **Adversarial route harnesses now have an append-only v2 migration path.**
+  The immutable v1 assertion bytes remain intact. A separate reserved v2
+  fixture binds two proposed v1 harness retirements to their assertion hashes
+  and last-valid commit, reserves persistence-aware successors, and
+  requires any later activation to append its final assertion hash and commit.
+  The generator and independent verifier reject missing, rewritten, forged,
+  or mismatched supersession provenance. Both successors remain skipped and
+  uncounted, so explanation coverage stays 6/10, the claim stays limited, and
+  release readiness stays blocked.
+
+- **Internal source evaluation now has an immutable, non-public preparation
+  path without weakening the beta release gate.** The exact-SHA-only packager
+  requires a fully clean checkout, writes only to a new directory outside the
+  repository, and deterministically emits a source archive, checksum inventory,
+  tracked-file manifest, and fixed limitation notes. It accepts no tag, label,
+  publication, or custom marketing input. Documentation distinguishes this
+  internal source snapshot from `v*` releases and explains the archive-based
+  immutable install path. The one-command installer now directs evaluators to
+  the account-free development demo instead of stale Google OAuth setup copy,
+  while retaining the explicit unsupported source-development boundary. No
+  beta claim, supported platform, or stop-ship state changes.
+
+- **OpenClaw and IronClaw terminal ambiguity now has one durable, normalized
+  explanation boundary.** The shared execution router classifies only finite
+  post-request-start outcomes; CockroachDB atomically links the resulting
+  `ExplanationRecord` to the exact dispatch lease without retaining adapter
+  errors, outputs, credentials, or capabilities. Duplicate and concurrent
+  observations are idempotent, expired or legacy ambiguous leases repair
+  through the same bounded transaction, and later reconciliation may record
+  known terminal truth without erasing the historical ambiguity. Automatic
+  replay and fallback remain disabled. The router regressions remain
+  standalone, non-claiming coverage: they are not appended to the frozen v1
+  catalog and do not activate either reserved v2 successor, so release
+  explanation coverage remains 6/10 with four explicit gaps.
+
+- **Tag pushes now produce a bounded release-safety sidecar without advancing
+  the safety claim.** A canonical inventory binds the ten runtime entry paths
+  already declared by the v1 adversarial catalog to their product sources and
+  exact regression assertions. The deterministic report records the release
+  commit and tree, input/source/test hashes, and explicit coverage, failure,
+  and limitation counts; an independent verifier recomputes those facts before
+  the sidecar joins the tag-only `release-claims-ci` artifact. Current source
+  evidence reports 10/10 inventoried paths with passing safety scenarios but
+  6/10 explanation-persistence boundaries, leaving four disclosed gaps. Three
+  append-only mapped regressions now prove existing durable behavior: replayed
+  events return only their captured explanation without re-running inference,
+  execution-router backstop refusals link the generated explanation into
+  receipt finalization before router preparation, then reach the separate
+  atomic preparation-disposition record before the API responds, and
+  source-less outbound proposals fail safe to untrusted provenance, one-click
+  approval, and a receipt-bound explanation.
+  The tag step revalidates and invokes the captured Node and pnpm entry points
+  through a closed environment and no-profile shell, has a fixed 15-minute
+  ceiling, and gives each mapped test process a 60-second hard-kill timeout.
+  The final publication consumer now binds the exact four-file payload to its
+  GitHub artifact ID/digest, current run/attempt, successful producer job, and
+  upload chronology, then reruns both independent safety verifiers from the
+  exact tracked checkout. It publishes the three safety sidecars and carries
+  the digest of the exact manifest bytes checked before draft creation across
+  the publication gap. No tagged report exists, the bounded inventory still
+  has four explanation gaps, and `safety.explanation-coverage` and release
+  readiness therefore remain blocked.
+
+- **Packaged default network behavior now has a fail-closed macOS verifier in
+  source.** The verifier binds the current tag-push attempt and exact release
+  ZIP, self-tests a deny-by-default sandbox by requiring parent and spawned
+  child loopback success plus external `EPERM`, and launches the derived app in
+  that inherited loopback-only profile with a closed environment. The sandbox
+  continuously enforces the boundary; repeated `lsof` inventories corroborate
+  persistent and listening owned process-tree sockets while the verifier proves
+  nonce-bound API, dashboard, and one account-free sample read; wildcard, IPv6,
+  external, UDP, multicast, malformed, stale, reused, or foreign managed socket
+  evidence fails closed. Reports contain only bounded counts, canonical
+  loopback ports, boolean results, and release identities, and require graceful
+  shutdown plus two clean post-shutdown samples. The public disclosure for
+  configured network features remains unchanged. No tagged run has produced this
+  machine evidence, so the network claim remains limited and the release remains blocked.
+
+- **Packaged desktop storage now has a fail-closed macOS evidence verifier in
+  source.** The verifier derives the exact application from the release ZIP,
+  launches it twice with an isolated user-data directory and credential-free
+  child environment, and requires its bundled CockroachDB process to be an
+  owned descendant with literal IPv4-loopback SQL and HTTP listeners. It
+  verifies one contained non-empty store, writes and reads an opaque marker
+  across a graceful restart, rechecks stable artifact and executable identity,
+  and refuses residual listeners or forced cleanup. Port preflight and shutdown
+  now require a refused loopback connection, a successful exclusive bind, and
+  an empty native listener inventory; shutdown requires two consecutive clean
+  samples. Native listener, process, and database probes have fail-closed
+  timeouts so verifier cleanup cannot be stranded behind a hung subprocess.
+  The publication consumer requires the complete structured
+  observation. No tagged run has produced this machine evidence, so the
+  storage claim remains limited and the release remains blocked.
+
+- **Real API sessions can establish fail-closed source-key owner authority
+  without activating encryption.** Both API and Electron revalidate the exact
+  immutable session ID, owner, token hash, revocation state, and expiry before
+  Electron returns an opaque session-bound grant, and Electron repeats the
+  database check for every cryptographic request. Pending responses remain
+  bound to that exact live grant. Session-token hashes are globally unique;
+  ambiguous legacy rows stop migration, and authentication plus lease refresh
+  is one atomic database statement. Concurrent identical grants coalesce;
+  only an independently revalidated, strictly later expiry for the same
+  session, owner, and token can rotate a grant. Substitutions and stale leases
+  cannot replace it. A transient database outage denies the
+  current cryptographic request without turning it into a durable revocation,
+  while definitive inactivity removes the grant. Revoke wins delayed-grant races through
+  bounded tombstones; expiry, lock admission, malformed authority
+  traffic, disconnect, and child restart all fail closed. Demo,
+  development-bypass, service, unauthenticated, and worker paths cannot mint
+  authority. Pairing-token creation now requires a pre-existing real session so
+  an arbitrary user ID cannot bootstrap this authority. No repository consumes
+  the broker yet, no source data is migrated, and no encryption claim changes.
+  Database-only owner cascades and `revokeAllForUser` still lack a linearizable
+  broker-wide revocation barrier; that must be closed before a source consumer
+  is activated.
+
+- **The macOS arm64 on-device inference evidence lane now has a fail-closed
+  verifier in source.** It derives the application from the exact release ZIP,
+  loads the probe from the artifact-contained API bundle, observes an immutable
+  upstream llama.cpp release/tag, downloads exact digest-pinned runtime and
+  GGUF bytes, selects its completion binary, and performs real embedded
+  inference inside a macOS sandbox that denies external and loopback networking.
+  The artifact-controlled application bundle is now preflighted before
+  extraction for bounded member and expanded sizes, compression ratio, safe
+  collision-free paths, and regular-file/directory-only member types. Canonical
+  probe and runtime paths are inspected lexically before canonicalization, and
+  the sandbox self-test requires a spawned child to be denied both a
+  verifier-owned loopback listener and an external address, matching the
+  inheritance boundary used for the production Node-to-llama.cpp launch.
+  The production backend now uses the runtime's bounded `--single-turn` mode;
+  this replaces a legacy argument rejected by current llama.cpp. The probe
+  receives a closed environment without provider credentials and records
+  execution facts plus response size and hashes, never prompt or response
+  content. Adversarial tests cover argument, artifact-binding, archive,
+  redirect, size, digest, metadata, result-schema, timeout, descendant-process,
+  and sandbox-denial mutations. No tagged report exists yet; the runtime and
+  model are not bundled, one runner does not establish a minimum hardware
+  profile or other platforms, and the limited on-device availability claim and
+  release block remain unchanged.
+
+- **Source-key IPC clients now fail closed without activating encryption.** The
+  API and worker compose fixed-role clients that strictly validate the versioned
+  broker protocol, bind responses to the exact request context and generation,
+  cap and time out pending work, make disconnect terminal, and hold owner lock
+  acknowledgements until admitted callbacks drain. Electron contains child
+  startup when broker attachment cannot be proven and validates all child wire
+  messages through the shared protocol. Child bindings begin with empty owner
+  authority and the worker stays empty; no repository consumes the clients and
+  no source field or public encryption claim changes in this slice.
+
+- **Release artifact adversarial tests are now a mandatory packaging gate.**
+  The canonical build workflow runs the stable-file, checksum, SBOM,
+  attestation-materialization, and tamper-rejection suite before any platform
+  package job can start. The symlink-bundle regression now asserts the exact
+  earlier fail-closed rejection emitted by the shared stable-file reader, and
+  the gate invokes the three reviewed test files directly through the
+  hash-verified captured Node runtime in a clean environment. The
+  release-workflow checker requires each test file to exist, and each file runs
+  separately with empty suites treated as failures. Command, environment,
+  ordering, package-job dependency, success-condition, or failure-tolerance
+  changes cannot weaken the gate silently.
+
+- **Recovery wrappers now use the existing CockroachDB custody registry.** The
+  desktop loads that repository only through its narrow package subpath in the
+  already-contained API deployment, avoiding a duplicate broad dependency
+  closure. It has no fallback to the legacy Electron recovery-wrapper file or
+  plaintext when the database or module is unavailable. Device wrappers remain
+  local; API authority remains session-scoped while worker grants remain empty,
+  no source repository consumes the broker, and no encryption claim advances.
+
+- **Release-facing runtime, mobile, CI, and test dependencies are current on
+  their compatible release lines.** Expo SDK 57 and React Navigation 7 remove
+  the vulnerable Metro `image-size` and CommonJS `query-string` paths, so the
+  fail-closed dependency-audit policy now permits zero exceptions and both the
+  production and full graphs audit clean. Vitest 5 runs only canonical source
+  tests instead of rediscovering compiled `dist` copies. MCP SDK, PostgreSQL,
+  ESLint, Turbo, Prettier, YAML, TSX, and related safe updates are included;
+  GitHub's Node, Java, and Gradle setup actions move to their reviewed,
+  immutable current release SHAs. pnpm/action-setup remains pinned to v5
+  because v6's native self-update shim is incompatible with the release-claim
+  runtime's fail-closed JavaScript launcher binding. The abandoned Turbo cache
+  sidecar action is removed rather than replaced with a maintained fork whose
+  bundled dependency graph still contains current high-severity advisories;
+  caching remains an optimization, never a correctness dependency.
+  Installed-graph contract tests continue to protect deliberate parser and
+  glob-version boundaries.
+
+- **The external gbrain adapter understands upstream gbrain v0.50.5.0 search
+  results.** CLI search now normalizes the current `slug`/`chunk_text` schema,
+  retains useful source and chunk metadata, rejects non-finite scores, and
+  remains compatible with the legacy `id`/`content` response. A contract probe
+  against the upstream v0.50.5.0 release confirms the exact CLI argv and JSON
+  boundary. The embedded gbrain-compatible and internal MemPalace backends
+  remain workspace implementations, not independently versioned third-party
+  packages; hybrid mode does not silently adopt a detected external brain.
+  The CockroachDB integration harness now uses the container's own SQL client,
+  applies the complete current brain migration chain, and passes all 165
+  adapter tests against a disposable live node without requiring host `psql`.
+
+- **The model-delivery evidence lane now has a fail-closed Linux verifier in
+  source.** It binds the sole maintained model recommendation to its immutable
+  repository revision, observed metadata identity, exact LFS sibling, card
+  license, revision-pinned LICENSE bytes, filename, byte count, SHA-256 digest,
+  and allowlisted delivery host; re-hashes a private stable file and proves its
+  deletion. The exact-attempt job inventory, upload action artifact ID/digest
+  outputs and exact-ID download into a private lane directory bind the report
+  to the actual AppImage producer and active verifier attempt. Post-review
+  hardening also binds the exact attempt start plus producer-job and upload-step
+  timestamps. It requires attempt start → producer start → upload start →
+  artifact creation → producer completion, while separately requiring upload
+  completion before producer completion. This accepts GitHub's observed
+  whole-second timestamp lag after upload completion but rejects post-job
+  artifacts and carried-forward jobs relabeled as the current attempt. GitHub's
+  artifact API does not expose a
+  producer job or attempt directly, so the verifier and final consumer retain
+  and enforce all three available bindings rather than inferring an attempt from
+  run ID alone. The final consumer independently requires that exact inventory
+  and complete report schema.
+  This implementation has not yet produced evidence from a tagged release and
+  does not advance the limited model-delivery claim.
+
+- **Release-claim CI results now come from observed frozen commands.** The
+  no-shell tag-push harness records canonical check exit codes and binds its
+  schema-v1 artifact to the repository, commit, ref, event, run attempt,
+  ledger, harness, and command-source digests. It runs the account-free proof as
+  the ledger's exact focused API, worker, shared-classifier, execution-router,
+  and desktop tests. Every command boundary compares the complete tracked
+  checkout and Git modes with content-addressed `HEAD` tree bytes, rejects
+  hidden index state and linked source/runtime files, and revalidates the
+  captured Node and pnpm bundle before and after every command.
+  Manual tag-context runs cannot enter the publisher, and release readiness
+  remains blocked on the outstanding machine evidence and external release
+  controls.
+
+- **The supported preview is account-free sample only; connected-account access
+  is fail-closed.** The packaged desktop carries no provider client authority
+  and pins its managed API and worker children to disabled account mode. Google
+  and Microsoft authorization, callback, credential mutation/synchronization, connector
+  discovery, capability installation or transfer, and account-backed email or
+  calendar action vocabularies refuse before provider contact, adapter
+  preparation, or a dispatch lease. Dynamic Google/Gmail/Calendar and
+  Microsoft/Outlook aliases are
+  filtered across credential reads, writes, sync, and UI surfaces; failed
+  dynamic credential classification also fails closed. Stale account-backed
+  capability rows cannot be resumed, inspected through bookmarked detail
+  routes, rendered in dependency graphs or audit history, polled for
+  changelogs, included in assistant, current-briefing, retained-briefing, or
+  live-digest prompts, promoted, offered as installs, transferred, or used to
+  restore reconnect prompts. While disabled, the proactive briefing endpoint
+  returns an empty briefing for every non-sample user before reading retained
+  rows; the reserved fictional sample remains available, and only the exact
+  unsupported source-development `experimental` opt-in restores the prior
+  account-backed behavior. The worker skips provider-token enumeration while
+  the boundary is disabled and treats an empty cached capability inventory as
+  insufficient authority for changelog contact. Provider-native action
+  namespaces are denied before adapter planning or dispatch even when no
+  capability-server ID is supplied. Account-backed execution plugins
+  discovered from the filesystem are rejected before import and bound to
+  admission again before routing, preparation, or prepared dispatch. Existing
+  stored tokens and credentials
+  are retained for a future reviewed migration. Managed account access is
+  deferred, and the exact experimental source flag is not a supported operator/BYO
+  path. This correction supersedes current-looking bundled-client and
+  five-minute-setup entries below without rewriting their historical record.
+
+- **Worker dead letters are content-free.** The global queue now stores only
+  constrained job/error codes, bounded attempts, lifecycle state, and opaque
+  UUIDs; migration 081 logically erases legacy diagnostic strings and JSON by
+  dropping their columns. CockroachDB reclaims the old physical versions under
+  its configured GC lifecycle, while existing backups retain their normal
+  lifecycle. The reviewed encryption inventory now covers all 998 columns in
+  the 104-table schema without advancing any encryption claim.
+
+- **Assistant turns now carry durable, user-scoped retry identity.**
+  `POST /api/assistant/messages` requires a client-generated UUID `requestId`.
+  New user and assistant rows are unique per owner, request identity, and role;
+  completed retries replay persisted results, while unresolved turns return
+  `202` rather than re-entering provider or action routing. Chat-selected
+  actions are normalized to explicit approval, and an approval cannot be
+  created until its explanation is durable. This contains duplicate work but
+  does not claim provider-level exactly-once execution or automatic recovery
+  of an interrupted turn.
+
+- **Legacy action-taking routine writes now stop before remote dispatch.**
+  `POST` and `DELETE /api/routines` server-normalize the candidate, assess
+  risk, evaluate policy, and atomically persist the decision, candidate, full
+  risk assessment, deliberate non-action outcome, and explanation.
+  Registration and deletion remain unavailable; no create/delete adapter call
+  occurs. Read-only listing remains available. This supersedes the earlier
+  routine-registration behavior described below.
+
+- **Generic capability rollback is report-only.** The regret endpoint reports
+  reversible, irreversible, and exactly linked execution targets but makes no
+  router or adapter call. Generic rollback remains unavailable until #695
+  supplies durable, owner-bound one-winner admission and ambiguity handling.
+  The UI explicitly reports that no actions changed.
+
+- **Unmounted workflow helpers no longer dispatch external actions.** The
+  legacy email-triage and generic workflow helpers still evaluate and explain
+  decisions, but return `autoHandled: false` and do not call execution adapters
+  or learn from a presumed automatic action.
+
+- **The encryption inventory follows assistant retry metadata.** The reviewed
+  corpus now covers 104 tables and 998 columns through migration 080. The four
+  new assistant lifecycle fields are classified as locally exposed metadata;
+  source-field encryption remains a design contract rather than a shipped
+  protection claim.
+
+### Fixed (post-review)
+
+- **V2 adversarial migration verification now requires immutable external
+  trust.** Direct verification fails closed without an explicit trusted commit
+  or filesystem root. Normal eval CI derives the reviewed head and trusted PR
+  base or push predecessor from GitHub's event payload, and permits the single
+  bootstrap only when both v2 inputs are absent from the protected base and
+  that commit retains every exact audited v1 input. Coordinated
+  fixture-plus-baseline rewrites now fail through that standard CI command.
+
+- **Hosted release-claim evidence resolves pnpm/action-setup without relaxing
+  runtime identity.** Runtime capture accepts only the generated POSIX shim's
+  exact two-branch delegation into one canonical pnpm package launcher, then
+  makes an exclusive single-link executable snapshot of the delegated CLI
+  bundle before dependency installation. Duplicate, divergent, out-of-tree,
+  and non-shell launchers fail closed; content-addressed package-store
+  hardlinks are never executed by the evidence harness. Failure observations
+  in the resulting evidence are capped at 4,096 code units and the final
+  consumer enforces the same bound.
+
+- **Release signing evidence matches the actual native package metadata and
+  fails closed on incomplete provenance.** Windows ProductVersion checks now
+  require electron-builder's four-field value for both the installer and its
+  contained executable, while FileVersion remains independently numeric. The
+  verifier, manifest generator, and publication checker require exact job
+  commit identity; persisted Actions timestamps use canonical GitHub syntax;
+  workflow outputs reject line breaks; and macOS ZIPs reject noncanonical
+  AppleDouble resource-fork entries. Attempt timing is returned explicitly
+  rather than being written into caller-owned identity state. Release remains
+  blocked pending the documented signing, notarization, Linux trust-policy,
+  and tagged native-evidence gates.
+
+- **DXT export history avoids redundant sequential classification.** Repeated
+  exports from the same capability reuse one owner/inventory classification
+  per request, and distinct classifications run in bounded batches while
+  preserving the repository's response order and fail-closed behavior.
+
+- **Capability-audit visibility scans bound database fan-out.** Exact visible
+  totals still use stable keyset pagination, but server classifications are
+  now memoized across the whole request and scheduled eight at a time; the
+  full-scan path no longer performs a raw count it immediately replaces.
+
+- **Ambiguous assistant failures retain their request identity.** Generic
+  server/transport failures and approval-response reconciliation failures no
+  longer mint a fresh logical turn on retry. The API does not report a
+  synthetic successful approval bubble unless the assistant row is durable,
+  and a streamed reply with unresolved persistence ends in a recovery-required
+  state rather than synthetic success. Browser and mobile clients persist the
+  owner-, thread-, and content-bound identity before dispatch so a reload or
+  app restart can reconcile with the same UUID. A stream that closes without a
+  validated terminal event is treated as ambiguous, never as a completed
+  reply. Pending content is removed on sign-out/disconnect; packaged-sample
+  recovery remains tab-scoped and is removed on sample exit. Assistant action
+  evaluation now also receives the user's complete autonomy settings before it
+  can create an approval.
+
+- **Legacy assistant orphans no longer block migration 080.** The ownership
+  backfill only assigns message owners that still exist, leaving legacy orphan
+  messages nullable instead of violating the new foreign key during startup.
+  For non-orphan rows, a composite foreign key enforces that the materialized
+  message owner matches its parent thread, and retry-key reads recheck that
+  ownership through the parent join.
+
+- **Unavailable routine mutation is represented consistently in the web UI.**
+  Policy 403 responses no longer masquerade as expired sessions, and existing
+  routine rows are inspection-only while remote removal is quarantined.
+
+- **OpenClaw credential notifications are owner-scoped and bounded.** Credential
+  metadata is parsed through a strict size-and-shape boundary, peer-supplied
+  identity is rejected, ownership comes from the prepared execution plan, and
+  the API emits the live setup notification only to that owner rather than
+  broadcasting. Peer-defined fields always use secret input and masking even
+  if remote or legacy metadata marks them non-secret. The user-callable
+  adapter-registration HTTP surface is disabled; installation credentials
+  remain installation-scoped for the single-owner beta, not user-portable.
+
+- **Android CI no longer requests a retired SDK package.** The mobile packaging
+  job installs `platform-tools` explicitly instead of inheriting the setup
+  action's obsolete `tools platform-tools` default.
+
+## [Unreleased] — Adversarial source-checkout evidence
+
+### Added
+
+- **Development evals now emit integrity-checked source evidence.** A versioned
+  adversarial catalog exercises provenance escalation, pre-dispatch blocking,
+  replay suppression, transport ambiguity, credential-response validation, and
+  generic rollback refusal. Nine deterministic policy cases and nine exact
+  mapped regressions now cover all ten currently declared runtime entry paths,
+  including approval, assistant, routine, and memory-loop boundaries, across
+  three execution adapters plus the policy-only `none` category. Recognized API/worker dispatch terminal method
+  names are source-inventoried. This landing establishes an internally
+  consistent bootstrap; append-only comparison starts after both evidence
+  inputs first exist in trusted `main` history. The artifact remains explicitly
+  incomplete development evidence: the declared denominator is not an
+  exhaustive release inventory, and the artifact has no packaged-release
+  subject, attestation, or release-readiness claim.
+  Review hardening now reads the trusted baseline and fixture directly from the
+  exact prior Git commit; binds Git identity and tree reads to the intended
+  worktree despite inherited overrides or replacement refs; rejects malformed
+  UTF-8 and duplicate keys at every nesting level; and uses bounded no-follow
+  reads for filesystem evidence and mapped assertion sources.
+
+## [Unreleased] — Verifiable desktop release artifacts
+
+### Added
+
+- **The desktop release pipeline now has a source-complete artifact-integrity
+  lane.** A least-privilege tag-only job downloads the exact nine canonical
+  desktop outputs, validates their names, versions, updater targets, sizes, and
+  digests from stable file descriptors, and stages immutable copies. It emits
+  exact SHA-256 coverage, a subject-complete SPDX 2.3 document, canonical
+  independent verification commands, and digest-named GitHub provenance
+  bundles bound to the repository, workflow, run, tag ref, and source commit.
+  A separate Linux verifier re-hashes the downloaded subjects, binds every
+  current-run GitHub artifact ID/name/archive digest, validates the updater and
+  SPDX relationships, and invokes `gh attestation verify` before it can emit
+  the five-check schema-v1 machine report consumed by the existing exclusive
+  evidence aggregator and publisher. Adversarial tests cover path traversal,
+  symlinks, replacement during hashing, missing or extra output, stale updater
+  metadata, malformed SPDX, and provenance failure. This source does not
+  certify unreleased bytes: `release.artifact-verification` remains limited and
+  the release remains blocked until a tagged clean run supplies immutable
+  evidence; signing and notarization remain separate external gates.
+
+### Changed
+
+- **Release recovery is explicitly forward-only.** Operators are instructed to
+  export an encrypted `.stbk` archive before upgrading, retain a bad release's
+  immutable tag and evidence for audit, and recover through a higher signed
+  patch. An older binary must not be installed over a database touched by newer
+  migrations; restore is supported only into a fresh compatible installation.
+
+### Fixed (post-review)
+
+- **Signing evidence observations are now load-bearing.** The macOS verifier
+  requires the DMG's own Developer ID signer/team to match the contained app,
+  then requires the exact contained-app bundle identifier, CDHash, release
+  marketing and build versions, arm64 architecture, hardened-runtime,
+  Gatekeeper, and notarization observations for both DMG and ZIP. ZIP members,
+  declared expanded size, and extracted link containment are checked before the
+  signed app is trusted; ZIP extraction also runs on a fully allocated
+  fixed-capacity HFS+ image sized for the content ceiling, worst-case
+  allocation-block slack, and filesystem metadata. Host capacity is checked
+  both before and after allocation, eliminating sparse-image growth against the
+  runner reserve. Windows extraction runs on an attached 5,511 MiB
+  fixed-capacity VHDX with an enforced and verified 4 KiB NTFS allocation unit.
+  Its size covers the 4 GiB combined nested-content limit, 100,000-member
+  allocation slack, and filesystem headroom while leaving the canonical runner
+  a separate 2 GiB host reserve. Dishonest archive size metadata is therefore
+  bounded by the extraction volume rather than runner free space. Windows
+  reports bind both installer and contained executable
+  version metadata alongside the exact Authenticode method, pinned signer
+  fingerprint, code-signing EKU, and timestamp-certificate observation. Report
+  construction and the independent publisher reject omitted, altered, stale,
+  or wrong-method fields. Native commands operate only on private staged copies
+  whose bytes and file identity are checked against the release subject before
+  and after verification. The producer downloads its uploaded signing report
+  by exact artifact ID and compares its bytes with the verifier-emitted digest.
+  An attempt-specific sidecar carries that source report digest separately from
+  the Actions archive digest, alongside the source artifact ID, run ID, run
+  attempt, attempt start, and desktop producer/upload observations. Desktop
+  uploads expose exact artifact ID/digest outputs; the verifier, manifest, and
+  publisher cross-check those values against the complete exact-attempt job
+  inventory and require artifact creation no earlier than the successful
+  current-attempt upload step start and no later than its producer job
+  completion. This accommodates
+  GitHub's observed whole-second API timestamps, where artifact creation can
+  appear one second after upload-step completion. Carried-forward jobs, partial
+  reruns, duplicate same-name artifacts, and stale source reports fail closed.
+  GitHub's public artifact API is run-wide and has no direct artifact-to-job or
+  attempt field,
+  so this composite ID/digest/job/step/time binding is the strongest available
+  hosted evidence and does not claim a stronger native relation. These checks
+  cover stale-attempt reuse and in-workflow mutation windows, not arbitrary
+  same-user control of the hosted runner. Linux remains
+  fail-closed until package-format verification methods and trust roots exist;
+  final-DMG notarization is still not wired, and verifier source and tests do
+  not claim signed release artifacts.
+
+- **Tag-run verification now matches clean hosted runners and real packaging
+  output.** The independent verifier uses only Node built-ins plus the local
+  release constants, accepts the versioned filenames emitted by the pinned
+  electron-builder toolchain, and requires the complete updater membership:
+  ZIP plus DMG on macOS, NSIS on Windows, and AppImage plus deb and rpm on
+  Linux. Tests use those production-shaped manifests. SPDX creation metadata
+  now records the document-generation time and a run-and-time-unique namespace,
+  while `VERIFY.md` includes explicit macOS, Windows, and Linux signature
+  status and commands without conflating platform signing with provenance.
+
+## [Unreleased] — Inference receipts
+
+### Added
+
+- **A versioned inference-receipt foundation now separates integrity from
+  trust.** The structured signed contract has a developer/library verifier
+  for exact externally supplied request, response, and evidence bytes; its
+  repository create boundary requires caller-supplied recorder roots and, for a
+  confidential result, a provider key plus provider-specific attestation
+  policy. Owner-scoped metadata read/delete routes and schema-v3 backup/restore
+  coverage ship, with restored rows explicitly untrusted. Decision-event
+  ingestion calls the create boundary with an ephemeral process key or an
+  explicitly configured recorder key. Product verifier-bundle export, receipt
+  detail UI, and confidential-provider attestation remain unavailable, so this
+  adds no verified-confidential product claim. The source-checkout command and those limitations are
+  documented in [`docs/inference-receipts.md`](docs/inference-receipts.md).
+
+- **The local encryption inventory now includes receipt storage.** Migration
+  074 advances the reviewed SQL corpus to 95 tables and 885 columns. The signed
+  receipt JSON—including provider, model, endpoint, hashes, cost or optional
+  billing identity, verification metadata, and public signatures—is locally
+  readable and unencrypted. Because its free-form strings cannot be proven free
+  of source content or secrets, the inventory conservatively classifies the
+  JSON column as deferred source data. The privacy policy discloses that risk
+  and the decision/user cascade-deletion boundary.
+
+### Fixed (post-/review)
+
+- **Receipt verification now enforces its declared cryptographic and storage
+  contract.** Recorder and provider keys must parse as Ed25519, recorder key
+  pairs must match, invalid clocks or freshness-policy values fail closed, and
+  all database-bound identities must be UUIDs before trust evaluation. Receipt
+  batches persist an explicit durable capture ordinal; the singular compatibility
+  read returns the last captured call deterministically while backup retains all
+  rows and rejects duplicate identities before restore.
+
+- **Successfully finalized decision-event inference produces durable receipt
+  batches before approval or action execution.** Interpretation,
+  candidate-generation, and draft calls within that attempt share a
+  receipt-aware client; canonical logical request/response hashes and
+  runtime-location metadata are linked to the durable explanation. An existing
+  decision without receipt completion fails closed before new inference or side
+  effects; availability-preserving recovery still needs a durable provisional
+  trace journal or atomic-restart design. Hosted cost remains unknown without
+  exact provider billing facts, and the confidential verifier remains
+  deliberately unwired.
+
+## [Unreleased] — Local encryption boundary
+
+### Added
+
+- **An accepted, implementation-ready source-field encryption contract.** ADR
+  0001 defines key custody, locked behavior, context-bound envelopes,
+  crash-safe migration and rotation, backup/restore, deletion after key loss,
+  the intentionally readable search-derivative boundary, and the supported
+  desktop-beta scope. A machine-readable inventory classifies all 994 columns
+  across the 104 live tables and ties each table to its currently discoverable
+  SQL callsites. `pnpm check:encryption-inventory` fails on schema drift,
+  classification drift, invalid ownership/boundary values, or weakened critical
+  credential and dead-letter invariants. This is a reviewed design contract;
+  encryption claims remain blocked until the implementation and packaged
+  verification gates in the ADR pass.
+
+- **The encryption inventory follows the packaged worker-generation boundary.**
+  Migration 071's installation-scoped authority table retains only lifecycle
+  metadata and a one-way verifier for its random generation credential. The
+  validator pins the exact migration runner and schema-plus-sorted-migration
+  corpus, proves both migration entry points use the shared ordered flow, and
+  fails if that authority becomes recoverable source, global state, or an
+  unreviewed SQL callsite.
+
+- **The first source-key custody slice lands without enabling an encryption
+  claim.** Migration 073 adds a passphrase-recovery-wrapper registry and a
+  content-free device-wrapper deletion intent. The Electron broker implements
+  versioned wrappers, purpose-separated keys, context-bound envelopes,
+  capability-scoped child access, and bounded lock acknowledgement. API and
+  worker children receive empty owner grants. A subsequent composition slice
+  places recovery wrappers in the CockroachDB registry without a legacy-store
+  fallback, but no production source field is encrypted by this foundation.
+
+### Fixed (post-/review)
+
+- **OAuth grant storage now follows live vault authority without a plaintext
+  downgrade.** API callbacks store plaintext only when no vault exists. Once a
+  vault is initialized, a matching unlocked generation encrypts new and
+  reconnected token secrets while a locked or stale generation refuses the
+  write. Complete legacy plaintext pairs can migrate on authorized credential
+  use. The worker still has a separate, unpopulated key cache, so cross-process
+  use of encrypted grants remains unavailable and is disclosed in Settings and
+  the privacy documentation.
+
+- **Remembered vault passphrases now retain verifiable storage provenance.**
+  New desktop records carry a format version and the exact secure OS backend
+  that encrypted them. Startup deletes every legacy untagged, unsupported, or
+  backend-mismatched record across users without attempting decryption, so a
+  passphrase persisted by Linux `basic_text` cannot survive the hardened
+  boundary. The credential-vault plaintext warning also uses the design
+  system's security-alert color.
+
+- **The encryption inventory gate now fails closed across platforms and schema
+  evolution.** Repository callsites use stable forward-slash paths on Windows,
+  migration entry points cannot execute an unreviewed SQL path, and unsupported
+  CockroachDB table DDL—including implicit-column forms—stops validation rather
+  than producing an incomplete field list. Mutation tests bind the exact runner,
+  migration corpus, supported DDL, and 104-table/994-column inventory.
+
+- **Launch-facing documentation now matches the inactive runtime boundary.** The
+  accepted ADR, private child-process IPC, empty production owner grants, and
+  remaining repository/client/migration/bake gates are described separately; no
+  production source field is represented as encrypted. The README, privacy page,
+  and deck also stop describing a local model or `llama.cpp` runtime as bundled:
+  current source can recommend and download the pinned model only after user
+  action, while a compatible runtime remains a separate prerequisite.
+
+## [Unreleased] — Account-free interactive sample
+
+### Added
+
+- **A canonical packaged-sample evidence verifier is now implemented for the native release matrix.** Credentialed current-run artifact discovery exits before a separate step that rejects `GITHUB_TOKEN` and `GH_TOKEN` parses or launches the package; a workflow-carried digest binds the descriptor between steps, and the packaged child receives only an allowlisted environment. The verifier validates and derives one executable from the macOS ZIP, Windows NSIS installer, or Linux AppImage, launches it in a fresh isolated profile, and writes the current structured machine-report contract only after the real first-run control renders the populated sample route and the dashboard plus populated reads meet one 60-second launch deadline, contained simulation commands, session isolation, authorization denials, reset, disposal, deterministic process-tree cleanup, and pre/post identity checks pass. This source does not certify a published artifact: `sample.packaged-account-free` remains limited and release remains blocked until a tagged run produces and the publisher validates all three platform reports. See [`docs/sample-release-evidence.md`](docs/sample-release-evidence.md).
+- **Packaged desktop builds can initialize and open a synthetic sample profile without enabling the development authentication bypass.** A short-lived credential is fixed to the reserved `is_demo` identity, captures that row's CockroachDB revision at issuance, and requires the exact revision on every normal or simulated read. Its explicit read allowlist excludes paid inference, embedding-backed search, long-lived event streams, credentials, settings, mutations, and execution; profile reads also use no-create repository paths when fixture state is incomplete. Clean packaged installs provision only when the active database URL matches the bundled URL and CockroachDB's fresh PID and listening-URL files bind the live child to the manager's canonical data directory; an unproven loopback database is not initialized, migrated, given sample data, or used by the packaged services. Packaged builds therefore pin `DATABASE_URL` to their attested bundled child and ignore an inherited override; source-development and separately self-hosted services continue honoring their operator-supplied database URL. Fictional signal ingestion starts in the background after owner-facing services, binds authority to the current database and exact API child generation, proves a fresh in-memory per-spawn capability before every loopback request, uses a generation-scoped ingest credential, and applies bounded timeouts plus exact-ID transient retries. The packaged worker also receives a separate unpersisted generation capability: every repository transaction locks and validates its durable authority row, while connector refreshes, provider requests, and scheduled jobs share synchronous abort admission. Durable revocation therefore forms the commit boundary for cursor, token, label-observation, memory, watch, federation, and maintenance writes. Loss of API or database authority revokes the generation and contains its web and worker children; an isolated web or worker crash keeps the ready API generation and uses generation-scoped bounded recovery. Normal tray pause stops worker activity and suppresses delayed replacement while the exact ready API/web generation may remain available. A newer pause cancels concurrent resume or recovery and contains any partial or failed generation. An unproven termination remains a fatal lifecycle error rather than being reported as stopped. The source-development seed stamps the same `is_demo` marker while refusing to relabel an unrelated account at the reserved UUID. This is the safe browsing foundation for the interactive sample loop, whose state and actions remain isolated from production side effects under [#630](https://github.com/jayzalowitz/skytwin/issues/630).
+- **The account-free tour now includes a separate, interactive simulation loop.** A visitor can approve, reject, or correct fixed fictional proposals, inspect the real policy and explanation results, and see a session-local preference change the next focus-block prediction. Simulation commands are loopback-only, accept a closed command catalog, keep bounded in-memory state keyed to the signed sample credential, and make no database writes or calls to connectors, providers, credentials, or execution adapters; database reads only revalidate the reserved sample identity. Reset, expiry, and exit discard the state; an untrusted shell-shaped proposal is visibly contained with no approval path. See [#630](https://github.com/jayzalowitz/skytwin/issues/630) and [#633](https://github.com/jayzalowitz/skytwin/issues/633).
+
+### Fixed (post-/review)
+
+- **Packaged service recovery now fails closed across crashes, delayed restarts, and pause/resume races.** API readiness must be authenticated for the exact child generation before the web proxy or worker starts. Losing that identity contains the matching web, worker, and durable write authority; a per-generation recovery latch prevents overlapping error, exit, and catch paths from scheduling duplicate recovery or consuming the retry budget twice, and stale cleanup cannot stop a healthy successor. A newer pause cancels in-flight resume or recovery. Resume reuses the exact ready API/web generation when safe; otherwise it rebuilds in order: API, durable authority, authenticated readiness, web, then worker. Background embedding work also uses expiring exact-lease tokens: a reclaimed job rejects late completion, page update and job completion commit together, and work abandoned three times is durably terminalized as failed instead of retrying forever.
+- **Sample access now fails closed while its fixture is incomplete.** Startup clears a database-backed readiness marker before ingest, reasserts observer trust with a zero automatic-spend limit, and exposes the reserved identity only after every fictional signal is present. Each sample request revalidates both the identity and readiness marker.
+- **Loopback restrictions now survive the dashboard proxy boundary.** The web server rejects remote peers and non-loopback API upstreams before forwarding sample-info, session, or simulation requests, while the API requires both the resolved client and direct socket peer to be loopback.
+- **Expired simulations cannot return a late asynchronous result.** The simulation checks its signed deadline both before creating state and after policy/explanation work. Exit may present the original signed credential solely to delete the state bound to that credential; it cannot read, renew, or mutate the simulation.
+- **Sample authority is isolated to one browser tab and excluded from offline persistence.** The sample credential, reserved identity, expiry, and onboarding state live in `sessionStorage`; real sign-in authority always takes precedence and clears the tab's sample state. Generation fences prevent late renewal or exit responses from resurrecting a closed sample, including when another tab signs in or out. Concurrent reads now share one renewal, and a late 401 from an older credential reuses the current successor instead of replacing it. The API client also preserves authentication when a caller supplies additional request headers. The service worker applies the API server's case-insensitive path semantics and bypasses every `/api/v1/demo` request. It also bypasses normal product routes whenever they carry the sample bearer credential or EventSource query token, so sample credentials and responses are never cached or queued. Before sending any stored write, the worker reapplies the current policy and deletes entries that are no longer eligible; this prevents an older worker's queue from replaying sample traffic after an update. See [`sample-session.js`](apps/web/public/js/sample-session.js), [`api-client.js`](apps/web/public/js/api-client.js), [`sw-policy.js`](apps/web/public/js/pwa/sw-policy.js), and [`sw.js`](apps/web/public/sw.js).
+
+## [Unreleased] — Verified local model delivery
+
+### Added
+
+- **The automatic local-model path now has one maintained, immutable artifact.** The registry contains Qwen2.5 1.5B Instruct Q4_K_M pinned to an upstream commit, exact byte count, SHA-256, Apache-2.0 license reference, supported CPU architectures, and a minimum llama.cpp build. Registry validation rejects mutable revisions, placeholder hashes, non-canonical URLs, duplicate artifacts, and incomplete provenance at module load.
+- **Downloads enforce the artifact contract before activation.** Requests use an exact approved HTTPS origin/redirect allowlist, reject non-global DNS results, and pin each connection to the addresses that passed that check so a second DNS answer cannot rebind the request. They require canonical source metadata, exact content length/type, and a stable ETag or Last-Modified validator. Resume checkpoints bind the database row, pinned source revision, validator, and durable byte boundary. Process-wide disk accounting reserves both the remaining transfer and the full descriptor-bound activation copy across concurrent download runners; stalled transfers fail with typed errors.
+- **Managed activation is descriptor-bound and fail-closed.** Partials and manifests are opened with no-follow flags where the platform provides them and must be single-link regular files. Activation verifies the staged descriptor, copies from that descriptor into an exclusively created file, verifies the copy, publishes the content-addressed target without overwriting an existing path, fsyncs it, and switches the active manifest atomically. Activation and deletion are serialized within the process. Automatic runtime discovery returns a model only when the manifest, exact size, digest, registry entry, and llama.cpp compatibility agree. Descriptor hashing and runtime discovery now use asynchronous file I/O, and per-launch verification is serialized so large concurrent reads cannot monopolize the event loop or disk. Because llama.cpp accepts a pathname rather than a portable inherited descriptor, the backend hashes an already-open descriptor immediately before spawn and rejects a path identity change observable when spawn returns. This is best-effort pre-launch tamper detection, not a guarantee about which inode the child subsequently opens against a same-user local attacker.
+
+### Changed
+
+- Startup reconciles orphaned transfer, verification, and installation rows before the API binds its port. The bounded startup gate retries transient database failures and does not accept traffic unless an authoritative pass completes. Recovery still isolates malformed individual rows so one bad artifact cannot prevent later rows from being reconciled.
+- Successful activation invalidates both the embedded-provider discovery cache and the API's LLM client cache before the download is marked complete. Public recommendation and download responses omit raw host hardware and filesystem paths, including diagnostics persisted by earlier versions.
+- The managed model is **downloaded after user action; it is not bundled**, and the llama.cpp runtime remains a separate prerequisite. `SKYTWIN_LLAMA_MODEL` continues to be an explicit user-managed override, so it does not receive the managed registry/manifest guarantees.
+
+### Tested
+
+- Adversarial coverage includes source/target symlinks, staged hard links, a partial swapped between checkpoint restore and descriptor open, tampering, digest/length/content-type mismatches, redirect and DNS restrictions, concurrent crash-tail reservation, checkpoint disagreement, stalled transfer, state-transition races, CRDB `INT8` string normalization, bounded authoritative-read recovery retries, legacy diagnostic sanitization, runtime cache invalidation, serialized descriptor hashing, and per-row recovery isolation.
+
+### Fixed (post-/review)
+
+- **The interface no longer treats a verified model artifact as proof of a working local runtime.** Onboarding recommends the artifact without claiming local inference is ready, while Settings labels download completion as artifact verification and states that a compatible llama.cpp runtime remains separate.
+- **The encryption inventory remains fail-closed after the migration documentation update.** Migration 039 describes the actual checkpoint and boot-reconciliation contract; the reviewed SQL-corpus digest now covers the combined 104-table, 994-column schema through migration 079, including the locally readable inference-receipt metadata and reasoning-mode boundaries.
+
+### Fixed
+
+- Migration rollback now removes only an independently checked, DDL-derived
+  manifest of SkyTwin-owned tables and preserves unrelated objects colocated in
+  `public`. Retired SkyTwin names are no longer treated as current ownership,
+  and rollback refuses before mutation when an operator-owned table or view
+  depends on the owned graph. CI verifies a fresh disposable Cockroach down/up
+  cycle across owned tables, normalized columns/defaults/generated expressions,
+  constraints, and secondary/partial index definitions; locality and partition
+  equivalence are intentionally outside that claim.
+- Effect admission now binds the exact owner, decision, action, plan, outcome,
+  ExplanationRecord, risk snapshot, current policy snapshot, canonical action
+  parameters, and outcome snapshot before dispatch. Edited draft approvals are
+  converted to the exact irreversible send action before risk and policy are
+  recomputed; the original persisted risk remains source-integrity evidence, not
+  execution authority. Memory auto-execution persists its pre-effect outcome and
+  explanation atomically with the one-shot barrier; terminal adapter observations
+  remain separate.
+- Account purge, demo reset, and legacy seed cleanup now refuse active or
+  ambiguous execution graphs. Admission and purge share an owner-first
+  serializable lock order, and every effect path rechecks owner/graph authority,
+  current policy, and user/operator pause immediately before invoking an adapter.
+  Recovered ready work renews policy authority at its one-shot claim and cannot
+  use a receipt-era allow verdict after policy or pause state changes.
+- Final dispatch gates now compare the live persisted receipt/admission risk,
+  receipt-era policy, refreshed dispatch policy, canonical action/outcome, and
+  execution-plan steps with the exact expected snapshots. A tampered field can
+  no longer ride an otherwise valid owner/plan linkage into an adapter call.
+- Durable adapter evidence now uses typed, per-context schemas rather than a
+  recursive key-name allowlist. Only enumerated routing and terminal facts
+  survive; primitive or nested content under generic result containers becomes
+  one bounded marker. Memory report and direct scalar columns are separately
+  bounded and normalized, and DB and SSE views use the same safe event payload.
+- Direct Gmail and Calendar dispatch now obtains its OAuth credential through a
+  durable request-start lease after routing and plan construction. The lease
+  binds the exact owner, account row and revision, action, decision, plan, and
+  admission/receipt authority while persisting no token or bearer capability.
+  Disconnect, reconnect, refresh, and rotation serialize on the credential row
+  and provider: whichever wins first fences the other, while unrelated
+  non-credential dispatches do not block OAuth updates. Active or ambiguous
+  requests produce a typed pending response instead of a false completed
+  disconnect. Plan replay is refused and API admission snapshots never carry
+  raw OAuth credentials.
+  Once request-start is committed, elapsed
+  time changes an overdue lease to durable ambiguity; it never authorizes a
+  retry or lets credential mutation treat a possibly-started request as absent.
+  Once a vault exists, direct execution migrates a complete legacy plaintext
+  grant under the exact live vault generation and key version before returning
+  or refreshing it. Vault initialization also fences provider responses that
+  began before initialization from writing a late plaintext token.
+- Every adapter now consumes a durable one-shot request-start authority after
+  routing and plan construction. The claim rechecks the exact owner, current
+  policy, admission/receipt revision, action, decision, plan, and adapter; a
+  completed, failed, expired, or ambiguous claim cannot be replayed. Adapter
+  plans must preserve the admitted effect type, parameters, target, timeout,
+  and rollback shape before the claim is issued. Changing the trusted IronClaw
+  channel rotates the same owner authority revision, and an adapter-private
+  single-use preflight proof prevents a second endpoint-readiness await after
+  the request-start claim. Buffered streaming evidence has fixed event and byte
+  ceilings, including terminal payloads. MCP tool calls are attempted
+  once because the protocol does not provide a universal mutability or
+  idempotency contract; response loss remains durable ambiguity and cannot
+  trigger fallback execution. An action with an explicit MCP server or tool
+  target is pinned to the built-in MCP host, with exact server/tool authority
+  and no fallback to Direct, IronClaw, OpenClaw, or a discovered plugin.
+  IronClaw receives only the trusted execution envelope plus recursively
+  normalized action parameters; nested router-control fields and
+  credential-shaped values are stripped before the HTTP boundary.
+- Account-unknown Google callbacks now use a one-shot, DB-timestamped pending
+  authority. After verified identity resolution, the claim is bound to the
+  exact owner generation and a provider/account tombstone before token storage.
+  Disconnect and deletion therefore fence callbacks paused before persistence
+  without a provider-global switch that could disrupt other users. Tombstones
+  contain only keyed digests and both pending rows and tombstones are managed by
+  short CockroachDB TTLs; user purge leaves no raw email in fence records.
+
+## [Unreleased] — Release evidence gate
+
+### Fixed
+
+- **Release evidence now fails closed on incomplete or advisory-only material.** The verifier requires an SPDX 2.3 release profile with document namespace, exact relationship vocabulary, analyzed packages, validated package verification codes, and package-to-file coverage; exact subject digests; byte-exact runnable checksum and provenance instructions; cryptographic GitHub attestation verification bound to the tag source; and a protected release environment with self-review and administrator bypass disabled. Every action in the artifact-producing build workflow is pinned to an immutable commit. A native platform matrix must execute each reviewed machine-verifier command and an exclusive dependent job must aggregate its immutable reports; signing proof is split across macOS, Windows, and Linux. Publication also rejects a tagged commit that is not merged into `main`, and the release checkout does not persist its write-capable token in Git configuration. Verifier implementations, CI-result generation, signing, and provenance remain blocked prerequisites; this gate does not claim those materials exist yet.
+- **Launch-facing Google and privacy copy now matches the implemented boundaries.** The Gmail walkthrough explains Testing-mode seven-day authorization expiry and the personal-use In-production path; it distinguishes a verification exception from Google's continuing user-data policy. Settings no longer describes write-capable Google scopes as read-only or promises that pattern-based crash scrubbing can never retain incidental content. The launch plan also distinguishes the local-first packaged default from opt-in hosted providers and a future fully hosted deployment.
+<!-- release-claims:start -->
+> **Current release status:** The desktop-first `v0.7.0-beta` is blocked. The structured [beta claim ledger](docs/beta-claim-ledger.json) is authoritative for current public claims and release gates.
+<!-- release-claims:end -->
+
+## [Unreleased] — Explicit reasoning boundaries
+
+### Added
+
+- **Reasoning location is now a persisted policy, not an inference from a provider name.** Each user chooses `on_device` or `bring_your_own_provider`; the `verified_private_cloud` state exists but remains unavailable until a verifier-owned confidential adapter ships. Provider saves, tests, fallback, and every user-scoped API composition path enforce the same boundary. Legacy local, hosted, mixed, disabled, custom-endpoint, and empty chains are classified deterministically; ambiguous chains require confirmation.
+- **Every normalized model result carries privacy and execution provenance.** Metadata records execution/network/confidentiality/retention capabilities, pricing source and freshness, a SkyTwin invocation ID, verification state, receipt linkage, and a sanitized ordered fallback path. Custom endpoints never inherit an official provider's terms or a confidential-computing label.
+
+### Changed
+
+- **Unattended inference fails closed when provider price is unknown, stale, invalid, or unbounded.** Interactive requests can use an explicitly selected provider; background decision and briefing work skips unpriced providers and stays inside the selected location boundary. Draft generation also evaluates every possible fallback rather than assuming the cheapest configured provider will answer.
+- **Provider-chain and reasoning-mode updates are atomic.** Both records are written in one CockroachDB transaction. CI executes the legacy migration twice against a real CockroachDB fixture matrix, and downloads the pinned test binary only after verifying its published SHA-256.
+
+### Fixed (post-/review)
+
+- **On-device Ollama can no longer relay a cloud-backed model through its loopback API.** Before any prompt is sent, SkyTwin verifies that the daemon reports Ollama 0.18 or newer; every on-device request then uses Ollama's request-scoped `:local` source selector, explicit cloud selectors are rejected before transport, remote response metadata fails closed, and there is no unqualified retry. Ollama in bring-your-own-provider mode is conservatively classified as remote and unknown-priced, so unattended inference cannot treat a potentially relayed request as free. Daemon-wide cloud disablement remains recommended defense in depth.
+- **Provider transport and settings boundaries now fail closed under edge conditions found during review.** Default Ollama calls deny redirects, DNS resolution obeys request cancellation, early Anthropic stream termination aborts and cancels the body, provider priorities cannot implicitly select a reasoning location, and null/default endpoints round-trip safely. Custom endpoints are canonicalized at environment, API-validation, persistence, and adapter boundaries; query strings, fragments, embedded credentials, and non-global benchmark/site-local addresses are rejected before a prompt or stored key is considered. The separately configured embedding path now uses the same DNS-pinned, redirect-denying transport before sending memory text. Unsaved reasoning-location changes are visibly marked as drafts and cannot be activated through connection tests or priority autosaves; model/location edits invalidate stale provider-boundary labels until the server validates and saves them.
+- **Cost and migration decisions use the exact admitted state.** Draft-email pricing comes from the frozen provider chain used for dispatch, disabled offline endpoints remain recoverable without weakening validation when enabled or tested, credential reuse is authority-bound after URL canonicalization, and the legacy SQL migration leaves ambiguous URL spellings confirmation-required.
+- **Launch-facing disclosures now enumerate the actual remote-AI paths and masking scope.** The privacy policy and Settings distinguish mode-scoped reasoning from the separately environment-configured OpenAI-compatible embedding path, which can send memory text for indexing and semantic-search query text. Public and engineering docs now state that email masking covers only raw-event and episodic-memory fragments in two decision prompts. Stale full-page Settings imagery containing an obsolete storage claim has been removed from the README, public demo, and deck privacy section pending a fresh live capture, and the deck's dependency/source metrics are recomputed from this tree.
 
 ## [0.6.102.0] - 2026-08-27
 
@@ -32,7 +966,7 @@ All notable changes to SkyTwin will be documented in this file.
 ### Fixed
 
 - **Every screenshot on the published Pages site was 404ing.** `docs/_config.yml` listed `screenshots/` under Jekyll's `exclude:`, which removes a path from the built site entirely rather than merely declining to render it as a page — so `https://jayzalowitz.github.io/skytwin/screenshots/briefing.png` returned 404 in production and the homepage hero image and the demo page's captures had been silently broken. Removed from the exclude list, with a comment explaining why the directory must not go back in.
-- **The at-rest-encryption overclaim, found independently here and in [#612](https://github.com/jayzalowitz/skytwin/pull/612).** Tracing it for the deck turned up the same defect #612 was fixing in parallel: `docs/privacy.html` asserted that preferences, twin profiles and memory pages were envelope-encrypted and that a stolen or imaged disk would be "unreadable without your passphrase." It is not true in the shipped build — `twin-repository-adapter.ts` initialises `vaultKeyProvider` to `null`, its only setter has no production caller (the repo's own test comments it `// default: feature off`), `resolveKey` therefore returns plaintext mode, and `twin_profiles` / `brain_pages` have no encryption path at all. The OAuth-token path was equally unreached: tokens are INSERTed plaintext by `oauth-repository.ts`, and the `DbTokenStore` upgrade runs only in the worker, wired to a `KeyCache` nothing populates — which `apps/worker/src/index.ts` already said in a comment. Open issue [#374](https://github.com/jayzalowitz/skytwin/issues/374) tracked it the whole time; the policy was contradicting our own backlog. **#612's rewrite is the one that ships** — it is more thorough than the version drafted here (a summary-level warning, a full-disk-encryption callout, and separate OAuth / three-tables sections), so this branch takes it wholesale and keeps only the fix below, which #612 did not cover.
+- **The at-rest-encryption overclaim, found independently here and in [#612](https://github.com/jayzalowitz/skytwin/pull/612).** Tracing it for the deck turned up the same defect #612 was fixing in parallel: `docs/privacy.html` asserted that preferences, twin profiles and memory pages were envelope-encrypted and that a stolen or imaged disk would be "unreadable without your passphrase." It is not true in the shipped build — `twin-repository-adapter.ts` initialises `vaultKeyProvider` to `null`, its only setter has no production caller (the repo's own test comments it `// default: feature off`), `resolveKey` therefore returns plaintext mode, and `twin_profiles` / `brain_pages` have no encryption path at all. The OAuth-token path was equally unreached: tokens are INSERTed plaintext by `oauth-repository.ts`, and the `DbTokenStore` upgrade runs only in the worker, wired to a `KeyCache` nothing populates — which `apps/worker/src/index.ts` already said in a comment. Open issue [#374](https://github.com/jayzalowitz/skytwin/issues/374) tracked it the whole time; the policy was contradicting our own backlog. **#612's rewrite is the one that ships** — it is more thorough than the version drafted here (a summary-level warning, a full-disk-encryption callout, and separate OAuth / three-tables sections), so this branch uses its final wording and keeps only the fix below, which #612 did not cover.
 - **`docs/architecture-philosophy.md` carried the same overclaim.** Its fixed-rails list asserted "Authentication and OAuth token storage: envelope-encrypted at rest, never logged in plaintext" as a held invariant. The logging half holds; the at-rest half does not. The entry now states the rail we intend to hold and the current status separately, so the repo no longer contradicts its own privacy policy.
 
 ### Why this matters
@@ -95,16 +1029,16 @@ The Pages site was the project's public face and two of its load-bearing claims 
   Both fixes ship with regression tests that were **mutation-tested** — each fails with its fix reverted and passes with it restored.
 
 - **Launch blocker: in a packaged build the worker could not talk to the API, so the product ingested nothing.** `/api/events` is mounted behind `sessionAuth`, but the worker's `forwardSignalToApi()` and the idle-miner's HTTP signal emitter posted to `/api/events/ingest` with `Content-Type` only — no credential. That works in dev, where `bin/skytwin-dev` exports `NODE_ENV=development` and the localhost auth bypass is on. It does not work in any `.dmg` / `.exe` / `.AppImage` install: `ServiceManager.getEnv()` pins `NODE_ENV=production` for every child process, the bypass is off, every ingest POST 401s, `withRetry` does not retry 401, and the throw trips the per-user circuit breaker. Signals in, nothing out.
-  The fix is a **loopback service credential**, not a wider bypass. `ServiceManager.getEnv()` now mints a per-install `SKYTWIN_SERVICE_TOKEN` (`randomBytes(32)` hex, persisted `<userData>/secrets/service-token` at `0600`, same mint path as the existing session secret) and hands it to the API, the worker, and the idle-miner. `sessionAuth` accepts `Authorization: Bearer <token>` when it matches that env var — compared with `crypto.timingSafeEqual` behind an explicit length guard — **and** the request arrives from a loopback address. Both conditions plus a configured secret are required; the query-string `?token=` fallback (which exists for EventSource) is deliberately not honoured for the service credential, so it never lands in a URL or an access log. This is a distinct code path from the dev bypass, which was not widened.
+  The fix is a **loopback service credential**, not a wider bypass. Source-development and headless installs can supply or mint a shared `SKYTWIN_SERVICE_TOKEN`; packaged desktop launches instead mint an unpersisted credential for each proven API generation and expose it only to that API child and its generation-authorized worker. `sessionAuth` accepts the dedicated service-token header when it matches that env var — compared with `crypto.timingSafeEqual` behind an explicit length guard — **and** the request arrives from the socket's loopback address. Both conditions plus a configured secret are required; the query-string `?token=` fallback (which exists for EventSource) is deliberately not honoured for the service credential, so it never lands in a URL or an access log. This is a distinct code path from the dev bypass, which was not widened.
   The service path sets a new `req.serviceAuthenticated` flag rather than binding an `authenticatedUserId` — the worker legitimately forwards for every user on the install, so there is no single owner to match. `requireOwnership` now checks that flag **explicitly**, before its existing "no identity means dev bypass, skip the check" branch, so the service path is intentional rather than accidentally inheriting bypass semantics.
 - **`SKYTWIN_DEV_AUTH_BYPASS` can no longer leak from a developer's shell into a packaged build.** `ServiceManager.getEnv()` spreads `...process.env`; it now pins `SKYTWIN_DEV_AUTH_BYPASS: 'false'` *after* the spread, alongside the existing `NODE_ENV: 'production'` pin.
-- **A failed ingest no longer permanently skips mail.** `GmailConnector` advanced and persisted its `historyId` cursor *inside* `poll()`, before the caller had done anything with the returned signals — so every message that 401'd was marked seen and never re-delivered. Cursor advancement is now an acknowledgement: `poll()` **stages** the new cursor and the new optional `SignalConnector.commitCursor()` persists it, which the worker calls only after every signal in the batch has been forwarded successfully. A failure re-delivers on the next poll (the ingest endpoint already dedupes on `(user_id, signal_id)`). The no-signal cases — an empty-inbox bootstrap, a `history.list` window with nothing to deliver — still advance immediately, since nothing can be lost.
+- **A failed ingest no longer permanently skips mail or calendar changes.** Gmail, Google Calendar, Outlook Mail, and Outlook Calendar now stage their history/sync/delta cursor during `poll()` and persist it only through the optional `SignalConnector.commitCursor()` after every returned signal is accepted. A 401/403, generation replacement, or crash before acknowledgement leaves the durable cursor unchanged, so the next worker generation replays the same batch; the ingest endpoint dedupes on `(user_id, signal_id)`. Gmail's no-signal cases still advance immediately because there is no returned work to lose.
 - **Headless mode fails loud instead of silently ingesting nothing.** `apps/desktop/src/headless.ts` forks its own children and does **not** go through `ServiceManager.getEnv()`; it inherits `process.env`. It now warns on startup when the auth bypass is off and no `SKYTWIN_SERVICE_TOKEN` is set, because the failure mode is otherwise a healthy-looking daemon that ingests nothing. Self-hosters running headless must set `SKYTWIN_SERVICE_TOKEN` (e.g. `openssl rand -hex 32`) in the environment shared by the API and the worker.
 - `apps/api/src/__tests__/events-service-auth.test.ts` — new. Every prior ingest test mounted `createEventsRouter()` **bare**, with no `sessionAuth` in front, which is why this shipped. This file mounts the real production chain (`sessionAuth → requireOwnership → requestContext → createEventsRouter()`) under `NODE_ENV=production` with the bypass off, and pins: no auth header → 401; correct bearer from loopback → 2xx; wrong token → 401; different-length token → 401 (not a 500 from `timingSafeEqual` throwing); correct token from a non-loopback address (via `trust proxy` + `X-Forwarded-For`) → 401; service token via `?token=` → 401; unset `SKYTWIN_SERVICE_TOKEN` → 401.
 - `apps/api/src/__tests__/session-auth.test.ts` — unit coverage for the same matrix at the middleware level, plus `requireOwnership` honouring / not over-honouring `serviceAuthenticated`. The suite now snapshots and restores the env keys it mutates in `afterEach` so it cannot leak state into sibling files.
 - `apps/desktop/src/__tests__/service-manager-env.test.ts` — new. Pins that the service token is minted `0600`, is stable across `getEnv()` calls, is distinct from the session secret, and that `SKYTWIN_DEV_AUTH_BYPASS` is `'false'` even when the shell sets it to `'true'`.
 - `apps/worker/src/__tests__/ingest-headers.test.ts`, `packages/idle-miner/src/__tests__/ingest-adapter.test.ts`, `apps/idle-miner-runner/src/__tests__/config.test.ts`, `apps/desktop/src/__tests__/headless.test.ts` — header construction, blank-token handling, and the headless misconfiguration warning.
-- `packages/connectors/src/__tests__/gmail-connector.test.ts` — the existing cursor assertions now commit explicitly, plus a new case proving an uncommitted batch is re-delivered on the next poll.
+- Connector tests commit staged cursors explicitly and prove that Gmail, Google Calendar, Outlook Mail, and Outlook Calendar replay an uncommitted batch in a new worker generation after downstream 401/403 responses.
 
 - **Two over-grants in the service credential, found by codex review and fixed before merge.**
   - *The credential was a cross-user capability, not an ingest key.* `requireOwnership` skips its check for a service-authenticated request (the daemons act for every user on the install, so there is no single owning identity to match) — and it guards ~33 routers. Any local process that could read the token file could therefore read or mutate arbitrary users through routes like `/api/settings/:userId`. Service auth is now restricted to an explicit route allowlist containing only `/api/events/ingest`.
@@ -474,7 +1408,7 @@ The Pages site was the project's public face and two of its load-bearing claims 
 
 ### Security (redact email addresses from LLM prompts — #375, decision pipeline)
 
-- **The decision pipeline no longer ships contacts' email addresses to a cloud LLM.** `PromptBuilder.buildCandidatePrompt` / `buildSituationPrompt` dumped the raw signal (`decision.rawData` / the raw event) and episodic-memory summaries straight into the prompt — for inbound email that's the sender + recipient addresses, and for memory it's whatever a prior signal quoted. When the provider chain resolves to Anthropic / OpenAI / Google, all of that left the machine. New pure `redactPromptPii()` (`packages/llm-client/src/redact.ts`) masks email addresses to `[redacted:email]`, and both prompt builders apply it by default (opt out per-call with `{ redactPii: false }` for a fully-local provider). Masking is safe for the decision path: an action's recipient is resolved from the structured signal record, never parsed from the prompt, so the model only loses an identifier it didn't need to reason about the content (dates, deadlines, prose are untouched — the redactor is email-only on purpose, since a digit-run matcher would eat ISO dates). Scope note: number/name redaction and the interactive assistant's memory-context block are deliberate follow-ups (numbers need date-aware exclusions; the assistant answers the user's questions about *their own* data, where blanket masking would break legitimate "what's X's email" answers — that path needs provider-trust gating, not a blunt redactor). Tests: the `redactPromptPii` unit (emails single/multiple/embedded-JSON/subdomain/plus-addressing, prose+dates+numbers untouched, idempotence, bare `a@b` ignored) + prompt-builder redaction-by-default and `redactPii: false` passthrough for both builders.
+- **The decision pipeline masks email addresses in its raw-event and episodic-memory prompt fragments.** `PromptBuilder.buildCandidatePrompt` / `buildSituationPrompt` dumped the raw signal (`decision.rawData` / the raw event) and episodic-memory summaries straight into the prompt — for inbound email that's the sender + recipient addresses, and for memory it's whatever a prior signal quoted. When the provider chain resolves to Anthropic / OpenAI / Google, all of that left the machine. New pure `redactPromptPii()` (`packages/llm-client/src/redact.ts`) masks email addresses to `[redacted:email]`, and both prompt builders apply it to those fragments by default (opt out per-call with `{ redactPii: false }` for a fully-local provider). The situation summary, preferences, patterns, traits, and other feature-specific prompts are not scanned by this redactor. Masking the covered fragments is safe for the decision path: an action's recipient is resolved from the structured signal record, never parsed from the prompt, so the model only loses an identifier it didn't need to reason about the content (dates, deadlines, prose are untouched — the redactor is email-only on purpose, since a digit-run matcher would eat ISO dates). Scope note: broader prompt coverage, number/name redaction, and the interactive assistant's memory-context block are deliberate follow-ups (numbers need date-aware exclusions; the assistant answers the user's questions about *their own* data, where blanket masking would break legitimate "what's X's email" answers — that path needs provider-trust gating, not a blunt redactor). Tests: the `redactPromptPii` unit (emails single/multiple/embedded-JSON/subdomain/plus-addressing, prose+dates+numbers untouched, idempotence, bare `a@b` ignored) + prompt-builder redaction-by-default and `redactPii: false` passthrough for both builders.
 
 ### Added (desktop auto-update — user-facing layer, #370 follow-up)
 

@@ -25,7 +25,7 @@ export function serializeApprovalCandidate(
     actionType: action.actionType,
     description: action.description,
     domain: action.domain,
-    parameters,
+    parameters: structuredClone(parameters),
     estimatedCostCents: action.estimatedCostCents,
     costZeroIntent: action.costZeroIntent,
     provenance: action.provenance,
@@ -33,4 +33,26 @@ export function serializeApprovalCandidate(
     confidence: action.confidence,
     reasoning: action.reasoning,
   };
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'undefined';
+}
+
+/** Check the non-secret action parameters against the immutable admission snapshot. */
+export function matchesApprovalActionSnapshot(
+  action: CandidateAction,
+  snapshot: Record<string, unknown>,
+): boolean {
+  return canonicalJson({
+    decisionId: action.decisionId,
+    ...serializeApprovalCandidate(action, action.parameters),
+  }) === canonicalJson(snapshot);
 }

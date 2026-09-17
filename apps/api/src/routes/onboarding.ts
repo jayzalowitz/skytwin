@@ -13,7 +13,10 @@ import { Router } from 'express';
 import { onboardingRepository, mcpServerRepository, query } from '@skytwin/db';
 import { runPrompt } from '@skytwin/policy-prompts';
 import { createLogger } from '@skytwin/core';
-import { getLlmClientFromConfig } from '../lib/llm-client-factory.js';
+import { buildUserLlmClient } from '../lib/user-llm-client.js';
+import { loadConfig } from '@skytwin/config';
+import { isGoogleAccountIntegration } from '@skytwin/shared-types';
+import { isAccountFreePreviewServerBlocked } from '../lib/google-capability-boundary.js';
 
 const log = createLogger('api:onboarding');
 
@@ -121,6 +124,11 @@ const RECIPE_REGISTRY_IDS: Record<string, string[]> = {
   ],
 };
 
+function availableRegistryIds(registryIds: readonly string[]): string[] {
+  if (loadConfig().googleConnectionMode === 'experimental') return [...registryIds];
+  return registryIds.filter((registryId) => !isGoogleAccountIntegration({ key: registryId }));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper to extract userId from request (mirrors pattern in capabilities.ts)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -159,12 +167,22 @@ export function createOnboardingRouter(): Router {
 
       // Check whether the user has any installed MCP servers
       const servers = await mcpServerRepository.listForUser(userId).catch(() => []);
-      const hasInstalledServers = servers.some(
-        (s) => s.status === 'active' || s.status === 'installed' || s.status === 'authorized',
-      );
+      const googleConnectionMode = loadConfig().googleConnectionMode;
+      let hasInstalledServers = false;
+      for (const server of servers) {
+        if ((server.status === 'active' || server.status === 'installed' || server.status === 'authorized') &&
+          !await isAccountFreePreviewServerBlocked(
+            googleConnectionMode,
+            server,
+            (serverId) => mcpServerRepository.listSkillNamesForServer(serverId),
+          )) {
+          hasInstalledServers = true;
+          break;
+        }
+      }
 
       // Check LLM provider availability
-      const hasLlmProvider = getLlmClientFromConfig() !== null;
+      const hasLlmProvider = await buildUserLlmClient(userId) !== null;
 
       const isFirstRun = !hasMemory && !hasInstalledServers;
 
@@ -199,7 +217,7 @@ export function createOnboardingRouter(): Router {
       // onboarding-dialogue template doesn't read it. Kept on the request
       // shape for future extension but intentionally unused.
 
-      const llmClient = getLlmClientFromConfig();
+      const llmClient = await buildUserLlmClient(userId);
 
       if (llmClient) {
         try {
@@ -221,6 +239,7 @@ export function createOnboardingRouter(): Router {
             },
             user: { userId },
             llmClient,
+            invocationKind: 'interactive',
           });
 
           if (!result.fellBackToDeterministic && result.output) {
@@ -229,7 +248,9 @@ export function createOnboardingRouter(): Router {
               const response: DialogueResponse = {
                 kind: 'final',
                 recipeSlug: out.recipeSlug,
-                recommendedRegistryIds: out.recommendedRegistryIds ?? RECIPE_REGISTRY_IDS[out.recipeSlug] ?? [],
+                recommendedRegistryIds: availableRegistryIds(
+                  out.recommendedRegistryIds ?? RECIPE_REGISTRY_IDS[out.recipeSlug] ?? [],
+                ),
                 rationale: out.summary ?? '',
               };
               res.json(response);
@@ -300,7 +321,7 @@ export function createOnboardingRouter(): Router {
       const response: DialogueResponse = {
         kind: 'final',
         recipeSlug: slug,
-        recommendedRegistryIds: RECIPE_REGISTRY_IDS[slug] ?? [],
+        recommendedRegistryIds: availableRegistryIds(RECIPE_REGISTRY_IDS[slug] ?? []),
         rationale: `Based on your answers, ${slug.replace('-', ' ')} is a good starting point.`,
       };
       res.json(response);
@@ -326,7 +347,7 @@ export function createOnboardingRouter(): Router {
       const answers = body?.answers ?? {};
 
       const recipeSlug = deterministicRecipeSlug(answers);
-      const recommendedRegistryIds = RECIPE_REGISTRY_IDS[recipeSlug] ?? [];
+      const recommendedRegistryIds = availableRegistryIds(RECIPE_REGISTRY_IDS[recipeSlug] ?? []);
 
       res.json({ recipeSlug, recommendedRegistryIds });
     } catch (err) {

@@ -1,20 +1,10 @@
 /**
- * Connect-Gmail wizard.
+ * Connect-Gmail preview boundary.
  *
- * Why this exists as a wizard separate from setup.js:
- *   Gmail features in SkyTwin (content-aware triage, body summarisation,
- *   draft replies) live behind Google's *restricted* OAuth scope tier.
- *   The bundled SkyTwin-team OAuth client doesn't have those scopes
- *   verified (annual ~$15k–$50k CASA assessment we won't pay for at
- *   launch — see docs/google-verification.md and issue #351), so every
- *   user who wants Gmail in SkyTwin walks this five-step flow once,
- *   pasting their own Google Cloud OAuth credentials at the end. Their
- *   own client is private to them; Google's verification rules don't
- *   apply to a developer using their own client.
- *
- *   This is NOT a fallback or a degraded mode. It's the launch Gmail
- *   experience. Five minutes to set up, then SkyTwin gets full body
- *   access and the inbox-triage marquee features work as designed.
+ * The preview deliberately renders a neutral unavailable state and does
+ * not wire the legacy account-connection wizard retained below. That keeps
+ * credential entry and account synchronization outside the preview while
+ * preserving the code for a later architecture-gated release.
  *
  * Singleton delegator: like every other page in this dashboard, the
  * click handler is wired ONCE with a module-level `_listenerWired`
@@ -24,6 +14,7 @@
  */
 
 import { escapeHtml, fetchJSON } from '../api-client.js';
+import { clearSampleSession } from '../sample-session.js';
 
 const KEY_USER_ID = 'skytwin_userId';
 const KEY_WIZARD_STEP = 'skytwin_connect_gmail_step';
@@ -68,6 +59,7 @@ const STEPS = [
       'App name: <code>my-skytwin</code>. Support email: your Gmail. Developer email: your Gmail.',
       'Click <strong>Save and Continue</strong> through every step. Skip the scopes screen. Skip the test-users screen for now (you\'ll add yourself in a second).',
       'When the wizard finishes, click <strong>Audience</strong> in the left sidebar. Under "Test users" click <strong>Add users</strong> and add your own Gmail address. Save.',
+      'Testing-mode Gmail authorization expires after seven days. On <strong>Audience</strong>, click <strong>Publish app</strong> and confirm <strong>In production</strong> for a durable personal connection. Google will still show the unverified-app warning until verification clears.',
     ],
   },
   {
@@ -87,7 +79,7 @@ const STEPS = [
   {
     n: 5,
     title: 'Paste your credentials and connect',
-    blurb: 'Last step. The credentials are saved encrypted in SkyTwin\'s local database — they never leave your machine.',
+    blurb: 'Last step. Your Google client credentials are stored without app-level encryption in SkyTwin\'s configured database (on this computer in the packaged desktop default), sent to Google for OAuth, and, when an IronClaw execution adapter is configured, also registered with that configured server, which may be remote.',
     cta: null,
     detail: [],
   },
@@ -156,8 +148,11 @@ function renderStep(step, opts) {
           value="${escapeHtml(opts.savedClientSecret ?? '')}"
           required
         >
-        <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.25rem;">
-          Saved encrypted in your local SkyTwin database. The string never leaves your machine.
+        <div data-region="credential-transfer-disclosure" style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.25rem;">
+          Stored without app-level encryption in SkyTwin's configured database (on this computer in
+          the packaged desktop default) and sent to Google for OAuth. When an IronClaw execution
+          adapter is configured, these credentials are also registered with that configured server,
+          which may be remote.
         </div>
       </div>
       <div id="cgm-cred-error" style="display:none;color:var(--danger,#d04646);font-size:0.85rem;margin-top:0.75rem;" role="alert"></div>
@@ -194,7 +189,7 @@ function renderDone() {
   return `
     <div class="cgm-step">
       <div class="cgm-step-header"><h2>Gmail connected ✓</h2></div>
-      <p>SkyTwin is now reading your inbox. The first few signals should show up in the Approvals queue within a minute or so. The setup is one-time — credentials live encrypted in your local database; you won't see this wizard again unless you revoke access.</p>
+      <p>SkyTwin is now reading your inbox. The first few signals should show up in the Approvals queue within a minute or so. The Google client credentials remain without app-level encryption in SkyTwin's configured database; the packaged desktop default keeps that database on this computer. OAuth-token encryption depends on your Credential Vault state. If your Google Cloud project remains in Testing, Google expires Gmail authorization after seven days; publish the project to In production for a durable personal connection.</p>
       <div style="display:flex;gap:0.5rem;margin-top:1rem;">
         <a class="btn btn-primary" href="#/">Open dashboard</a>
         <a class="btn btn-outline" href="#/approvals">See approvals queue</a>
@@ -279,19 +274,9 @@ async function submitCredentials() {
   }
   if (errEl) errEl.style.display = 'none';
 
-  // KNOWN LIMITATION (codex P2): PUT /api/credentials/google sits behind
-  // sessionAuth + requireOwnership (see apps/api/src/index.ts:230). The
-  // localhost dev-bypass covers it when SKYTWIN_DEV_AUTH_BYPASS=true OR
-  // NODE_ENV=development. In a production self-hosted install where the
-  // operator unset the bundled OAuth client (NO_GOOGLE_CLIENT_CONFIGURED),
-  // the no-userId bootstrap user arriving here has no session, so this
-  // PUT returns 401. Workarounds for that scenario: (a) set
-  // SKYTWIN_DEV_AUTH_BYPASS=true on the install if it's running on
-  // localhost-only, or (b) seed an initial admin user before the first
-  // bootstrap connect-gmail walk-through. A proper fix (one-time
-  // bootstrap token or "no users yet → allow first PUT" guard) is its
-  // own scoped change — tracked in launch-plan §2.6. The default launch
-  // path keeps the bundled client_id and never reaches this branch.
+  // Legacy experimental handler retained without a rendered entry point.
+  // Do not use development authentication bypasses as a first-use bootstrap;
+  // a supported flow needs a separately reviewed, one-use authority design.
   try {
     await fetchJSON('/api/credentials/google', {
       method: 'PUT',
@@ -340,6 +325,7 @@ async function submitCredentials() {
         // Desktop only — system-browser callback can't navigate the
         // renderer back. The poll fires here when /callback resolves.
         if (completion.connected && completion.userId) {
+          clearSampleSession();
           if (completion.sessionToken) {
             localStorage.setItem(KEY_SESSION_TOKEN, completion.sessionToken);
           }
@@ -399,36 +385,22 @@ async function rerender() {
 }
 
 export async function renderConnectGmail(container) {
-  wireDelegator();
-  const current = getCurrentStep();
-  const params = new URLSearchParams(window.location.hash.split('?')[1] ?? '');
-
-  // ?done=1 — set by /api/oauth/google/callback after a successful
-  // Gmail OAuth grant (or by the post-Save redirect once the consent
-  // round-trip lands back on /#/). Show the celebration card.
-  if (params.get('done') === '1') {
-    clearWizardState();
-    container.innerHTML = `<div class="cgm-wrap">${renderHeader()}${renderDone()}</div>`;
-    injectStyles();
-    return;
-  }
-
-  // ?connected=google — set by /api/oauth/google/callback when the user
-  // is deep-linked into this page from the onboarding wizard (or any
-  // /authorize call passing `next=connect-gmail`). Render an "OK, Google
-  // is connected, here's the next step" banner above the wizard so the
-  // user understands why they're seeing the five-step flow.
-  const justConnectedGoogle = params.get('connected') === 'google';
-  const justConnectedAccount = params.get('account') ?? '';
-
-  const opts = current === 5 ? await loadSavedCreds() : {};
-  const step = STEPS[current - 1];
   container.innerHTML = `
     <div class="cgm-wrap">
-      ${renderHeader()}
-      ${justConnectedGoogle ? renderGoogleConnectedBanner(justConnectedAccount) : ''}
-      ${renderProgressDots(current)}
-      ${renderStep(step, opts)}
+      <div class="cgm-header">
+        <h1>Google accounts are unavailable in this preview</h1>
+        <p>Gmail and Google Calendar connection, credential entry, and account synchronization are disabled on this surface.</p>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Explore without an account</span>
+          <span style="font-size:0.75rem;color:var(--text-dim);">Sample only</span>
+        </div>
+        <div class="card-subtitle" style="margin-bottom:1rem;">
+          The isolated sample uses fictional data and does not ask for a Google client ID, client secret, or account grant.
+        </div>
+        <a class="btn btn-primary" href="#/sample">Open the sample</a>
+      </div>
     </div>
   `;
   injectStyles();
@@ -452,8 +424,8 @@ function renderGoogleConnectedBanner(account) {
 function renderHeader() {
   return `
     <div class="cgm-header">
-      <h1>Connect Gmail to SkyTwin</h1>
-      <p>Five-minute setup, one time. Calendar already works through the bundled SkyTwin app — this hooks Gmail up using your own free Google Cloud OAuth credentials so SkyTwin can read your inbox and act on what it finds. <a href="https://jayzalowitz.github.io/skytwin/connect-gmail.html" target="_blank" rel="noopener">Why is this step needed?</a></p>
+      <h1>Google connection unavailable</h1>
+      <p>The supported preview is an account-free sample. Google connection remains disabled while its authorization and credential-custody boundaries are completed.</p>
     </div>
   `;
 }

@@ -28,6 +28,7 @@
 
 import { createLogger } from '@skytwin/core';
 import { runRelationshipTierBackfillJob } from './relationship-tier-backfill.js';
+import { requireJobAdmission, runAdmitted } from './job-admission.js';
 
 const log = createLogger('relationship-tier-scheduler');
 
@@ -50,12 +51,10 @@ export const RELATIONSHIP_TIER_BACKFILL_CONCURRENCY = 3;
 export const RELATIONSHIP_TIER_BACKFILL_USER_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
- * Race a promise against a timeout. The timeout REJECTS with a
- * timeout error; the caller catches it. We don't actually abort the
- * underlying SQL — that requires AbortSignal plumbing that the
- * repository layer doesn't yet expose — but the timeout unblocks the
- * scheduler so the queue keeps moving. The orphaned SQL completes
- * eventually and its result is discarded.
+ * Race a promise against a timeout. The timeout REJECTS with a timeout error;
+ * generation revocation is separately propagated into the per-user job. The
+ * durable database fence prevents an orphaned SQL operation from committing
+ * after that generation is revoked.
  */
 async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -90,8 +89,9 @@ async function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise
  */
 export async function runRelationshipTierBackfillBatch(
   userIds: readonly string[],
-  opts: { timeoutMs?: number; concurrency?: number } = {},
+  opts: { timeoutMs?: number; concurrency?: number; signal?: AbortSignal } = {},
 ): Promise<{ succeeded: number; failed: number; timedOut: number }> {
+  requireJobAdmission(opts.signal);
   const timeoutMs = opts.timeoutMs ?? RELATIONSHIP_TIER_BACKFILL_USER_TIMEOUT_MS;
   const concurrency = opts.concurrency ?? RELATIONSHIP_TIER_BACKFILL_CONCURRENCY;
   const summary = { succeeded: 0, failed: 0, timedOut: 0 };
@@ -100,16 +100,18 @@ export async function runRelationshipTierBackfillBatch(
   const queue: string[] = [...userIds];
   async function worker(): Promise<void> {
     for (;;) {
+      requireJobAdmission(opts.signal);
       const userId = queue.shift();
       if (userId === undefined) return;
       try {
-        await withTimeout(
-          runRelationshipTierBackfillJob(userId),
+        await runAdmitted(opts.signal, () => withTimeout(
+          runRelationshipTierBackfillJob(userId, { signal: opts.signal }),
           timeoutMs,
           `relationship-tier backfill user=${userId}`,
-        );
+        ));
         summary.succeeded++;
       } catch (err) {
+        requireJobAdmission(opts.signal);
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes('timed out')) {
           summary.timedOut++;

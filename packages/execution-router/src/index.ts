@@ -1,5 +1,20 @@
-export { ExecutionRouter, NoAdapterError, InvariantViolationError } from './execution-router.js';
-export type { ExecutionContext, RollbackRoutingResult } from './execution-router.js';
+export {
+  ExecutionRouter,
+  NoAdapterError,
+  NoRequestExecutionError,
+  InvariantViolationError,
+  AmbiguousExecutionError,
+} from './execution-router.js';
+export type {
+  ExecutionContext,
+  PreparedExecution,
+  RollbackRoutingResult,
+  ExecutionDispatchAuthorityPort,
+  ExecutionDispatchLeaseGrant,
+  ExecutionAmbiguityReason,
+  ExecutionAdmissionDecision,
+  ExecutionAdmissionGuard,
+} from './execution-router.js';
 
 export {
   AdapterRegistry,
@@ -18,5 +33,6 @@ export { applyAdapterRiskModifier } from './risk-modifier.js';
 export { logSkillGap } from './skill-gap-logger.js';
 
 export { discoverAdapters } from './adapter-discovery.js';
+export type { AdapterDiscoveryOptions } from './adapter-discovery.js';
 export { validateManifest } from './adapter-manifest.js';
 export type { AdapterManifest } from './adapter-manifest.js';

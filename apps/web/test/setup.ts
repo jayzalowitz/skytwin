@@ -7,7 +7,7 @@
  *   - `document.createElement(...).textContent`/`.innerHTML` — used by
  *     `escapeHtml` in `api-client.js`.
  *   - `window.location.hash` — read by route parsers / hash gates.
- *   - `localStorage` — read for the current user id.
+ *   - `localStorage` / `sessionStorage` — browser state used by modules.
  *
  * The `escapeHtml` stub mirrors browser behavior closely enough for the
  * assertions in these tests (escapes `&`, `<`, `>`, `"`, `'`).
@@ -59,6 +59,16 @@ if (typeof (globalThis as Record<string, unknown>).window === 'undefined') {
 if (typeof (globalThis as Record<string, unknown>).localStorage === 'undefined') {
   const store = new Map<string, string>();
   (globalThis as Record<string, unknown>).localStorage = {
+    getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+    setItem: (k: string, v: string) => store.set(k, String(v)),
+    removeItem: (k: string) => store.delete(k),
+    clear: () => store.clear(),
+  };
+}
+
+if (typeof (globalThis as Record<string, unknown>).sessionStorage === 'undefined') {
+  const store = new Map<string, string>();
+  (globalThis as Record<string, unknown>).sessionStorage = {
     getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
     setItem: (k: string, v: string) => store.set(k, String(v)),
     removeItem: (k: string) => store.delete(k),

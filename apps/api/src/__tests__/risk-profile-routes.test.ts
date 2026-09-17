@@ -31,6 +31,10 @@ vi.mock('@skytwin/core', () => ({
   }),
 }));
 
+vi.mock('../lib/user-llm-client.js', () => ({
+  buildUserLlmClient: vi.fn().mockResolvedValue(null),
+}));
+
 import { createRiskProfileRouter } from '../routes/risk-profile.js';
 
 // ---------------------------------------------------------------------------

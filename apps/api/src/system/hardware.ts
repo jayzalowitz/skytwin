@@ -9,16 +9,20 @@
  * rather than recommending something that won't run.
  *
  * Reuses the curated catalog in `@skytwin/embedded-llm` (MODEL_REGISTRY) so the
- * sizes/quality scores stay in one place.
+ * exact sizes and recommendation order stay in one place.
  */
 
-import os from 'node:os';
-import fs from 'node:fs';
-import path from 'node:path';
-import { MODEL_REGISTRY, type ModelEntry, type RamBracket } from '@skytwin/embedded-llm';
+import os from "node:os";
+import fs from "node:fs";
+import path from "node:path";
+import {
+  MODEL_REGISTRY,
+  type ModelEntry,
+  type RamBracket,
+} from "@skytwin/embedded-llm";
 
 export interface HardwareProfile {
-  /** Total physical RAM, GB (rounded). */
+  /** Total physical RAM, whole GB (floored to avoid overstating capacity). */
   ramGB: number;
   /** Free space on the volume that holds the model dir, GB (rounded). null if unknown. */
   freeDiskGB: number | null;
@@ -48,19 +52,23 @@ const GB = 1024 * 1024 * 1024;
 const DISK_HEADROOM_GB = 3;
 
 function bracketFromRamGB(ramGB: number): RamBracket {
-  if (ramGB < 6) return '4gb';
-  if (ramGB < 12) return '8gb';
-  if (ramGB < 24) return '16gb';
-  return '32gb-plus';
+  if (ramGB < 6) return "4gb";
+  if (ramGB < 12) return "8gb";
+  if (ramGB < 24) return "16gb";
+  return "32gb-plus";
 }
 
 /** Numeric rank so we can compare "does this model's RAM need fit this machine". */
 function bracketRank(b: RamBracket): number {
   switch (b) {
-    case '4gb': return 4;
-    case '8gb': return 8;
-    case '16gb': return 16;
-    case '32gb-plus': return 32;
+    case "4gb":
+      return 4;
+    case "8gb":
+      return 8;
+    case "16gb":
+      return 16;
+    case "32gb-plus":
+      return 32;
   }
 }
 
@@ -87,15 +95,27 @@ function freeDiskGBFor(dir: string): number | null {
 
 /** Where downloaded GGUF models live (mirrors the downloader's resolveModelDir). */
 function modelDir(): string {
-  return process.env['SKYTWIN_LLAMA_MODELS'] ?? path.join(os.homedir(), '.skytwin', 'models', 'llama');
+  return (
+    process.env["SKYTWIN_LLAMA_MODELS"] ??
+    path.join(os.homedir(), ".skytwin", "models", "llama")
+  );
 }
 
-/** True if a llama.cpp CLI binary is resolvable via env or on PATH. Never throws. */
+/** True if a non-interactive llama.cpp generation binary is resolvable. Never throws. */
 export function hasLlamaBinary(): boolean {
-  const envBin = process.env['SKYTWIN_LLAMACPP_BIN'];
-  if (envBin && fs.existsSync(envBin)) return true;
-  const names = process.platform === 'win32' ? ['llama-cli.exe', 'llama.exe'] : ['llama-cli', 'llama'];
-  const pathDirs = (process.env['PATH'] ?? '').split(path.delimiter).filter(Boolean);
+  const envBin = process.env["SKYTWIN_LLAMACPP_BIN"];
+  if (envBin && fs.existsSync(envBin)) {
+    if (!/^llama-cli(?:\.exe)?$/iu.test(path.basename(envBin))) return true;
+    const extension = path.basename(envBin).toLowerCase().endsWith('.exe') ? '.exe' : '';
+    return fs.existsSync(path.join(path.dirname(envBin), `llama-completion${extension}`));
+  }
+  const names =
+    process.platform === "win32"
+      ? ["llama-completion.exe"]
+      : ["llama-completion"];
+  const pathDirs = (process.env["PATH"] ?? "")
+    .split(path.delimiter)
+    .filter(Boolean);
   for (const dir of pathDirs) {
     for (const name of names) {
       try {
@@ -110,7 +130,7 @@ export function hasLlamaBinary(): boolean {
 
 /** Detect the machine's hardware profile. Pure reads; never throws. */
 export function detectHardware(): HardwareProfile {
-  const ramGB = Math.round(os.totalmem() / GB);
+  const ramGB = Math.floor(os.totalmem() / GB);
   return {
     ramGB,
     freeDiskGB: freeDiskGBFor(modelDir()),
@@ -123,18 +143,24 @@ export function detectHardware(): HardwareProfile {
 }
 
 /**
- * Pick the best local model for this machine: the highest-quality catalog model
+ * Pick the maintained local model for this machine
  * whose RAM requirement fits the machine AND whose download fits free disk with
  * headroom. Steps down to a smaller model when disk is tight, and returns a
  * null model (with a clear reason) when nothing fits.
  */
-export function recommendLocalModel(hw: HardwareProfile = detectHardware()): LocalModelRecommendation {
+export function recommendLocalModel(
+  hw: HardwareProfile = detectHardware(),
+): LocalModelRecommendation {
   const machineRank = bracketRank(hw.ramBracket);
-  // RAM-fitting models, best quality first.
-  const ramFits = MODEL_REGISTRY
-    .filter((m) => bracketRank(m.ramBracket) <= machineRank)
+  // RAM/architecture-fitting models, maintained recommendation first.
+  const ramFits = MODEL_REGISTRY.filter(
+    (m) =>
+      bracketRank(m.ramBracket) <= machineRank &&
+      m.minimumRamBytes <= hw.ramGB * GB &&
+      m.supportedArchitectures.includes(hw.arch as "arm64" | "x64"),
+  )
     .slice()
-    .sort((a, b) => b.qualityScore - a.qualityScore);
+    .sort((a, b) => b.recommendationPriority - a.recommendationPriority);
 
   const diskGB = hw.freeDiskGB;
   const fitsDisk = (m: ModelEntry): boolean =>
@@ -143,17 +169,23 @@ export function recommendLocalModel(hw: HardwareProfile = detectHardware()): Loc
   const pick = ramFits.find(fitsDisk) ?? null;
 
   if (!pick) {
-    // Either nothing matches RAM (shouldn't happen — 4gb model exists) or disk is too tight.
-    const smallest = [...MODEL_REGISTRY].sort((a, b) => a.approxBytes - b.approxBytes)[0];
-    const needGB = smallest ? Math.ceil(smallest.approxBytes / GB + DISK_HEADROOM_GB) : null;
+    const ramCompatible = ramFits.length > 0;
+    const smallest = [...MODEL_REGISTRY].sort(
+      (a, b) => a.approxBytes - b.approxBytes,
+    )[0];
+    const needGB = smallest
+      ? Math.ceil(smallest.approxBytes / GB + DISK_HEADROOM_GB)
+      : null;
     return {
       model: null,
       fitsDisk: false,
       downloadGB: null,
       reason:
-        diskGB !== null && needGB !== null
-          ? `Not enough free disk to install a local model — you have about ${diskGB} GB free and the smallest model needs about ${needGB} GB. Free up some space, or use a cloud API key instead.`
-          : 'Could not find a local model that fits this computer. You can use a cloud API key instead.',
+        !ramCompatible
+          ? `This computer has about ${hw.ramGB} GB of RAM, below the maintained local model's minimum requirement.`
+          : diskGB !== null && needGB !== null
+          ? `Not enough free disk to install a local model — you have about ${diskGB} GB free and the smallest model needs about ${needGB} GB. Free up some space and retry.`
+          : "Could not find a maintained local model compatible with this computer.",
       hardware: hw,
     };
   }
@@ -164,11 +196,17 @@ export function recommendLocalModel(hw: HardwareProfile = detectHardware()): Loc
   // actually present. Without it, the model download alone can't run inference
   // yet — say so honestly instead of over-promising local execution.
   const localClaim = hw.hasLlamaBinary
-    ? ' Runs entirely on your machine, no account or API key needed.'
-    : " We'll set up the on-device runtime alongside it — no account or API key needed.";
+    ? " The artifact will be verified before the local runtime can load it."
+    : " A compatible llama.cpp runtime is also required.";
   const reason = steppedDown
     ? `Best model that fits your free disk: ${pick.displayName} (~${downloadGB} GB). A larger model would run on your ${hw.ramGB} GB of RAM, but wouldn't fit the disk space you have right now.${localClaim}`
-    : `Best model for your computer: ${pick.displayName} (~${downloadGB} GB) — sized for your ${hw.ramGB} GB of RAM${diskGB !== null ? ` and ${diskGB} GB free disk` : ''}.${localClaim}`;
+    : `Best model for your computer: ${pick.displayName} (~${downloadGB} GB) — sized for your ${hw.ramGB} GB of RAM${diskGB !== null ? ` and ${diskGB} GB free disk` : ""}.${localClaim}`;
 
-  return { model: pick, fitsDisk: diskGB === null ? true : fitsDisk(pick), downloadGB, reason, hardware: hw };
+  return {
+    model: pick,
+    fitsDisk: diskGB === null ? true : fitsDisk(pick),
+    downloadGB,
+    reason,
+    hardware: hw,
+  };
 }

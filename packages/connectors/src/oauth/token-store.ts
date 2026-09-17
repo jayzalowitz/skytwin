@@ -7,5 +7,9 @@ export interface OAuthTokenStore {
   getToken(userId: string, provider: string): Promise<OAuthTokenSet | null>;
   saveToken(userId: string, provider: string, tokenSet: OAuthTokenSet): Promise<void>;
   deleteToken(userId: string, provider: string): Promise<void>;
-  refreshIfExpired(userId: string, provider: string): Promise<OAuthTokenSet>;
+  refreshIfExpired(
+    userId: string,
+    provider: string,
+    signal?: AbortSignal,
+  ): Promise<OAuthTokenSet>;
 }

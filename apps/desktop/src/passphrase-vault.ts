@@ -1,20 +1,20 @@
 /**
- * passphrase-vault.ts — OS-keychain-backed "remember my passphrase" store (#401).
+ * passphrase-vault.ts — secure-device-backed "remember my passphrase" store (#401).
  *
- * The credential vault (`@skytwin/credential-vault`) encrypts OAuth tokens at
- * rest with a scrypt-derived key. The derived key lives only in the API
- * process's in-memory KeyCache, so the user must re-type their vault passphrase
- * on every restart. This module lets the desktop app optionally remember that
- * passphrase on the *local device* — and only the local device — so a relaunch
- * can unlock the vault without a re-prompt.
+ * The credential-vault package can encrypt OAuth tokens with a scrypt-derived
+ * key, but current production OAuth writes are not wired through that path.
+ * Today the derived key lives only in the API process's in-memory KeyCache.
+ * This module lets the desktop app optionally remember the preparatory vault
+ * passphrase on the *local device* so a relaunch can restore that API-local key
+ * state without a re-prompt. It does not make an OAuth-at-rest claim.
  *
  * SECURITY MODEL
  * ──────────────
- * The passphrase is encrypted with Electron `safeStorage`, which is backed by
- * the OS-native secret store:
+ * The passphrase is encrypted with Electron `safeStorage` only when it is
+ * backed by an OS-native secret store:
  *   - macOS   → Keychain
  *   - Windows → DPAPI (Credential Manager)
- *   - Linux   → Secret Service (libsecret) / kwallet
+ *   - Linux   → Secret Service (libsecret) / KWallet
  * The resulting ciphertext (NOT the plaintext) is persisted via the injected
  * key-value store (electron-store in production, in the OS userData dir). Even
  * with filesystem access to that store, the ciphertext is only decryptable on
@@ -22,32 +22,37 @@
  *
  * GRACEFUL FALLBACK (AC: "if no, current behavior unchanged")
  * ───────────────────────────────────────────────────────────
- * On a headless Linux box, a freshly-installed distro with no Secret Service,
- * or any environment where `safeStorage.isEncryptionAvailable()` is false, we
- * MUST NOT persist the passphrase in plaintext. Instead every operation returns
- * a typed `{ ok: false, reason: 'unsupported' }` and the renderer keeps the
- * current behavior (prompt for the passphrase every session). We never weaken
- * the boundary to a plaintext fallback.
+ * Electron's Linux `basic_text` backend uses a hard-coded password and is not a
+ * secret store. On Linux we therefore require one of the reviewed secure
+ * backend names in addition to `safeStorage.isEncryptionAvailable()`. Missing,
+ * unknown, or `basic_text` backends return a typed
+ * `{ ok: false, reason: 'unsupported' }`. We never weaken the boundary to that
+ * fallback.
  *
  * The class is dependency-injected (ports for safeStorage + the key-value
  * store) so the core logic is unit-testable without spawning Electron.
  */
 
+import { resolveSecureStorageBackend, type SecureStorageBackendPort } from './secure-storage-backend.js';
+
 /** The subset of Electron's `safeStorage` this module depends on. */
-export interface SafeStoragePort {
+export interface SafeStoragePort extends SecureStorageBackendPort {
   isEncryptionAvailable(): boolean;
+  getSelectedStorageBackend(): string;
   encryptString(plaintext: string): Buffer;
   decryptString(ciphertext: Buffer): string;
 }
 
 /**
  * The subset of a key-value store (electron-store) this module depends on.
- * Values are base64-encoded safeStorage ciphertext strings.
+ * Values are JSON records containing a version, backend identity, and
+ * base64-encoded safeStorage ciphertext.
  */
 export interface PassphraseKeyValueStore {
   get(key: string): string | undefined;
   set(key: string, value: string): void;
   delete(key: string): void;
+  keys(): string[];
 }
 
 /** Result of an attempt to read a remembered passphrase. */
@@ -65,18 +70,55 @@ export type RememberWriteResult =
  * remembered passphrase without clobbering each other.
  */
 const STORE_KEY_PREFIX = 'vault-passphrase:';
+const STORED_RECORD_VERSION = 1;
+
+interface StoredPassphraseRecord {
+  version: typeof STORED_RECORD_VERSION;
+  backend: string;
+  ciphertext: string;
+}
 
 function storeKeyFor(userId: string): string {
   return `${STORE_KEY_PREFIX}${userId}`;
 }
 
+function parseStoredRecord(value: string): StoredPassphraseRecord | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const candidate = parsed as Record<string, unknown>;
+    if (
+      candidate.version !== STORED_RECORD_VERSION
+      || typeof candidate.backend !== 'string'
+      || candidate.backend === ''
+      || typeof candidate.ciphertext !== 'string'
+      || candidate.ciphertext === ''
+    ) {
+      return null;
+    }
+    return {
+      version: STORED_RECORD_VERSION,
+      backend: candidate.backend,
+      ciphertext: candidate.ciphertext,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export class PassphraseVault {
   private readonly safeStorage: SafeStoragePort;
   private readonly store: PassphraseKeyValueStore;
+  private readonly platform: NodeJS.Platform;
 
-  constructor(safeStorage: SafeStoragePort, store: PassphraseKeyValueStore) {
+  constructor(
+    safeStorage: SafeStoragePort,
+    store: PassphraseKeyValueStore,
+    platform: NodeJS.Platform = process.platform,
+  ) {
     this.safeStorage = safeStorage;
     this.store = store;
+    this.platform = platform;
   }
 
   /**
@@ -85,13 +127,35 @@ export class PassphraseVault {
    * renderer hides the "Remember on this device?" prompt in that case).
    */
   isSupported(): boolean {
-    try {
-      return this.safeStorage.isEncryptionAvailable();
-    } catch {
-      // Some Electron builds throw rather than return false when the platform
-      // backend is missing. Treat any failure as "not supported" — fail safe.
-      return false;
+    return this.currentBackend() !== null;
+  }
+
+  /**
+   * Remove records that cannot be proven to have been written by the secure
+   * backend selected for this process. Call this once after Electron's `ready`
+   * event so Linux backend discovery has completed.
+   *
+   * Pre-v1 values were bare base64 strings and did not record which backend
+   * wrote them. They are deliberately deleted without attempting decryption:
+   * an older release may have created them through Linux `basic_text`.
+   */
+  purgeUntrustedEntries(): number {
+    const backend = this.currentBackend();
+    let removed = 0;
+    for (const key of this.store.keys()) {
+      if (!key.startsWith(STORE_KEY_PREFIX)) continue;
+      const stored = this.store.get(key);
+      const record = stored === undefined ? null : parseStoredRecord(stored);
+      if (backend === null || record === null || record.backend !== backend) {
+        this.store.delete(key);
+        removed += 1;
+      }
     }
+    return removed;
+  }
+
+  private currentBackend(): string | null {
+    return resolveSecureStorageBackend(this.safeStorage, this.platform);
   }
 
   /**
@@ -101,7 +165,8 @@ export class PassphraseVault {
    * plaintext as a fallback.
    */
   remember(userId: string, passphrase: string): RememberWriteResult {
-    if (!this.isSupported()) {
+    const backend = this.currentBackend();
+    if (backend === null) {
       return { ok: false, reason: 'unsupported' };
     }
     if (passphrase.length === 0) {
@@ -110,7 +175,12 @@ export class PassphraseVault {
       return { ok: false, reason: 'empty_passphrase' };
     }
     const ciphertext = this.safeStorage.encryptString(passphrase);
-    this.store.set(storeKeyFor(userId), ciphertext.toString('base64'));
+    const record: StoredPassphraseRecord = {
+      version: STORED_RECORD_VERSION,
+      backend,
+      ciphertext: ciphertext.toString('base64'),
+    };
+    this.store.set(storeKeyFor(userId), JSON.stringify(record));
     return { ok: true };
   }
 
@@ -122,15 +192,24 @@ export class PassphraseVault {
    * the passphrase prompt; we proactively evict the bad entry.
    */
   getRemembered(userId: string): RememberedPassphraseResult {
-    if (!this.isSupported()) {
+    const backend = this.currentBackend();
+    if (backend === null) {
+      // A previous build may have persisted through Linux `basic_text`.
+      // Discard that entry instead of leaving a recoverable passphrase behind.
+      this.forget(userId);
       return { ok: false, reason: 'unsupported' };
     }
     const stored = this.store.get(storeKeyFor(userId));
     if (stored === undefined || stored === '') {
       return { ok: false, reason: 'not_found' };
     }
+    const record = parseStoredRecord(stored);
+    if (record === null || record.backend !== backend) {
+      this.forget(userId);
+      return { ok: false, reason: 'corrupt' };
+    }
     try {
-      const ciphertext = Buffer.from(stored, 'base64');
+      const ciphertext = Buffer.from(record.ciphertext, 'base64');
       const passphrase = this.safeStorage.decryptString(ciphertext);
       if (passphrase.length === 0) {
         // Decrypted to nothing — treat as corrupt rather than handing back an
@@ -149,8 +228,19 @@ export class PassphraseVault {
 
   /** Whether a remembered passphrase exists for `userId` (does not decrypt). */
   has(userId: string): boolean {
+    const backend = this.currentBackend();
+    if (backend === null) {
+      this.forget(userId);
+      return false;
+    }
     const stored = this.store.get(storeKeyFor(userId));
-    return stored !== undefined && stored !== '';
+    if (stored === undefined || stored === '') return false;
+    const record = parseStoredRecord(stored);
+    if (record === null || record.backend !== backend) {
+      this.forget(userId);
+      return false;
+    }
+    return true;
   }
 
   /**

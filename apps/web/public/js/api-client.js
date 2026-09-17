@@ -1,13 +1,71 @@
 import {
-  KEY_DEMO_SESSION_EXPIRES_AT,
-  KEY_SESSION_TOKEN,
-  KEY_TOUR_MODE,
-  KEY_USER_ID,
-} from './storage-keys.js';
+  clearSampleSession,
+  getEffectiveAuthToken,
+  hasRealAuthentication,
+  isSampleMode,
+  readSampleSession,
+  SAMPLE_USER_ID,
+  storeSampleSession,
+} from './sample-session.js';
 
 const API = '/api';
-const DEMO_USER_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+export const DEMO_USER_ID = SAMPLE_USER_ID;
 let demoSessionPromise = null;
+let demoSessionGeneration = 0;
+let demoSessionClosing = false;
+
+export function createClientRequestId() {
+  const platformUuid = globalThis.crypto?.randomUUID?.();
+  if (platformUuid) return platformUuid;
+  // This is a deduplication identity, not an authentication secret.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (token) => {
+    const value = Math.floor(Math.random() * 16);
+    return (token === 'x' ? value : (value & 0x3) | 0x8).toString(16);
+  });
+}
+
+/**
+ * Reuse a request identity only while the user is retrying the same logical
+ * message in the same thread. Callers keep the returned object until a
+ * terminal response arrives or the composer is edited.
+ */
+export function resolveAssistantRequestIdentity(pending, content, threadId = null) {
+  const normalizedThreadId = threadId ?? null;
+  if (
+    pending?.content === content &&
+    pending?.threadId === normalizedThreadId
+  ) {
+    return pending;
+  }
+  return {
+    requestId: createClientRequestId(),
+    content,
+    threadId: normalizedThreadId,
+  };
+}
+
+/**
+ * A request identity is retired only when the response proves the logical
+ * turn did not remain ambiguously in flight. Generic 5xx and transport
+ * failures may arrive after durable side effects, so they must be retried
+ * with the same key.
+ */
+export function shouldRetireAssistantRequestIdentity(status = 0, code = '') {
+  return code === 'assistant_request_id_conflict' ||
+    code === 'assistant_providers_failed' ||
+    code === 'assistant_generation_failed';
+}
+
+/** Invalidate every in-flight sample start before disposal begins. */
+export function beginDemoSessionExit() {
+  demoSessionGeneration += 1;
+  demoSessionClosing = true;
+}
+
+/** Re-open renewal only when disposal could not be confirmed. */
+export function cancelDemoSessionExit() {
+  demoSessionClosing = false;
+}
 
 /**
  * Escape HTML special characters to prevent XSS when inserting into innerHTML.
@@ -23,7 +81,7 @@ export function escapeHtml(str) {
  * Build the Authorization header from the stored session token (if any).
  */
 function authHeaders() {
-  const token = localStorage.getItem(KEY_SESSION_TOKEN);
+  const token = getEffectiveAuthToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
@@ -49,7 +107,7 @@ function authHeaders() {
  * developers / log analysis (do NOT render to users by default).
  */
 export class ApiError extends Error {
-  constructor({ kind, friendlyMessage, serverMessage, status, code, help, docs }) {
+  constructor({ kind, friendlyMessage, serverMessage, status, code, help, docs, responseBody }) {
     super(friendlyMessage);
     this.name = 'ApiError';
     this.kind = kind;
@@ -63,6 +121,9 @@ export class ApiError extends Error {
     this.code = code ?? '';
     this.help = help ?? '';
     this.docs = docs ?? '';
+    // Structured error payload for narrowly-scoped recovery UIs. Never render
+    // this object directly; pages may read known fields such as `readiness`.
+    this.responseBody = responseBody ?? null;
   }
 }
 
@@ -92,7 +153,20 @@ async function classifyHttpError(res) {
       friendlyMessage: "Can't reach SkyTwin right now. We'll keep trying.",
       serverMessage,
       status: res.status,
-      code, help, docs,
+      code, help, docs, responseBody: body,
+    });
+  }
+
+  if (
+    res.status === 403 &&
+    (code === 'routine_blocked_by_policy' || code === 'routine_requires_approval')
+  ) {
+    return new ApiError({
+      kind: 'bad-request',
+      friendlyMessage: serverMessage,
+      serverMessage,
+      status: res.status,
+      code, help, docs, responseBody: body,
     });
   }
 
@@ -102,7 +176,7 @@ async function classifyHttpError(res) {
       friendlyMessage: 'Your session expired. Sign in again to continue.',
       serverMessage,
       status: res.status,
-      code, help, docs,
+      code, help, docs, responseBody: body,
     });
   }
 
@@ -112,7 +186,7 @@ async function classifyHttpError(res) {
       friendlyMessage: "We couldn't find that.",
       serverMessage,
       status: res.status,
-      code, help, docs,
+      code, help, docs, responseBody: body,
     });
   }
 
@@ -126,7 +200,7 @@ async function classifyHttpError(res) {
       friendlyMessage: serverMessage,
       serverMessage,
       status: res.status,
-      code, help, docs,
+      code, help, docs, responseBody: body,
     });
   }
 
@@ -142,7 +216,7 @@ async function classifyHttpError(res) {
         friendlyMessage: serverMessage,
         serverMessage,
         status: res.status,
-        code, help, docs,
+        code, help, docs, responseBody: body,
       });
     }
     return new ApiError({
@@ -150,7 +224,7 @@ async function classifyHttpError(res) {
       friendlyMessage: "Something went wrong on our end. Please try again.",
       serverMessage,
       status: res.status,
-      code, help, docs,
+      code, help, docs, responseBody: body,
     });
   }
 
@@ -159,7 +233,7 @@ async function classifyHttpError(res) {
     friendlyMessage: 'Something went wrong. Please try again.',
     serverMessage,
     status: res.status,
-    code, help, docs,
+    code, help, docs, responseBody: body,
   });
 }
 
@@ -171,27 +245,55 @@ async function classifyHttpError(res) {
  * branch on `err.kind` rather than parsing `err.message`. Use
  * `renderApiError(err, retry)` for a consistent visual treatment.
  */
-export async function fetchJSON(url, options = {}, demoRenewed = false) {
+export async function fetchJSON(
+  url,
+  options = {},
+  demoRenewed = false,
+  allowDemoRenewal = true,
+) {
   const sampleExpiry = Date.parse(
-    localStorage.getItem(KEY_DEMO_SESSION_EXPIRES_AT) ?? '',
+    readSampleSession().expiresAt ?? '',
   );
   if (
+    allowDemoRenewal &&
     !demoRenewed &&
     url !== `${API}/v1/demo/session` &&
-    localStorage.getItem(KEY_TOUR_MODE) === '1' &&
-    localStorage.getItem(KEY_USER_ID) === DEMO_USER_ID &&
+    isSampleMode() &&
     Number.isFinite(sampleExpiry) &&
     sampleExpiry <= Date.now()
   ) {
     await startDemoSession();
-    return fetchJSON(url, options, true);
+    return fetchJSON(url, options, true, allowDemoRenewal);
   }
 
+  // Keep the exact sample authority used by this request. Parallel dashboard
+  // reads can receive staggered 401s after one of them has already renewed the
+  // session; those older responses must reuse the successor instead of
+  // replacing (and revoking) it again.
+  const currentSampleToken = isSampleMode()
+    ? readSampleSession().token
+    : null;
+  const authTokenAtRequest = getEffectiveAuthToken();
+  const { headers: optionHeaders = {}, ...requestOptions } = options;
+  const requestHeaders = {
+    'Content-Type': 'application/json',
+    ...(authTokenAtRequest
+      ? { Authorization: `Bearer ${authTokenAtRequest}` }
+      : {}),
+    ...optionHeaders,
+  };
+  const requestAuthorization = Object.entries(requestHeaders).find(
+    ([name]) => name.toLowerCase() === 'authorization',
+  )?.[1];
+  const sampleTokenAtRequest = currentSampleToken &&
+    requestAuthorization === `Bearer ${currentSampleToken}`
+    ? currentSampleToken
+    : null;
   let res;
   try {
     res = await fetch(url, {
-      headers: { 'Content-Type': 'application/json', ...authHeaders(), ...options.headers },
-      ...options,
+      ...requestOptions,
+      headers: requestHeaders,
     });
   } catch (cause) {
     // Network unreachable (no DNS, no route, browser offline, etc.)
@@ -207,13 +309,18 @@ export async function fetchJSON(url, options = {}, demoRenewed = false) {
   if (!res.ok) {
     if (
       res.status === 401 &&
+      allowDemoRenewal &&
       !demoRenewed &&
       url !== `${API}/v1/demo/session` &&
-      localStorage.getItem(KEY_TOUR_MODE) === '1' &&
-      localStorage.getItem(KEY_USER_ID) === DEMO_USER_ID
+      sampleTokenAtRequest &&
+      isSampleMode()
     ) {
+      const currentSampleToken = readSampleSession().token;
+      if (currentSampleToken && currentSampleToken !== sampleTokenAtRequest) {
+        return fetchJSON(url, options, true, allowDemoRenewal);
+      }
       await startDemoSession();
-      return fetchJSON(url, options, true);
+      return fetchJSON(url, options, true, allowDemoRenewal);
     }
     const apiErr = await classifyHttpError(res);
     if (apiErr.kind === 'offline') markApiOffline();
@@ -454,7 +561,27 @@ export function fetchDemoInfo() {
 export async function startDemoSession() {
   if (demoSessionPromise) return demoSessionPromise;
   demoSessionPromise = (async () => {
+    if (demoSessionClosing) {
+      throw new Error('The sample session is being discarded.');
+    }
+    const requestGeneration = demoSessionGeneration;
+    if (hasRealAuthentication()) {
+      throw new Error('Sign out before starting the sample.');
+    }
     const session = await fetchJSON(`${API}/v1/demo/session`, { method: 'POST' });
+    if (
+      demoSessionClosing ||
+      requestGeneration !== demoSessionGeneration
+    ) {
+      void endSampleSimulation(session?.token).catch(() => {});
+      throw new Error('The sample session changed while it was starting.');
+    }
+    // A real login may finish while the public request is in flight. Sample
+    // state is tab-scoped and never overwrites it; real authentication wins.
+    if (hasRealAuthentication()) {
+      void endSampleSimulation(session?.token).catch(() => {});
+      throw new Error('Authentication changed while the sample session was starting.');
+    }
     const expiresAtMs = Date.parse(session?.expiresAt ?? '');
     if (
       typeof session?.token !== 'string' ||
@@ -463,16 +590,10 @@ export async function startDemoSession() {
       !Number.isFinite(expiresAtMs) ||
       expiresAtMs <= Date.now()
     ) {
-      localStorage.removeItem(KEY_SESSION_TOKEN);
-      localStorage.removeItem(KEY_DEMO_SESSION_EXPIRES_AT);
-      localStorage.removeItem(KEY_TOUR_MODE);
-      if (localStorage.getItem(KEY_USER_ID) === DEMO_USER_ID) {
-        localStorage.removeItem(KEY_USER_ID);
-      }
+      clearSampleSession();
       throw new Error('Sample session response was invalid.');
     }
-    localStorage.setItem(KEY_SESSION_TOKEN, session.token);
-    localStorage.setItem(KEY_DEMO_SESSION_EXPIRES_AT, session.expiresAt);
+    storeSampleSession(session);
     return session;
   })();
   try {
@@ -493,6 +614,36 @@ export function previewDemoDecision(situation) {
 // the source of truth is DEMO_RECIPES in @skytwin/shared-types.
 export function fetchDemoRecipes() {
   return fetchJSON(`${API}/v1/demo/recipes`);
+}
+
+export function fetchSampleSimulation() {
+  return fetchJSON(`${API}/v1/demo/simulation`);
+}
+
+export function sendSampleSimulationCommand(command) {
+  return fetchJSON(`${API}/v1/demo/simulation/commands`, {
+    method: 'POST',
+    body: JSON.stringify(command),
+  }, false, false);
+}
+
+export async function endSampleSimulation(
+  token = readSampleSession().token,
+) {
+  if (!token) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3_000);
+  try {
+    const res = await fetch(`${API}/v1/demo/simulation`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    });
+    if (!res.ok) throw await classifyHttpError(res);
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export function askTwin(userId, situation, opts = {}) {
@@ -523,11 +674,8 @@ export function getGoogleAuthUrl(userId, { desktop = false, newUser = false, nex
   // shape before threading it through signed state. Lets the desktop
   // newUser wizard poll for the just-created userId.
   if (pendingKey) params.set('pendingKey', pendingKey);
-  // Optional scope-tier opt-in. Today the only accepted value is 'gmail',
-  // which adds gmail.readonly + gmail.modify to the requested scope list
-  // when (and only when) the caller has user-supplied OAuth credentials.
-  // The bundled SkyTwin-team client rejects ?include=gmail with HTTP 412
-  // and code GMAIL_REQUIRES_BYO_CLIENT — by design.
+  // Legacy experimental scope-tier parameter. The supported preview rejects
+  // Google before this can be used; keep it only for explicit source testing.
   if (include) params.set('include', include);
   return fetchJSON(`${API}/oauth/google/authorize?${params.toString()}`);
 }
@@ -620,10 +768,10 @@ export function fetchAISettings(userId) {
   return fetchSettings(userId).then(s => s?.aiProviders ?? []);
 }
 
-export function saveAIProviders(userId, providers) {
+export function saveAIProviders(userId, providers, reasoningMode) {
   return fetchJSON(`${API}/settings/${userId}/ai`, {
     method: 'PUT',
-    body: JSON.stringify({ providers }),
+    body: JSON.stringify({ providers, reasoningMode }),
   });
 }
 
@@ -717,6 +865,92 @@ export function fetchWatchRuns(userId, watchId, limit = 10) {
   return fetchJSON(`${API}/watches/${encodeURIComponent(userId)}/${encodeURIComponent(watchId)}/runs?${q}`);
 }
 
+// ── Adaptive workflows (versioned, explicit activation) ──────────────
+
+export async function fetchAdaptiveWorkflowReadiness(userId) {
+  try {
+    return await fetchJSON(`${API}/adaptive-workflows/${encodeURIComponent(userId)}/readiness`);
+  } catch (error) {
+    // Non-ready states deliberately use 4xx/5xx status codes while still
+    // carrying a typed readiness object the UI can recover and render.
+    if (error?.responseBody?.readiness) return error.responseBody;
+    throw error;
+  }
+}
+
+export function createAdaptiveSignalDigestDraft(
+  userId,
+  description,
+  allowClarification = true,
+  idempotencyKey,
+) {
+  return fetchJSON(`${API}/adaptive-workflows/${encodeURIComponent(userId)}/signal-digest-drafts`, {
+    method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey ?? createClientRequestId() },
+    body: JSON.stringify({ description, allowClarification }),
+  });
+}
+
+export function fetchAdaptiveWorkflowDetail(userId, workflowId) {
+  return fetchJSON(
+    `${API}/adaptive-workflows/${encodeURIComponent(userId)}/${encodeURIComponent(workflowId)}`,
+  );
+}
+
+export function fetchAdaptiveWorkflowResumableDraft(userId) {
+  return fetchJSON(
+    `${API}/adaptive-workflows/${encodeURIComponent(userId)}/resumable-draft`,
+  );
+}
+
+export function createAdaptiveWorkflowRevision(
+  userId,
+  workflowId,
+  parentVersionId,
+  payload,
+  idempotencyKey,
+) {
+  return fetchJSON(
+    `${API}/adaptive-workflows/${encodeURIComponent(userId)}/${encodeURIComponent(workflowId)}/revisions`,
+    {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey ?? createClientRequestId() },
+      body: JSON.stringify({ parentVersionId, payload }),
+    },
+  );
+}
+
+export function createAdaptiveWorkflowFeedbackRevision(
+  userId,
+  workflowId,
+  parentVersionId,
+  feedback,
+  idempotencyKey,
+) {
+  return fetchJSON(
+    `${API}/adaptive-workflows/${encodeURIComponent(userId)}/${encodeURIComponent(workflowId)}/feedback-revisions`,
+    {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey ?? createClientRequestId() },
+      body: JSON.stringify({ parentVersionId, feedback }),
+    },
+  );
+}
+
+export function activateAdaptiveWorkflow(userId, workflowId, activation) {
+  return fetchJSON(
+    `${API}/adaptive-workflows/${encodeURIComponent(userId)}/${encodeURIComponent(workflowId)}/activate`,
+    { method: 'POST', body: JSON.stringify(activation) },
+  );
+}
+
+export function rollbackAdaptiveWorkflow(userId, workflowId, rollback) {
+  return fetchJSON(
+    `${API}/adaptive-workflows/${encodeURIComponent(userId)}/${encodeURIComponent(workflowId)}/rollback`,
+    { method: 'POST', body: JSON.stringify(rollback) },
+  );
+}
+
 // ── Assistant (issue #135 phase 1) ────────────────────
 
 export function fetchAssistantThreads(userId) {
@@ -733,10 +967,15 @@ export function deleteAssistantThread(threadId, userId) {
   });
 }
 
-export function sendAssistantMessage(userId, content, threadId = null) {
+export function sendAssistantMessage(
+  userId,
+  content,
+  threadId = null,
+  requestId = createClientRequestId(),
+) {
   return fetchJSON(`${API}/assistant/messages`, {
     method: 'POST',
-    body: JSON.stringify({ userId, content, threadId }),
+    body: JSON.stringify({ userId, content, threadId, requestId }),
   });
 }
 
@@ -756,9 +995,9 @@ export function sendAssistantMessage(userId, content, threadId = null) {
  *   - onError({ message, partialContent }) — terminal error event
  *
  * Returns a Promise that resolves when the stream closes (after `done`
- * or `error`). The promise rejects only on transport-level failures
- * (network down, 5xx before SSE handshake) — server-emitted error events
- * resolve normally and surface via `onError`.
+ * or `error`). The promise rejects on transport failures and malformed or
+ * unterminated streams. Valid server-emitted error events resolve normally
+ * and surface via `onError`.
  */
 export async function sendAssistantMessageStream(userId, content, threadId, callbacks = {}, options = {}) {
   const { onThread, onUserMessage, onChunk, onDone, onError } = callbacks;
@@ -767,7 +1006,7 @@ export async function sendAssistantMessageStream(userId, content, threadId, call
   // aborted; the read loop exits cleanly because reader.read() also
   // rejects. We rethrow AbortError so the caller's catch can distinguish
   // "user-initiated stop" from real network failures.
-  const { signal } = options;
+  const { signal, requestId = createClientRequestId() } = options;
 
   let res;
   try {
@@ -778,7 +1017,7 @@ export async function sendAssistantMessageStream(userId, content, threadId, call
         'Accept': 'text/event-stream',
         ...authHeaders(),
       },
-      body: JSON.stringify({ userId, content, threadId }),
+      body: JSON.stringify({ userId, content, threadId, requestId }),
       signal,
     });
   } catch (err) {
@@ -789,13 +1028,38 @@ export async function sendAssistantMessageStream(userId, content, threadId, call
     throw new Error('Unable to reach the server. Please check your connection.');
   }
 
+  if (res.status === 202) {
+    const pending = await res.json().catch(() => null);
+    const responseThread = pending?.thread;
+    const persistedUserMessage = pending?.userMessage;
+    const validPending = pending?.status === 'unresolved' &&
+      pending?.code === 'assistant_request_recovery_required' &&
+      responseThread && typeof responseThread === 'object' &&
+      typeof responseThread.id === 'string' && responseThread.isNew === false &&
+      (threadId == null || responseThread.id === threadId) &&
+      persistedUserMessage && typeof persistedUserMessage === 'object' &&
+      typeof persistedUserMessage.id === 'string' &&
+      persistedUserMessage.threadId === responseThread.id &&
+      persistedUserMessage.role === 'user' &&
+      persistedUserMessage.content === content &&
+      persistedUserMessage.clientRequestId === requestId;
+    const error = new ApiError({
+      kind: 'pending',
+      friendlyMessage: 'That request could not be reconciled safely. If no reply appears, start a new chat or edit the message before sending again.',
+      serverMessage: pending?.error || pending?.message || 'Assistant request requires recovery',
+      status: res.status,
+      code: validPending
+        ? 'assistant_request_recovery_required'
+        : 'assistant_response_reconciliation_required',
+    });
+    error.threadId = validPending ? responseThread.id : null;
+    throw error;
+  }
+
   if (!res.ok) {
     // Server rejected before opening the stream (e.g. 400 validation,
     // 409 no provider, 502 all providers down on pre-stream check).
-    // Echo the error shape callers already handle from fetchJSON.
-    const err = await res.json().catch(() => null);
-    const message = err?.error || err?.message || `Request failed (HTTP ${res.status})`;
-    throw new Error(message);
+    throw await classifyHttpError(res);
   }
 
   if (!res.body) {
@@ -805,13 +1069,81 @@ export async function sendAssistantMessageStream(userId, content, threadId, call
   const reader = res.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
+  let terminalEvent = null;
+  let announcedThreadId = threadId ?? null;
+  let validatedUserMessage = false;
+
+  const protocolError = (code, message) => new ApiError({
+    kind: 'server',
+    friendlyMessage: message,
+    serverMessage: code,
+    status: 0,
+    code,
+  });
 
   const dispatch = (event, data) => {
-    if (event === 'thread') onThread?.(data);
-    else if (event === 'user') onUserMessage?.(data);
+    if (terminalEvent) {
+      throw protocolError(
+        'assistant_stream_event_after_terminal',
+        'The assistant returned an invalid stream. Retry this message to reconcile it safely.',
+      );
+    }
+    if (event === 'thread') {
+      if (
+        !data || typeof data !== 'object' || typeof data.id !== 'string' ||
+        typeof data.isNew !== 'boolean' ||
+        (announcedThreadId !== null && data.id !== announcedThreadId)
+      ) {
+        throw protocolError(
+          'assistant_stream_request_mismatch',
+          'The assistant returned a thread that did not match this request. Retry to reconcile it safely.',
+        );
+      }
+      announcedThreadId = data.id;
+      onThread?.(data);
+    } else if (event === 'user') {
+      if (
+        !data || typeof data !== 'object' || announcedThreadId === null ||
+        data.threadId !== announcedThreadId || data.role !== 'user' ||
+        data.content !== content || data.clientRequestId !== requestId ||
+        typeof data.id !== 'string'
+      ) {
+        throw protocolError(
+          'assistant_stream_request_mismatch',
+          'The assistant returned a message that did not match this request. Retry to reconcile it safely.',
+        );
+      }
+      validatedUserMessage = true;
+      onUserMessage?.(data);
+    }
     else if (event === 'chunk') onChunk?.(data?.content ?? '');
-    else if (event === 'done') onDone?.(data);
-    else if (event === 'error') onError?.(data);
+    else if (event === 'done') {
+      if (
+        !data || typeof data !== 'object' ||
+        typeof data.id !== 'string' || data.threadId !== announcedThreadId ||
+        data.role !== 'assistant' || typeof data.content !== 'string' ||
+        data.clientRequestId !== requestId || !validatedUserMessage
+      ) {
+        throw protocolError(
+          'assistant_stream_invalid_terminal',
+          'The assistant returned an incomplete final response. Retry this message to reconcile it safely.',
+        );
+      }
+      terminalEvent = 'done';
+      onDone?.(data);
+    } else if (event === 'error') {
+      if (
+        !data || typeof data !== 'object' || typeof data.message !== 'string' ||
+        announcedThreadId === null || !validatedUserMessage
+      ) {
+        throw protocolError(
+          'assistant_stream_invalid_terminal',
+          'The assistant returned an incomplete error response. Retry this message to reconcile it safely.',
+        );
+      }
+      terminalEvent = 'error';
+      onError?.(data);
+    }
   };
 
   try {
@@ -831,12 +1163,19 @@ export async function sendAssistantMessageStream(userId, content, threadId, call
         boundary = buffer.indexOf('\n\n');
       }
     }
+    buffer += decoder.decode();
     // Flush any final fragment (defensive; well-behaved servers always
     // end with `\n\n` after the terminal event).
     const tail = buffer.trim();
     if (tail.length > 0) {
       const parsed = parseSseEvent(tail);
       if (parsed) dispatch(parsed.event, parsed.data);
+    }
+    if (!terminalEvent) {
+      throw protocolError(
+        'assistant_stream_terminal_missing',
+        'The assistant connection ended before completion. Retry this message to reconcile it safely.',
+      );
     }
   } catch (err) {
     // Aborted by caller (Stop button) — surface to caller via the same
@@ -902,9 +1241,8 @@ export function snoozeCapabilitySuggestion(id, userId, untilDays = 7) {
  * an assistant reply that exposed a capability gap. Returns
  * `{ intentDetected, suggestions: [{registryId, displayName, reason, confidence}], reason? }`.
  *
- * When the user has no LLM configured, the server returns
- * `{ intentDetected: false, suggestions: [], reason: 'no_llm_configured' }`
- * — the caller should fall back to its keyword heuristic.
+ * When generation is unavailable, `reason` distinguishes missing
+ * configuration from provider/prompt failure so the UI can remain truthful.
  */
 export function requestInstallSuggestion(userId, userMessage, assistantReply) {
   return fetchJSON(`${API}/assistant/install-suggestion?userId=${encodeURIComponent(userId)}`, {
@@ -1233,23 +1571,12 @@ export function fetchEmbeddedLlmRegistry() {
   return fetchJSON(`${API}/embedded-llm/registry`);
 }
 
-export function fetchEmbeddedLlmModelDir() {
-  return fetchJSON(`${API}/embedded-llm/model-dir`);
-}
-
 export function recommendEmbeddedDefault(bracket) {
   return fetchJSON(`${API}/embedded-llm/recommend-default?bracket=${encodeURIComponent(bracket)}`);
 }
 
-// Real server-side machine profile (RAM / free disk / cores / arch). Public
-// (no auth) so onboarding can size the local-model pick before sign-in.
-export function fetchHardwareProfile() {
-  return fetchJSON(`${API}/system/hardware`);
-}
-
-// The single best local model that actually fits THIS computer (RAM + free
-// disk aware), with a plain-language reason. Returns { model, reason,
-// downloadGB, fitsDisk, hardware }. `model` is null when nothing fits.
+// The single best local model that fits this computer. The API intentionally
+// returns only the recommendation, not the underlying host profile or paths.
 export function fetchLocalModelRecommendation() {
   return fetchJSON(`${API}/system/recommend-local-model`);
 }

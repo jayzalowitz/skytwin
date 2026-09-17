@@ -13,7 +13,8 @@ import {
   wireApiRetry,
 } from '../api-client.js';
 import { showToast } from '../toast.js';
-import { KEY_USER_ID } from '../storage-keys.js';
+import { getEffectiveUserId } from '../sample-session.js';
+import { isAccountBackedIntegrationIdentifier } from '../google-preview-boundary.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Singleton delegator guard — see CLAUDE.md "Frontend Event Handling".
@@ -24,7 +25,7 @@ let _container = null;
 let _activeCadence = 'daily';
 
 function getCurrentUserId() {
-  return localStorage.getItem(KEY_USER_ID) || '';
+  return getEffectiveUserId();
 }
 
 function isOnBriefingRoute() {
@@ -306,21 +307,24 @@ function renderWatchRuns(list) {
 function renderCoveragePanel(coverage) {
   if (!coverage || !Array.isArray(coverage.capabilityStatus)) return '';
   const status = coverage.capabilityStatus
-    .map(
-      (c) =>
-        `<li><span class="cov-dot cov-${escapeHtml(c.status)}"></span>${escapeHtml(c.capability)}${
-          c.status !== 'available' && c.unlockedBy?.length
-            ? ` <span class="muted">— connect ${escapeHtml(c.unlockedBy.join(', '))}</span>`
+    .filter(c => !isAccountBackedIntegrationIdentifier(c.capability))
+    .map((c) => {
+      const safeUnlockers = (c.unlockedBy ?? []).filter(
+        source => !isAccountBackedIntegrationIdentifier(source),
+      );
+      return `<li><span class="cov-dot cov-${escapeHtml(c.status)}"></span>${escapeHtml(c.capability)}${
+          c.status !== 'available' && safeUnlockers.length
+            ? ` <span class="muted">— connect ${escapeHtml(safeUnlockers.join(', '))}</span>`
             : ''
-        }</li>`,
-    )
+        }</li>`;
+    })
     .join('');
   return `<div class="digest-coverage"><h4 class="digest-topic-title">What I can see</h4><ul class="digest-coverage-list">${status}</ul></div>`;
 }
 
 // Cold-start: zero connectors → the PRIMARY surface, not a buried panel (DESIGN.md).
 function renderColdStart(coverage) {
-  const sources = ['Gmail', 'Calendar', 'Files'];
+  const sources = ['Files'];
   return `
     <div class="digest-state">
       <p class="digest-voice">Connect a source and I'll start your briefing.</p>

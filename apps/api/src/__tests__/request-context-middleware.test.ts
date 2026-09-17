@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 import { requestContext } from '../middleware/request-context.js';
-import { getRequestUserId } from '@skytwin/db';
+import { getRequestContext, getRequestUserId } from '@skytwin/db';
 
 /**
  * Tests for the request-context middleware (#408).
@@ -49,6 +49,48 @@ describe('requestContext middleware (#408)', () => {
       observed = getRequestUserId();
     });
     expect(observed).toBe('auth-user');
+  });
+
+  it('carries only the authenticated request session authority into deep calls', () => {
+    const authority = {
+      kind: 'api_session' as const,
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      grantId: 'a'.repeat(32),
+    };
+    const req = mockReq({
+      authenticatedUserId: 'auth-user',
+      authenticatedSessionId: authority.sessionId,
+      sourceKeySessionAuthority: authority,
+    });
+    let observed = getRequestContext();
+    requestContext(req, mockRes(), () => {
+      observed = getRequestContext();
+    });
+    expect(observed).toEqual({ userId: 'auth-user', sourceKeySessionAuthority: authority });
+  });
+
+  it('drops substituted, demo, and service session authority', () => {
+    const authority = {
+      kind: 'api_session' as const,
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      grantId: 'a'.repeat(32),
+    };
+    for (const overrides of [
+      { authenticatedSessionId: '22222222-2222-4222-8222-222222222222' },
+      { authenticatedSessionId: authority.sessionId, demoAuthenticated: true },
+      { authenticatedSessionId: authority.sessionId, serviceAuthenticated: true },
+    ]) {
+      const req = mockReq({
+        authenticatedUserId: 'auth-user',
+        sourceKeySessionAuthority: authority,
+        ...overrides,
+      });
+      let observed = getRequestContext();
+      requestContext(req, mockRes(), () => {
+        observed = getRequestContext();
+      });
+      expect(observed).toEqual({ userId: 'auth-user' });
+    }
   });
 
   it('falls back to the route param when there is no authenticated identity (dev bypass)', () => {

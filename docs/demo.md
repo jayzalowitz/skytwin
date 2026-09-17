@@ -4,14 +4,27 @@ This is the walkthrough we use to show someone what SkyTwin does for the first
 time. Aim for five minutes end-to-end. Hand it to a friend with a phone in
 their other hand and read along.
 
-> **Screenshots:** the live-UI captures the launch will use are tracked as
-> a follow-up to this PR. The repo's existing demo stills live under
-> [`docs/screenshots/`](./screenshots/) (`dashboard.png`, `approvals.png`,
-> `decisions.png`, `onboarding.png`, `settings.png`) — those are the
-> baseline; a fresh capture run against the post-Tier-2-polish UI is what
-> the launch video needs. The text walkthrough below is independently
+> **Screenshots:** the repository's historical captures are retained under
+> `docs/screenshots/` for audit provenance only. They are prohibited stale
+> release assets and are not linked, embedded, or suitable for launch use. A
+> fresh capture run against the current UI must be re-audited before any image
+> is published. The text walkthrough below is independently
 > runnable against a fresh dev install. If you're recording the launch
 > video, this file is the script.
+
+> The [`beta claim ledger`](./beta-claim-ledger.json) remains the authority for
+> release status and asset disposition; its beta status is currently blocked.
+
+> **Scope:** this operator script exercises the development seed after
+> `pnpm db:seed`; it is not a description of the currently published desktop
+> installers. Current source gives packaged builds a separate, short-lived,
+> account-free sample session. Its database-backed views remain read-only, while
+> a separate session-local simulation can approve, reject, correct, reset, and
+> learn from fixed fictional proposals. It cannot open settings, persist those
+> interactions, invoke providers or connectors, or run an execution adapter.
+> This isolated sample is the only supported preview path. Google and Microsoft
+> account connections are unavailable; do not use a real Gmail, Calendar,
+> Outlook, or Microsoft 365 account for this demo.
 
 ---
 
@@ -26,8 +39,8 @@ You'll need:
   ```
   Then open `http://localhost:3200`.
 
-If you'd rather not connect your real Gmail for the demo, the sample profile
-in step 1 covers the same ground without needing OAuth.
+Use only fictional sample data. Real account connections and operator/BYO
+credential setup are unsupported in the current preview.
 
 ---
 
@@ -39,24 +52,28 @@ seconds.
 What you'll see: the first-run wizard. It asks one question — how you want to
 start.
 
-**Two paths from here:**
+**Supported path from here:**
 
-- **"Just show me around"** — gives you a pre-loaded user (Alex) who's alive
+- **"Just show me around"** — the development seed gives you a pre-loaded user
+  (Alex) who's alive
   across every surface: ~10 recent decisions, 4 pending approvals you can
   actually click through, a populated daily briefing, "What I've learned",
   Capabilities, Search, and a trust bar at 84% climbing toward "handle most
-  things". Two other personas ship too — **Pat** (a power user who handles
+  things". Two other personas are in the development seed too — **Pat** (a power user who handles
   everything) and **Carol** (a brand-new user earning her first trust) — so
   the dev "Switch user" button tells three different stories. No OAuth, no
   signal-ingestion wait. This is the demo path. (The showcase data lives in
   `packages/db/src/seeds/demo-showcase.ts`; counts move as we tune it.)
-- **"Connect your email"** — real Gmail + Calendar OAuth. Use this if you
-  want to see the live pipeline against your own data.
+Google connection is displayed as unavailable rather than as an additional
+path. Microsoft connection has no preview setup control; both providers remain
+outside the supported sample.
+Managed Google identity/Calendar is deferred, and BYO remains unsupported until
+the OAuth and credential-custody architecture gates are complete.
 
-Under those two, a one-line "your AI runs privately on this computer — we'll
-use `<model>`" reassures a non-technical visitor that the local model is
-already picked for their machine (RAM- and disk-aware); "Change" opens
-Settings → AI. Everything else (tell-SkyTwin-about-yourself, the not-yet-wired
+Under the sample choice, the app recommends a maintained local model for the machine
+(RAM-, architecture-, and disk-aware); "Change" opens Settings → AI. The model
+is downloaded only when the user starts it, and local inference still requires
+a compatible llama.cpp runtime. Everything else (tell-SkyTwin-about-yourself, the not-yet-wired
 computer observer) is tucked under "More ways to start" so the first screen
 isn't a wall of options.
 
@@ -95,26 +112,16 @@ change touches the approval buttons, it goes through `/review`.
 
 ---
 
-## Step 3 — Connect Gmail (or use the seed) (45 seconds)
+## Step 3 — Confirm the sample boundary (45 seconds)
 
-**If you took the sample-profile path:** skip ahead to step 4. The sample
-profile already has connectors wired and signals flowing.
+Stay in the sample. Point out that the proposals, briefing, learned preferences,
+and decision history are fictional. The packaged sample's database-backed views
+remain read-only; approve, reject, correct, reset, and learn interactions use a
+separate session-local simulation.
 
-**If you took the live-OAuth path:** click "Connect Gmail" from the dashboard
-or `#/connect-gmail`. The five-step wizard walks the user through the BYO
-OAuth client setup (most users will have one bundled at launch, but the
-self-hosted path is the source of truth — and it's the only path with a
-screenshot in the repo today). Approve the scopes, watch the wizard
-auto-advance, and you're back on the dashboard with the connection-status
-dot turning green in the sidebar.
-
-The sidebar connection dot in `apps/web/public/js/app.js` flips from the
-idle grey state to a green dot with "Listening" text once SSE comes up
-(falls back to "Connected" if only HTTP works, "Reconnecting…" / "Offline"
-on disconnect). First signal lands within the next polling cycle —
-typically 2–3 minutes from a fresh inbox; immediately if there's already
-unread mail. The connector-health banner in the chrome surfaces any
-per-connector failures the moment the worker observes them (#377).
+Show the unavailable account-connection state. There is no connect button, credential form,
+authorization URL, connector wait, or provider-status promise. This absence is
+part of the release boundary, not a demo shortcut.
 
 ---
 
@@ -134,15 +141,14 @@ see:
 - **The two buttons** — "Yes, do it" and "Not this time." With an optional
   free-text "tell me why so I learn" field.
 
-Click **"Yes, do it."** The card collapses into the history below. The
-decision is logged with your approval. On the worker's next cycle, the
-action actually runs against Gmail (or the mock connector in the sample
-profile).
+Click **"Yes, do it."** The card collapses into the session-local history.
+Nothing runs against Gmail or any execution adapter; the sample simulates the
+bounded interaction without persistence or external effects.
 
-The viewer should now understand the safety model in one sentence:
-**every action has an explanation, and the explanation came from observable
-evidence, and the user is the source of truth via approve/reject.** That's
-the whole pitch.
+The viewer should now understand the demonstrated path: **this recorded action
+has an explanation derived from observable evidence, and the user remains the
+source of truth via approve/reject.** Release-wide explanation coverage is a
+separate beta gate.
 
 ---
 
@@ -170,7 +176,14 @@ corrects one. The twin profile is the running summary.
 **Goal:** show the user that nothing scary is on autopilot by default, and
 the controls are explicit.
 
-Click **Settings** in the sidebar. Three cards worth pointing out:
+Click **Settings** in the sidebar. Four controls worth pointing out:
+
+- **“Where reasoning runs”** — the explicit location selector. “On this
+  device” admits only embedded inference and local-source-constrained Ollama;
+  “My configured provider” may send prompts to the enabled endpoint. The
+  verified-private-cloud choice currently admits only explicit interactive
+  TrustedRouter calls whose same-session attestation and exact-byte receipt
+  pass; NEAR AI remains visible as verification-pending and unavailable.
 
 - **"How much should your twin do?"** — the trust tier selector. Five
   rungs from "Just watch" through "Full autopilot." Default is "Ask me
@@ -191,26 +204,30 @@ Click **Settings** in the sidebar. Three cards worth pointing out:
 
 ---
 
-## Step 7 — Hit the "pause everything" button (30 seconds)
+## Step 7 — Pause automatic action (30 seconds)
 
-**Goal:** close the demo on the panic button — the thing the user needs to
-trust before they leave the app running.
+**Goal:** close the demo on the automatic-action control, with its scope
+stated plainly before the user leaves the app running.
 
-Two ways to pause, both visible from Settings:
+Two controls share the same auto-execution semantics, but only one is in
+Settings:
 
 - **Per-user pause** — "Pause auto-execution" card. Click, confirm,
   optionally drop a reason. Every subsequent decision routes to manual
   approval until you resume. A sticky red banner appears at the top of
   every page reminding you you're paused; the Resume button lives on the
   banner so a panicked future-you doesn't have to navigate to find it.
-- **Operator kill switch** — `SKYTWIN_AUTO_EXECUTE_DISABLED=true` env
+- **Operator-only switch** — `SKYTWIN_AUTO_EXECUTE_DISABLED=true` env
   var on the API/worker process. Same semantics, controlled at the
   process level, can't be cleared from the UI. For self-hosters who
-  need a way to silence the system without rebooting it.
+  need a way to stop automatic action without rebooting it.
 
-End the demo here. Tell the viewer: *"If at any point I'm uncomfortable
-with what it's doing, that button is on every page."* That's what they
-remember.
+Do not call either one a whole-system pause: signal sync continues. The
+global "Pause everything" button is a separate MCP-capability control and
+does not pause the email/calendar path. Packaged desktop also has a tray
+control that pauses worker background processing while the ready API/web
+may remain available. End by showing Settings → Pause auto-execution and
+saying exactly that actions now require review.
 
 ---
 
@@ -241,8 +258,8 @@ If you're capturing this for the launch video (the docs/launch-plan.md Tier
 - Open Chrome in a 1280×800 window — matches the dashboard's intended
   layout without scrollbars and is small enough that overlay text reads
   clearly when downscaled for embed.
-- Use the sample profile, not your own Gmail. Real subjects on screen
-  invite a screenshot scandal.
+- Use the sample profile. Google and Microsoft account connections are
+  unavailable, and real-account footage is not valid preview evidence.
 - Set system audio to off; record with a headset mic so background noise
   doesn't leak. The brand voice carries; ambient typing doesn't.
 - Cut at five minutes. Anything you couldn't say in five was outside the

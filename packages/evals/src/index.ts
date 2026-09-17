@@ -27,10 +27,41 @@ export { DecisionLatencyTracker } from './metrics/decision-latency.js';
 export { RegressionDetector } from './regression-detector.js';
 export { AccuracyTracker, type DecisionRecord } from './accuracy-tracker.js';
 export {
+  buildAdversarialEvidence,
+  canonicalJson,
+  collectDispatchCalls,
+  evaluateAdversarialScenario,
+  loadAdversarialCatalog,
+  type AdversarialCatalog,
+  type AdversarialDispatchCall,
+  type AdversarialEvidenceReport,
+  type AdversarialResult,
+  type AdversarialScenario,
+} from './adversarial-evidence.js';
+export {
+  executeMappedAdversarialTests,
+  type ExecutableTestResult,
+  type TestProcessRunner,
+} from './adversarial-test-executor.js';
+export {
   ContinuousEvalRunner,
   type EvalRepositoryPort,
   type EvalSuite,
 } from './continuous-runner.js';
+
+// Managed-local adaptive-workflow quality gate
+export {
+  WORKFLOW_AUTHORING_GATE_SCHEMA_VERSION,
+  parseWorkflowAuthoringEvalCatalog,
+  scoreWorkflowAuthoringGate,
+  type WorkflowAuthoringEvalCatalog,
+  type WorkflowAuthoringGateScore,
+  type WorkflowEvalMetric,
+  type WorkflowEvalObservation,
+  type WorkflowEvalScenario,
+  type WorkflowEvalScenarioResult,
+  type WorkflowIntentSnapshot,
+} from './workflow-authoring-gate.js';
 
 // Temporal replay
 export {

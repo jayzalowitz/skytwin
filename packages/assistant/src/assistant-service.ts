@@ -154,11 +154,9 @@ export class AssistantService {
    *   - No `ActionRouter` was wired at construction (early bring-up
    *     paths, unit tests that don't care about actions).
    *   - The message doesn't match any intent rule (most chat).
-   *   - The router throws — caught here and downgraded to no-action so
-   *     a decision-engine outage doesn't kill the chat turn entirely.
    *
    * Returns an `ActionRouteOutcome` describing the chat-surfaceable
-   * result (requires-approval, blocked, or no-action) when an intent
+   * result (requires-approval, blocked, failed, or no-action) when an intent
    * was detected and routed.
    *
    * The route layer calls this BEFORE generating the LLM chat reply.
@@ -169,23 +167,29 @@ export class AssistantService {
   async routeIntent(
     userId: string,
     message: string,
+    context?: { idempotencyKey?: string },
   ): Promise<{ intent: ActionIntent; outcome: ActionRouteOutcome } | null> {
     if (!this.actionRouter) return null;
     const intent = detectIntent(message);
     if (!intent) return null;
     try {
-      const outcome = await this.actionRouter.route(userId, intent);
+      const outcome = context
+        ? await this.actionRouter.route(userId, intent, context)
+        : await this.actionRouter.route(userId, intent);
       return { intent, outcome };
-    } catch (err) {
-      // Decision-engine outage should not blow up the chat turn. Log
-      // and fall back to the LLM reply path. The user gets text
-      // instead of an action — a graceful degradation, not a crash.
+    } catch {
+      // A recognized action intent must not silently become ordinary chat
+      // when its safety pipeline is unavailable. Return a visible deliberate
+      // non-action and make no further model call.
       // eslint-disable-next-line no-console
-      console.warn(
-        '[assistant.routeIntent] action router threw, falling back to chat reply:',
-        err instanceof Error ? err.message : String(err),
-      );
-      return null;
+      console.warn('[assistant.routeIntent] assistant_action_route_failed');
+      return {
+        intent,
+        outcome: {
+          kind: 'failed',
+          reason: 'I could not safely record and explain this action. Nothing was queued or executed.',
+        },
+      };
     }
   }
 
@@ -246,6 +250,7 @@ export class AssistantService {
       // outputs. Tunable per-request once the route exposes options.
       temperature: 0.7,
       maxTokens: 800,
+      invocationKind: 'interactive',
     });
 
     return {
@@ -296,6 +301,7 @@ export class AssistantService {
         systemPrompt,
         temperature: 0.7,
         maxTokens: 800,
+        invocationKind: 'interactive',
       })) {
         if (event.type === 'chunk') {
           collected.push(event.content);
@@ -334,7 +340,7 @@ export class AssistantService {
       yield {
         type: 'error',
         partialContent: collected.join(''),
-        message: err instanceof Error ? err.message : String(err),
+        message: 'assistant_stream_failed',
       };
     }
   }

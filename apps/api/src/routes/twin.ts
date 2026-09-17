@@ -33,7 +33,13 @@ export function createTwinRouter(): Router {
       }
 
       const format = (req.query['format'] as string) === 'markdown' ? 'markdown' : 'json';
-      const exportData = await twinService.exportTwin(userId, format);
+      const exportData = req.demoAuthenticated
+        ? await twinService.exportTwinIfExists(userId, format)
+        : await twinService.exportTwin(userId, format);
+      if (!exportData) {
+        res.status(404).json({ error: 'Twin profile not found' });
+        return;
+      }
 
       if (format === 'markdown') {
         const markdown = twinService.formatAsMarkdown(exportData);
@@ -61,7 +67,13 @@ export function createTwinRouter(): Router {
         return;
       }
 
-      const profile = await twinService.getOrCreateProfile(userId);
+      const profile = req.demoAuthenticated
+        ? await twinService.getProfile(userId)
+        : await twinService.getOrCreateProfile(userId);
+      if (!profile) {
+        res.status(404).json({ error: 'Twin profile not found' });
+        return;
+      }
 
       res.json({
         profile: {
@@ -290,7 +302,13 @@ export function createTwinRouter(): Router {
   router.get('/:userId/learned', async (req, res, next) => {
     try {
       const { userId } = req.params;
-      const profile = await twinService.getOrCreateProfile(userId);
+      const profile = req.demoAuthenticated
+        ? await twinService.getProfile(userId)
+        : await twinService.getOrCreateProfile(userId);
+      if (!profile) {
+        res.status(404).json({ error: 'Twin profile not found' });
+        return;
+      }
 
       // Build human-readable summaries from preferences
       const summaries: { domain: string; description: string }[] = [];

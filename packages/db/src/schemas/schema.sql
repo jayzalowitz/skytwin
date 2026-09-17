@@ -11,10 +11,48 @@ CREATE TABLE IF NOT EXISTS users (
   name STRING NOT NULL,
   trust_tier STRING NOT NULL DEFAULT 'observer',
   autonomy_settings JSONB NOT NULL DEFAULT '{}',
+  execution_authority_revision UUID NOT NULL DEFAULT gen_random_uuid(),
   ironclaw_channel STRING DEFAULT 'skytwin',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS execution_policy_authority (
+  singleton BOOL PRIMARY KEY DEFAULT true CHECK (singleton),
+  revision UUID NOT NULL DEFAULT gen_random_uuid(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO execution_policy_authority (singleton) VALUES (true) ON CONFLICT (singleton) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS oauth_connection_authority (
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  provider STRING NOT NULL,
+  generation UUID NOT NULL DEFAULT gen_random_uuid(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, provider)
+);
+CREATE TABLE IF NOT EXISTS oauth_account_connection_authority (
+  provider STRING NOT NULL,
+  account_key STRING NOT NULL,
+  generation UUID NOT NULL DEFAULT gen_random_uuid(),
+  invalidated_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + INTERVAL '15 minutes'),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (provider, account_key)
+) WITH (ttl_expiration_expression = 'expires_at');
+CREATE TABLE IF NOT EXISTS oauth_new_user_authorizations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  provider STRING NOT NULL,
+  issued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  claimed_owner_key STRING,
+  claimed_account_key STRING,
+  claimed_owner_generation UUID,
+  claim_generation UUID,
+  CHECK (expires_at > issued_at)
+) WITH (ttl_expiration_expression = 'expires_at');
+CREATE INDEX IF NOT EXISTS oauth_new_user_authorizations_expires_idx
+  ON oauth_new_user_authorizations (expires_at);
 
 CREATE TABLE IF NOT EXISTS connected_accounts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -59,7 +97,8 @@ CREATE TABLE IF NOT EXISTS twin_profiles (
   -- the cost / opt-in gates.
   drafts_eval_passed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT twin_profiles_id_user_id_idx UNIQUE (id, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS twin_profile_versions (
@@ -70,7 +109,7 @@ CREATE TABLE IF NOT EXISTS twin_profile_versions (
   changed_fields STRING[] NOT NULL DEFAULT '{}',
   reason STRING,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  INDEX (profile_id, version DESC)
+  CONSTRAINT twin_profile_versions_profile_version_idx UNIQUE (profile_id, version)
 );
 
 -- ============================================================================
@@ -106,6 +145,7 @@ CREATE TABLE IF NOT EXISTS decisions (
   urgency STRING NOT NULL DEFAULT 'normal',
   metadata JSONB NOT NULL DEFAULT '{}',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT decisions_id_user_id_idx UNIQUE (id, user_id),
   INDEX (user_id, created_at DESC),
   INDEX (user_id, domain, created_at DESC)
 );
@@ -175,6 +215,11 @@ CREATE TABLE IF NOT EXISTS approval_requests (
   requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   responded_at TIMESTAMPTZ,
   response JSONB,
+  execution_denied_at TIMESTAMPTZ,
+  execution_denial_explanation_id UUID,
+  CONSTRAINT approval_requests_decision_owner_fk
+    FOREIGN KEY (decision_id, user_id) REFERENCES decisions (id, user_id),
+  CONSTRAINT approval_requests_id_owner_decision_idx UNIQUE (id, user_id, decision_id),
   INDEX (user_id, status)
 );
 
@@ -188,6 +233,7 @@ CREATE TABLE IF NOT EXISTS execution_plans (
   action_id UUID REFERENCES candidate_actions(id),
   status STRING NOT NULL DEFAULT 'pending',
   steps JSONB NOT NULL DEFAULT '[]',
+  evidence_schema_version INT NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   INDEX (decision_id)
@@ -200,7 +246,29 @@ CREATE TABLE IF NOT EXISTS execution_results (
   outputs JSONB NOT NULL DEFAULT '{}',
   error STRING,
   rollback_available BOOL NOT NULL DEFAULT false,
+  evidence_schema_version INT NOT NULL DEFAULT 1,
   completed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- #695: durable rollback claims. The terminal ledger is declared below,
+-- after explanation_records exists.
+CREATE TABLE IF NOT EXISTS rollback_admissions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id),
+  candidate_action_id UUID NOT NULL REFERENCES candidate_actions(id),
+  decision_outcome_id UUID NOT NULL REFERENCES decision_outcomes(id),
+  execution_result_id UUID NOT NULL REFERENCES execution_results(id),
+  adapter_name STRING NOT NULL,
+  provider_plan_id STRING NOT NULL,
+  lifecycle_status STRING NOT NULL DEFAULT 'admitted',
+  claim_token_hash STRING,
+  claimed_at TIMESTAMPTZ,
+  claim_expires_at TIMESTAMPTZ,
+  terminalized_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT rollback_admission_one_claim_per_action UNIQUE (candidate_action_id),
+  CONSTRAINT rollback_admission_owner_graph UNIQUE (id, user_id)
+  ,CONSTRAINT rollback_admission_lifecycle_status_ck CHECK (lifecycle_status IN ('admitted', 'claimed', 'terminal'))
 );
 
 CREATE TABLE IF NOT EXISTS execution_events (
@@ -209,6 +277,7 @@ CREATE TABLE IF NOT EXISTS execution_events (
   step_id STRING,
   event_type STRING NOT NULL,
   payload JSONB NOT NULL DEFAULT '{}',
+  evidence_schema_version INT NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_execution_events_plan ON execution_events (plan_id, created_at ASC);
@@ -255,6 +324,158 @@ CREATE TABLE IF NOT EXISTS explanation_records (
   INDEX (decision_id)
 );
 
+-- Required before rollback_terminal_ledger's composite explanation FK.
+CREATE UNIQUE INDEX IF NOT EXISTS explanation_records_id_decision_idx
+  ON explanation_records (id, decision_id);
+
+CREATE TABLE IF NOT EXISTS rollback_terminal_ledger (
+  admission_id UUID PRIMARY KEY REFERENCES rollback_admissions(id),
+  user_id UUID NOT NULL,
+  decision_id UUID NOT NULL REFERENCES decisions(id),
+  status STRING NOT NULL CHECK (status IN ('rolled_back', 'failed', 'unknown')),
+  result JSONB NOT NULL DEFAULT '{}',
+  explanation_id UUID NOT NULL,
+  terminal_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT rollback_terminal_owner_fk FOREIGN KEY (admission_id, user_id)
+    REFERENCES rollback_admissions(id, user_id),
+  CONSTRAINT rollback_terminal_explanation_fk FOREIGN KEY (explanation_id, decision_id)
+    REFERENCES explanation_records(id, decision_id),
+  CONSTRAINT rollback_terminal_explanation_unique UNIQUE (explanation_id)
+);
+CREATE INDEX IF NOT EXISTS rollback_admissions_owner_idx
+  ON rollback_admissions (user_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS rollback_admissions_claim_token_idx
+  ON rollback_admissions (claim_token_hash) WHERE claim_token_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS rollback_admissions_claim_expiry_idx
+  ON rollback_admissions (claim_expires_at) WHERE lifecycle_status = 'claimed';
+
+-- Durable admission record for externally visible effects (#653). An
+-- in-progress row is never automatically replayed because generic adapters do
+-- not accept provider idempotency keys.
+CREATE TABLE IF NOT EXISTS pre_effect_barriers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  effect_type STRING NOT NULL CHECK (effect_type IN (
+    'assistant_approval', 'event_execution', 'memory_execution', 'routine_registration'
+  )),
+  idempotency_key STRING NOT NULL,
+  status STRING NOT NULL DEFAULT 'reserved' CHECK (status IN (
+    'reserved', 'prepared', 'in_progress', 'succeeded', 'blocked', 'failed', 'unknown'
+  )),
+  decision_id UUID REFERENCES decisions(id) ON DELETE SET NULL,
+  action_id UUID REFERENCES candidate_actions(id) ON DELETE SET NULL,
+  explanation_id UUID REFERENCES explanation_records(id) ON DELETE SET NULL,
+  policy_snapshot JSONB NOT NULL DEFAULT '{}',
+  effect_result JSONB NOT NULL DEFAULT '{}',
+  failure_reason STRING,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT pre_effect_barrier_explanation_required
+    CHECK (status = 'reserved' OR explanation_id IS NOT NULL),
+  UNIQUE (user_id, effect_type, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS pre_effect_barriers_decision_idx
+  ON pre_effect_barriers (decision_id) WHERE decision_id IS NOT NULL;
+
+-- Repository-enforced, user-purgeable hash-linked decision receipts (#657).
+-- The root is uniquely owned through its decision.
+CREATE UNIQUE INDEX IF NOT EXISTS decisions_id_user_id_idx
+  ON decisions (id, user_id);
+CREATE TABLE IF NOT EXISTS decision_receipts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  decision_id UUID NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT decision_receipts_owned_decision_unique UNIQUE (decision_id),
+  CONSTRAINT decision_receipts_owned_decision_fk
+    FOREIGN KEY (decision_id, user_id) REFERENCES decisions (id, user_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS decision_receipts_user_created_idx
+  ON decision_receipts (user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS decision_receipt_revisions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  receipt_id UUID NOT NULL REFERENCES decision_receipts(id) ON DELETE CASCADE,
+  sequence INT NOT NULL CHECK (sequence > 0),
+  event_key STRING NOT NULL CHECK (
+    event_key ~ '^[a-z][a-z0-9_]{0,47}:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+  ),
+  previous_digest STRING,
+  content_digest STRING NOT NULL,
+  revision_digest STRING NOT NULL,
+  stage STRING NOT NULL CHECK (stage IN (
+    'decision_recorded', 'policy_evaluated', 'approval_recorded',
+    'execution_admitted', 'execution_recorded', 'feedback_recorded', 'corrected'
+  )),
+  disposition STRING NOT NULL CHECK (disposition IN (
+    'pending', 'allowed', 'deliberate_non_action', 'requires_approval', 'approved',
+    'rejected', 'expired', 'blocked', 'succeeded', 'failed', 'unknown', 'corrected'
+  )),
+  content JSONB NOT NULL,
+  trusted BOOL NOT NULL DEFAULT false,
+  -- Historical pointers are owner-derived and verified by the repository at
+  -- append time, but intentionally are not FKs: deleting a source artifact
+  -- must not mutate or strand the retained hash-linked receipt history.
+  candidate_action_id UUID,
+  barrier_id UUID,
+  explanation_id UUID,
+  approval_request_id UUID,
+  execution_plan_id UUID,
+  execution_result_id UUID,
+  execution_disposition STRING CHECK (execution_disposition IN ('succeeded', 'failed', 'unknown')),
+  correction_of_revision_id UUID,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT decision_receipt_revision_sequence_unique UNIQUE (receipt_id, sequence),
+  CONSTRAINT decision_receipt_revision_event_unique UNIQUE (receipt_id, event_key),
+  CONSTRAINT decision_receipt_previous_digest_shape CHECK (
+    previous_digest IS NULL OR previous_digest ~ '^[0-9a-f]{64}$'
+  ),
+  CONSTRAINT decision_receipt_content_digest_shape CHECK (
+    content_digest ~ '^[0-9a-f]{64}$'
+  ),
+  CONSTRAINT decision_receipt_revision_digest_shape CHECK (
+    revision_digest ~ '^[0-9a-f]{64}$'
+  ),
+  CONSTRAINT decision_receipt_execution_result_plan CHECK (
+    execution_result_id IS NULL OR execution_plan_id IS NOT NULL
+  ),
+  CONSTRAINT decision_receipt_execution_disposition_shape CHECK (
+    (stage = 'execution_recorded' AND execution_disposition = disposition) OR
+    (stage IN ('feedback_recorded', 'corrected') AND
+      ((execution_plan_id IS NULL AND execution_disposition IS NULL) OR
+       (execution_plan_id IS NOT NULL AND execution_disposition IS NOT NULL))) OR
+    (stage NOT IN ('execution_recorded', 'feedback_recorded', 'corrected') AND
+      execution_disposition IS NULL)
+  ),
+  CONSTRAINT decision_receipt_correction_shape CHECK (
+    (stage = 'corrected' AND disposition = 'corrected' AND correction_of_revision_id IS NOT NULL)
+    OR (stage != 'corrected' AND disposition != 'corrected' AND correction_of_revision_id IS NULL)
+  ),
+  CONSTRAINT decision_receipt_approval_shape CHECK (
+    stage != 'approval_recorded' OR approval_request_id IS NOT NULL
+  ),
+  CONSTRAINT decision_receipt_execution_shape CHECK (
+    stage != 'execution_recorded' OR (
+      barrier_id IS NOT NULL AND disposition IN ('succeeded', 'failed', 'unknown')
+      AND ((disposition IN ('succeeded', 'failed') AND execution_result_id IS NOT NULL)
+        OR disposition = 'unknown')
+    )
+  ),
+  CONSTRAINT decision_receipt_stage_disposition_matrix CHECK (
+    (stage = 'decision_recorded' AND disposition = 'pending') OR
+    (stage = 'policy_evaluated' AND disposition IN ('allowed', 'deliberate_non_action', 'requires_approval', 'blocked')) OR
+    (stage = 'approval_recorded' AND disposition IN ('requires_approval', 'approved', 'rejected', 'expired')) OR
+    (stage = 'execution_admitted' AND disposition = 'pending') OR
+    (stage = 'execution_recorded' AND disposition IN ('succeeded', 'failed', 'unknown')) OR
+    (stage = 'feedback_recorded' AND disposition IN (
+      'deliberate_non_action', 'approved', 'rejected', 'expired', 'blocked', 'succeeded', 'failed', 'unknown'
+    )) OR
+    (stage = 'corrected' AND disposition = 'corrected')
+  )
+);
+CREATE INDEX IF NOT EXISTS decision_receipt_revisions_receipt_created_idx
+  ON decision_receipt_revisions (receipt_id, sequence DESC);
+
 -- ============================================================================
 -- Feedback
 -- ============================================================================
@@ -263,11 +484,45 @@ CREATE TABLE IF NOT EXISTS feedback_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users(id),
   decision_id UUID NOT NULL REFERENCES decisions(id),
+  approval_request_id UUID,
   type STRING NOT NULL,
   data JSONB NOT NULL DEFAULT '{}',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT feedback_events_approval_owner_decision_fk
+    FOREIGN KEY (approval_request_id, user_id, decision_id)
+    REFERENCES approval_requests (id, user_id, decision_id) ON DELETE CASCADE,
   INDEX (user_id, created_at DESC),
-  INDEX (decision_id)
+  INDEX (decision_id),
+  CONSTRAINT feedback_events_id_owner_decision_idx UNIQUE (id, user_id, decision_id),
+  UNIQUE INDEX feedback_events_approval_request_unique_idx (approval_request_id)
+    WHERE approval_request_id IS NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS twin_feedback_applications (
+  id UUID PRIMARY KEY,
+  feedback_event_id UUID NOT NULL,
+  user_id UUID NOT NULL,
+  decision_id UUID NOT NULL,
+  profile_id UUID NOT NULL,
+  input_profile_version INT NOT NULL,
+  output_profile_version INT NOT NULL,
+  changed BOOL NOT NULL,
+  output_digest STRING NOT NULL,
+  applied_at TIMESTAMPTZ NOT NULL,
+  CONSTRAINT twin_feedback_applications_feedback_unique UNIQUE (feedback_event_id),
+  CONSTRAINT twin_feedback_applications_feedback_owner_decision_fk
+    FOREIGN KEY (feedback_event_id, user_id, decision_id)
+    REFERENCES feedback_events (id, user_id, decision_id) ON DELETE CASCADE,
+  CONSTRAINT twin_feedback_applications_profile_owner_fk
+    FOREIGN KEY (profile_id, user_id) REFERENCES twin_profiles (id, user_id),
+  CONSTRAINT twin_feedback_applications_versions_chk CHECK (
+    input_profile_version > 0 AND
+    ((changed = true AND output_profile_version = input_profile_version + 1) OR
+     (changed = false AND output_profile_version = input_profile_version))
+  ),
+  CONSTRAINT twin_feedback_applications_digest_chk CHECK (
+    output_digest ~ '^[0-9a-f]{64}$'
+  )
 );
 
 -- ============================================================================
@@ -319,6 +574,21 @@ CREATE TABLE IF NOT EXISTS ai_provider_settings (
   UNIQUE (user_id, provider)
 );
 CREATE INDEX idx_ai_provider_settings_user ON ai_provider_settings (user_id, priority);
+
+CREATE TABLE IF NOT EXISTS reasoning_mode_settings (
+  user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  mode STRING,
+  requires_confirmation BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT reasoning_mode_settings_mode_check CHECK (
+    mode IS NULL OR mode IN ('on_device', 'verified_private_cloud', 'bring_your_own_provider')
+  ),
+  CONSTRAINT reasoning_mode_settings_confirmation_check CHECK (
+    (mode IS NULL AND requires_confirmation = true)
+    OR (mode IS NOT NULL AND requires_confirmation = false)
+  )
+);
 
 CREATE TABLE IF NOT EXISTS ironclaw_tools (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -417,6 +687,7 @@ CREATE TABLE IF NOT EXISTS memory_action_opportunities (
       'blocked_by_policy',
       'learning_needed',
       'execution_failed',
+      'execution_ambiguous',
       'noted_awareness',
       'skipped'
     )),
@@ -431,6 +702,7 @@ CREATE TABLE IF NOT EXISTS memory_action_opportunities (
   policy_reason STRING,
   route_reason STRING,
   next_step STRING,
+  evidence_schema_version INT NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (user_id, fingerprint)
@@ -440,3 +712,127 @@ CREATE INDEX IF NOT EXISTS memory_action_opportunities_user_status_idx
 CREATE INDEX IF NOT EXISTS memory_action_opportunities_user_report_idx
   ON memory_action_opportunities (user_id, last_attempted_at DESC)
   WHERE last_attempted_at IS NOT NULL;
+
+-- Durable one-shot authority for side-effecting memory and approval execution.
+CREATE UNIQUE INDEX IF NOT EXISTS decisions_id_user_idx
+  ON decisions (id, user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS candidate_actions_id_decision_idx
+  ON candidate_actions (id, decision_id);
+CREATE UNIQUE INDEX IF NOT EXISTS decision_outcomes_id_decision_action_idx
+  ON decision_outcomes (id, decision_id, selected_action_id);
+CREATE UNIQUE INDEX IF NOT EXISTS execution_plans_id_decision_action_idx
+  ON execution_plans (id, decision_id, action_id);
+CREATE TABLE IF NOT EXISTS execution_admission_barriers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  scope STRING NOT NULL CHECK (scope IN ('memory', 'approval')),
+  idempotency_key UUID NOT NULL,
+  decision_id UUID NOT NULL,
+  action_id UUID NOT NULL,
+  execution_plan_id UUID NOT NULL,
+  outcome_id UUID NOT NULL,
+  explanation_id UUID NOT NULL,
+  adapter_name STRING NOT NULL,
+  risk_snapshot JSONB NOT NULL,
+  policy_snapshot JSONB NOT NULL,
+  action_snapshot JSONB NOT NULL,
+  outcome_snapshot JSONB NOT NULL,
+  status STRING NOT NULL DEFAULT 'in_progress'
+    CHECK (status IN ('in_progress', 'completed', 'failed', 'ambiguous')),
+  observed_result JSONB NOT NULL DEFAULT '{}'::JSONB,
+  evidence_schema_version INT NOT NULL DEFAULT 1,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, scope, idempotency_key),
+  CONSTRAINT execution_admission_decision_owner_fk
+    FOREIGN KEY (decision_id, user_id) REFERENCES decisions (id, user_id),
+  CONSTRAINT execution_admission_action_decision_fk
+    FOREIGN KEY (action_id, decision_id) REFERENCES candidate_actions (id, decision_id),
+  CONSTRAINT execution_admission_plan_graph_fk
+    FOREIGN KEY (execution_plan_id, decision_id, action_id)
+    REFERENCES execution_plans (id, decision_id, action_id),
+  CONSTRAINT execution_admission_outcome_graph_fk
+    FOREIGN KEY (outcome_id, decision_id, action_id)
+    REFERENCES decision_outcomes (id, decision_id, selected_action_id),
+  CONSTRAINT execution_admission_explanation_decision_fk
+    FOREIGN KEY (explanation_id, decision_id)
+    REFERENCES explanation_records (id, decision_id)
+);
+CREATE INDEX IF NOT EXISTS execution_admission_barriers_plan_idx
+  ON execution_admission_barriers (execution_plan_id);
+
+CREATE TABLE IF NOT EXISTS credential_dispatch_leases (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  oauth_token_id UUID,
+  provider STRING,
+  account_email STRING,
+  credential_revision UUID,
+  credential_generation UUID,
+  vault_generation UUID,
+  adapter_name STRING NOT NULL,
+  risk_snapshot JSONB NOT NULL,
+  execution_channel STRING,
+  mcp_server_id UUID,
+  mcp_tool_name STRING,
+  execution_authority_revision UUID NOT NULL,
+  policy_authority_revision UUID NOT NULL,
+  action_id UUID NOT NULL,
+  decision_id UUID NOT NULL,
+  execution_plan_id UUID NOT NULL,
+  authority_kind STRING NOT NULL CHECK (authority_kind IN ('admission', 'receipt')),
+  authority_id UUID NOT NULL,
+  authority_updated_at TIMESTAMPTZ NOT NULL,
+  capability_hash STRING NOT NULL UNIQUE,
+  lease_generation UUID NOT NULL,
+  state STRING NOT NULL CHECK (
+    state IN ('request_started', 'completed', 'failed', 'ambiguous')
+  ),
+  acquired_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  request_started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  terminal_at TIMESTAMPTZ,
+  UNIQUE (execution_plan_id),
+  CONSTRAINT credential_dispatch_decision_owner_fk
+    FOREIGN KEY (decision_id, user_id) REFERENCES decisions (id, user_id),
+  CONSTRAINT credential_dispatch_action_decision_fk
+    FOREIGN KEY (action_id, decision_id) REFERENCES candidate_actions (id, decision_id),
+  CONSTRAINT credential_dispatch_plan_graph_fk
+    FOREIGN KEY (execution_plan_id, decision_id, action_id)
+    REFERENCES execution_plans (id, decision_id, action_id)
+);
+CREATE INDEX IF NOT EXISTS credential_dispatch_leases_token_state_idx
+  ON credential_dispatch_leases (oauth_token_id, state, expires_at);
+CREATE INDEX IF NOT EXISTS credential_dispatch_leases_user_state_idx
+  ON credential_dispatch_leases (user_id, state, expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS credential_dispatch_leases_id_decision_idx
+  ON credential_dispatch_leases (id, decision_id);
+
+CREATE TABLE IF NOT EXISTS execution_dispatch_ambiguities (
+  dispatch_lease_id UUID PRIMARY KEY,
+  decision_id UUID NOT NULL,
+  explanation_id UUID NOT NULL,
+  phase STRING NOT NULL,
+  reason_code STRING NOT NULL,
+  CONSTRAINT execution_dispatch_ambiguity_observation_pair_check CHECK (
+    (phase = 'adapter_execute' AND reason_code IN (
+      'adapter_result_unbound', 'adapter_exception'
+    )) OR
+    (phase = 'adapter_stream' AND reason_code IN (
+      'stream_protocol_invalid', 'stream_incomplete', 'stream_exception'
+    )) OR
+    (phase = 'lease_expiry' AND reason_code IN ('lease_expired')) OR
+    (phase = 'lease_recovery' AND reason_code IN ('legacy_ambiguous'))
+  ),
+  observation JSONB NOT NULL,
+  evidence_schema_version INT NOT NULL DEFAULT 1 CHECK (evidence_schema_version = 1),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT execution_dispatch_ambiguity_lease_fk
+    FOREIGN KEY (dispatch_lease_id, decision_id)
+    REFERENCES credential_dispatch_leases (id, decision_id) ON DELETE CASCADE,
+  CONSTRAINT execution_dispatch_ambiguity_explanation_fk
+    FOREIGN KEY (explanation_id, decision_id)
+    REFERENCES explanation_records (id, decision_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS execution_dispatch_ambiguities_explanation_idx
+  ON execution_dispatch_ambiguities (explanation_id);

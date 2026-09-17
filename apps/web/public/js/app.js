@@ -22,16 +22,20 @@ import { renderDxtImports } from './pages/dxt-imports.js';
 import { renderProvenanceGraph } from './pages/provenance-graph.js';
 import { renderMemorySettings } from './pages/memory-settings.js';
 import { renderLifebook } from './pages/lifebook.js';
+import { initSampleGlobals, renderSample } from './pages/sample.js';
 import { renderGlobalPauseButton } from './components/global-pause-button.js';
 import { wireDesktopUpdateBanner } from './components/desktop-update-banner.js';
-import { fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline, fetchJSON } from './api-client.js';
+import { isAccountBackedIntegrationIdentifier } from './google-preview-boundary.js';
+import { DEMO_USER_ID, fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline, fetchJSON } from './api-client.js';
 import { initTheme } from './theme-switcher.js';
 import { initA11y } from './a11y.js';
 import { connectSSE, disconnectSSE, isConnected } from './sse-client.js';
 import { showToast } from './toast.js';
 import { KEY_USER_ID, KEY_ONBOARDED, KEY_SESSION_TOKEN, clearAllSkyTwinKeys } from './storage-keys.js';
+import { clearSampleSession, getEffectiveUserId, hasCompletedOnboarding, hasRealAuthentication, isSampleMode, migrateLegacySampleSession } from './sample-session.js';
 
-let currentUserId = localStorage.getItem(KEY_USER_ID) || '';
+migrateLegacySampleSession();
+let currentUserId = getEffectiveUserId();
 
 const routes = {
   '/': { title: 'Home', render: renderDashboard },
@@ -46,7 +50,7 @@ const routes = {
   '/settings': { title: 'Settings', render: renderSettings },
   '/audit': { title: 'Audit Trail', render: renderAudit },
   '/setup': { title: 'Connect', render: renderSetup },
-  '/connect-gmail': { title: 'Connect Gmail', render: renderConnectGmail },
+  '/connect-gmail': { title: 'Gmail unavailable', render: renderConnectGmail },
   '/capabilities': { title: 'Capabilities', render: renderCapabilities },
   '/capabilities/audit': { title: 'Capability Audit Trail', render: renderCapabilitiesAudit },
   '/about-me': { title: 'About me', render: renderAboutMe },
@@ -56,6 +60,7 @@ const routes = {
   '/credential-vault': { title: 'Credential Vault', render: renderCredentialVault },
   '/dxt/imports': { title: 'DXT Imports', render: renderDxtImports },
   '/memory-settings': { title: 'Memory backend', render: renderMemorySettings },
+  '/sample': { title: 'Interactive sample', render: renderSample },
 };
 
 /**
@@ -65,11 +70,11 @@ const routes = {
  *   null / absent  → never onboarded; show modal
  *   'true'         → completed full wizard
  *   'skipped'      → dismissed via Esc / X / Skip link
- *   'sample'       → entered via "Try with a sample profile"
- * Any non-null value means "no modal" — the user has made a choice.
+ * Sample onboarding is tracked separately in tab-scoped sessionStorage.
+ * Any non-null real-account value means "no modal" — the user made a choice.
  */
 function needsOnboarding() {
-  return !localStorage.getItem(KEY_ONBOARDED);
+  return !isSampleMode() && !hasCompletedOnboarding();
 }
 
 /**
@@ -82,15 +87,49 @@ function needsOnboarding() {
  */
 function hideOnboarding() {
   const overlay = document.getElementById('onboarding-overlay');
+  if (typeof window.skyTwinCancelOnboarding === 'function') {
+    window.skyTwinCancelOnboarding();
+  }
   if (overlay) overlay.style.display = 'none';
   if (_onboardingEscHandler) {
     document.removeEventListener('keydown', _onboardingEscHandler);
     _onboardingEscHandler = null;
   }
   updateConnectionStatus();
+  if (_onboardingReturnFocus instanceof HTMLElement) {
+    _onboardingReturnFocus.focus();
+    _onboardingReturnFocus = null;
+  }
+  document.removeEventListener('keydown', handleOnboardingKeydown);
 }
 
 let _onboardingEscHandler = null;
+let _onboardingReturnFocus = null;
+
+function handleOnboardingKeydown(e) {
+  const overlay = document.getElementById('onboarding-overlay');
+  if (!overlay || overlay.style.display === 'none' || e.key !== 'Tab') return;
+  const focusable = [...overlay.querySelectorAll(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+  )].filter((el) => el instanceof HTMLElement && el.offsetParent !== null);
+  if (focusable.length === 0) {
+    e.preventDefault();
+    overlay.querySelector('.onboarding-card')?.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const activeInsideDialog = document.activeElement instanceof HTMLElement
+    && overlay.contains(document.activeElement);
+  if (e.shiftKey && activeInsideDialog && (document.activeElement === first
+    || document.activeElement?.getAttribute('tabindex') === '-1')) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
 
 /**
  * Dismiss the modal as "skipped" — user pressed Esc, the X button, or
@@ -117,6 +156,7 @@ window.skyTwinTeardownOnboardingEsc = () => {
     document.removeEventListener('keydown', _onboardingEscHandler);
     _onboardingEscHandler = null;
   }
+  document.removeEventListener('keydown', handleOnboardingKeydown);
 };
 
 /**
@@ -124,6 +164,9 @@ window.skyTwinTeardownOnboardingEsc = () => {
  */
 function showOnboarding() {
   const overlay = document.getElementById('onboarding-overlay');
+  _onboardingReturnFocus = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null;
   overlay.style.display = 'flex';
 
   // Esc-to-dismiss. Wired once per show, torn down by hideOnboarding so
@@ -138,16 +181,14 @@ function showOnboarding() {
     };
     document.addEventListener('keydown', _onboardingEscHandler);
   }
+  document.addEventListener('keydown', handleOnboardingKeydown);
 
   renderOnboarding(
     document.getElementById('onboarding-content'),
     (userId) => {
       currentUserId = userId;
-      localStorage.setItem(KEY_USER_ID, userId);
-      // Don't overwrite a 'sample' marker the tour-mode click handler
-      // wrote — the chrome banner work (P2 follow-up) keys off it.
-      const existing = localStorage.getItem(KEY_ONBOARDED);
-      if (existing !== 'sample') {
+      if (!isSampleMode()) localStorage.setItem(KEY_USER_ID, userId);
+      if (!isSampleMode()) {
         localStorage.setItem(KEY_ONBOARDED, 'true');
       }
       hideOnboarding();
@@ -409,18 +450,18 @@ async function updateConnectorsBanner() {
     return;
   }
 
-  if (!state?.anyNeedsReauth) {
-    banner.hidden = true;
-    document.body.classList.remove('has-connectors-banner');
-    return;
-  }
-
   // First needs_reauth connector wins the CTA. Multi-connector failure
   // would surface as one banner at a time; reconnecting one and
   // refreshing reveals the next.
   const broken = Object.entries(state.connectors ?? {})
-    .find(([, c]) => c?.status === 'needs_reauth');
-  const name = broken?.[0] ?? 'a connector';
+    .find(([name, c]) => c?.status === 'needs_reauth' &&
+      !isAccountBackedIntegrationIdentifier(name));
+  if (!broken) {
+    banner.hidden = true;
+    document.body.classList.remove('has-connectors-banner');
+    return;
+  }
+  const name = broken[0];
   const code = broken?.[1]?.errorCode;
   const codeNote = code === 'invalid_grant'
     ? ' (access was revoked or expired)'
@@ -702,17 +743,16 @@ function navigate() {
 }
 
 export function setUserId(id) {
+  const selectingSample = isSampleMode() && id === DEMO_USER_ID;
+  if (!selectingSample) clearSampleSession();
   currentUserId = id;
-  localStorage.setItem(KEY_USER_ID, id);
-  // Preserve 'sample' marker so tour-mode users stay distinguishable
-  // for the P2 chrome banner work. Same invariant as hideWizard in
-  // onboarding.js — only promote the never-onboarded null state here.
-  const existing = localStorage.getItem(KEY_ONBOARDED);
-  if (existing !== 'sample') {
+  if (!selectingSample) localStorage.setItem(KEY_USER_ID, id);
+  // Sample identity is tab-scoped; never project it into real auth storage.
+  if (!selectingSample) {
     localStorage.setItem(KEY_ONBOARDED, 'true');
   }
   try { disconnectSSE(); } catch { /* noop */ }
-  connectSSE(id);
+  if (!selectingSample) connectSSE(id);
   navigate();
 }
 
@@ -883,6 +923,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Wire dashboard event handlers + document-level delegators.
   // Idempotent so re-running this in tests is safe.
   initDashboardGlobals();
+  initSampleGlobals();
   wireDxtDropAndOpen();
 
   // Mount the always-visible Pause-everything safety button (#190).
@@ -930,6 +971,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         return;
       }
       const payload = await res.json();
+      clearSampleSession();
       localStorage.setItem(KEY_SESSION_TOKEN, payload.token);
       localStorage.setItem(KEY_USER_ID, payload.userId);
       localStorage.setItem(KEY_ONBOARDED, 'true');
@@ -947,6 +989,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 
   if (mobileToken && mobileUserId) {
+    clearSampleSession();
     localStorage.setItem(KEY_SESSION_TOKEN, mobileToken);
     localStorage.setItem(KEY_USER_ID, mobileUserId);
     localStorage.setItem(KEY_ONBOARDED, 'true');
@@ -961,6 +1004,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   // the param so reloads stay sticky. Useful when a Google OAuth callback or
   // the user-switcher dropdown lands here.
   if (mobileUserId) {
+    clearSampleSession();
     localStorage.setItem(KEY_USER_ID, mobileUserId);
     localStorage.setItem(KEY_ONBOARDED, 'true');
     currentUserId = mobileUserId;
@@ -991,7 +1035,7 @@ window.addEventListener('DOMContentLoaded', async () => {
 async function bootWithVerifiedUser() {
   if (!currentUserId) {
     // navigate() handles both the modal-mount-on-first-visit and the
-    // "skipped"/'sample' state where the chrome should render without
+    // "skipped" or tab-scoped sample state where the chrome should render without
     // re-mounting the modal.
     navigate();
     return;
@@ -1016,6 +1060,7 @@ async function bootWithVerifiedUser() {
       // (id, onboarded flag, session token, tour mode, per-user state)
       // and re-onboard rather than run as a ghost or keep a stale token
       // that would 403 the next user.
+      clearSampleSession();
       clearAllSkyTwinKeys();
       currentUserId = '';
       showOnboarding();
@@ -1024,9 +1069,18 @@ async function bootWithVerifiedUser() {
     // Transient network / server error — don't force re-onboarding over
     // a blip. Boot normally; the app's offline handling covers it.
   }
-  connectSSE(currentUserId);
+  if (!isSampleMode()) connectSSE(currentUserId);
   navigate();
 }
+
+// localStorage is shared across tabs. If another tab signs in or switches
+// accounts, reload this tab so its cached route user and the real credential
+// remain one coherent pair. Disposable sample state cannot overwrite either.
+window.addEventListener('storage', (event) => {
+  if (event.key !== KEY_SESSION_TOKEN && event.key !== KEY_USER_ID) return;
+  if (hasRealAuthentication()) clearSampleSession();
+  window.location.reload();
+});
 
 // Make setUserId available globally for settings page
 window.skyTwinSetUserId = setUserId;

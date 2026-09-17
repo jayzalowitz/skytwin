@@ -30,6 +30,7 @@ const {
     updateTrustTier: vi.fn(),
     pauseAutoPromotion: vi.fn(),
     getByUserAndRegistry: vi.fn(),
+    listSkillNamesForServer: vi.fn().mockResolvedValue(['page_read']),
   },
   mockAppSuggestionRepository: {
     getPendingForUser: vi.fn(),

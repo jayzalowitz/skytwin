@@ -4,20 +4,58 @@ import {
   domainAutonomyRepository,
   escalationTriggerRepository,
   aiProviderRepository,
+  reasoningModeRepository,
 } from '@skytwin/db';
 import type { DomainAutonomyPolicyRow, EscalationTriggerRow, AIProviderSettingsRow } from '@skytwin/db';
-import { TrustTier } from '@skytwin/shared-types';
+import {
+  hasSameProviderCredentialEndpoint,
+  parseReasoningMode,
+  TrustTier,
+} from '@skytwin/shared-types';
+import type { AIProviderName, ReasoningMode } from '@skytwin/shared-types';
 import {
   SKYTWIN_EMAIL_ATTRIBUTION_TEXT,
   SKYTWIN_REPO_URL,
   resolveEmailAttributionEnabled,
 } from '@skytwin/shared-types';
-import { LlmClient, validateBaseUrlWithDns } from '@skytwin/llm-client';
+import {
+  LlmClient,
+  providerPrivacyCapabilities,
+  providersForReasoningMode,
+  validateBaseUrl,
+  validateBaseUrlWithDns,
+} from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
 const VALID_IRONCLAW_CHANNEL = /^[a-zA-Z0-9_.:-]{1,64}$/;
+const VALID_AI_PROVIDERS = new Set<AIProviderName>([
+  'anthropic', 'openai', 'google', 'ollama', 'embedded', 'trustedrouter', 'nearai',
+]);
+
+function providerEntryFromRow(row: AIProviderSettingsRow): ProviderEntry | null {
+  if (!VALID_AI_PROVIDERS.has(row.provider as AIProviderName)) return null;
+  return {
+    name: row.provider as AIProviderName,
+    apiKey: row.api_key,
+    model: row.model,
+    baseUrl: row.base_url ?? undefined,
+  };
+}
+
+function modePolicyError(
+  mode: ReasoningMode,
+  providers: readonly ProviderEntry[],
+): string | null {
+  if (providers.length === 0) return null;
+  try {
+    providersForReasoningMode(mode, providers);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : 'Provider chain is incompatible with reasoning mode';
+  }
+}
 
 /**
  * Create the settings router for user autonomy configuration.
@@ -43,11 +81,13 @@ export function createSettingsRouter(): Router {
         return;
       }
 
-      const [domainPolicies, escalationTriggers, aiProviders] = await Promise.all([
+      const [domainPolicies, escalationTriggers, aiSnapshot] = await Promise.all([
         domainAutonomyRepository.getForUser(userId!),
         escalationTriggerRepository.getForUser(userId!),
-        aiProviderRepository.getForUser(userId!),
+        aiProviderRepository.getReasoningSnapshotForUser(userId!),
       ]);
+      const aiProviders = aiSnapshot.providers;
+      const reasoningMode = aiSnapshot.reasoningMode;
 
       res.json({
         userId: user.id,
@@ -71,15 +111,23 @@ export function createSettingsRouter(): Router {
           conditions: t.conditions,
           enabled: t.enabled,
         })),
-        aiProviders: aiProviders.map((p: AIProviderSettingsRow) => ({
-          provider: p.provider,
-          model: p.model,
-          baseUrl: p.base_url,
-          priority: Number(p.priority),
-          enabled: p.enabled,
-          hasApiKey: p.api_key.length > 0,
-          apiKeyPreview: p.api_key.length > 8 ? `${p.api_key.slice(0, 4)}${'•'.repeat(8)}${p.api_key.slice(-4)}` : (p.api_key.length > 0 ? '••••••••' : ''),
-        })),
+        aiProviders: aiProviders.map((p: AIProviderSettingsRow) => {
+          const entry = providerEntryFromRow(p);
+          return {
+            provider: p.provider,
+            model: p.model,
+            baseUrl: p.base_url,
+            priority: Number(p.priority),
+            enabled: p.enabled,
+            hasApiKey: p.api_key.length > 0,
+            apiKeyPreview: p.api_key.length > 8 ? `${p.api_key.slice(0, 4)}${'•'.repeat(8)}${p.api_key.slice(-4)}` : (p.api_key.length > 0 ? '••••••••' : ''),
+            privacy: entry ? providerPrivacyCapabilities(entry, reasoningMode.mode) : null,
+          };
+        }),
+        reasoningMode: {
+          mode: reasoningMode.mode,
+          requiresConfirmation: reasoningMode.requires_confirmation,
+        },
       });
     } catch (error) {
       next(error);
@@ -375,6 +423,30 @@ export function createSettingsRouter(): Router {
 
   // ── AI Provider Settings ─────────────────────────────────────
 
+  /** Persist an explicit reasoning-location choice independently of providers. */
+  router.put('/:userId/ai/reasoning-mode', async (req, res, next) => {
+    try {
+      const { userId } = req.params;
+      const mode = parseReasoningMode((req.body as Record<string, unknown>)['mode']);
+      if (!mode) {
+        res.status(400).json({
+          error: 'mode must be on_device, verified_private_cloud, or bring_your_own_provider',
+        });
+        return;
+      }
+      const row = await reasoningModeRepository.setForUserIfCompatible(userId!, mode);
+      if (!row) {
+        res.status(409).json({
+          error: 'The active provider chain is not compatible with that reasoning mode',
+        });
+        return;
+      }
+      res.json({ mode: row.mode, requiresConfirmation: row.requires_confirmation });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   /**
    * PUT /api/settings/:userId/ai
    *
@@ -384,15 +456,16 @@ export function createSettingsRouter(): Router {
   router.put('/:userId/ai', async (req, res, next) => {
     try {
       const { userId } = req.params;
-      const { providers } = req.body as {
+      const { providers, reasoningMode: requestedModeValue } = req.body as {
         providers: {
           provider: string;
           apiKey?: string;
           model: string;
-          baseUrl?: string;
+          baseUrl?: string | null;
           priority: number;
           enabled?: boolean;
         }[];
+        reasoningMode?: unknown;
       };
 
       if (!Array.isArray(providers)) {
@@ -406,10 +479,9 @@ export function createSettingsRouter(): Router {
       // this set only listed hosted + ollama, so the Smart pill round-
       // tripped through `applySmartMode` and then 400'd at the API.
       // Copilot caught this on PR #253.
-      const validProviders = new Set(['anthropic', 'openai', 'google', 'ollama', 'embedded']);
       const seenProviders = new Set<string>();
       for (const p of providers) {
-        if (!validProviders.has(p.provider)) {
+        if (!VALID_AI_PROVIDERS.has(p.provider as AIProviderName)) {
           res.status(400).json({ error: `Invalid provider: ${p.provider}` });
           return;
         }
@@ -424,7 +496,10 @@ export function createSettingsRouter(): Router {
         seenProviders.add(p.provider);
         if (p.baseUrl) {
           try {
-            await validateBaseUrlWithDns(p.baseUrl, p.provider);
+            validateBaseUrl(p.baseUrl, p.provider);
+            if (p.enabled !== false) {
+              await validateBaseUrlWithDns(p.baseUrl, p.provider);
+            }
           } catch (err) {
             res.status(400).json({ error: err instanceof Error ? err.message : 'Invalid base URL' });
             return;
@@ -432,19 +507,54 @@ export function createSettingsRouter(): Router {
         }
       }
 
-      const rows = await aiProviderRepository.replaceAll(
-        userId!,
-        providers.map((p) => ({
-          provider: p.provider,
-          apiKey: p.apiKey,
-          model: p.model,
-          baseUrl: p.baseUrl,
-          priority: p.priority,
-          enabled: p.enabled,
-        })),
-      );
+      const requestedMode = parseReasoningMode(requestedModeValue);
+      if (requestedMode === null) {
+        res.status(400).json({
+          error: 'reasoningMode is required and must be a canonical reasoning mode',
+        });
+        return;
+      }
+      const targetMode = requestedMode;
+      const enabledEntries: ProviderEntry[] = providers
+        .filter((provider) => provider.enabled !== false)
+        .map((provider) => ({
+          name: provider.provider as AIProviderName,
+          apiKey: provider.apiKey ?? '',
+          model: provider.model,
+          baseUrl: provider.baseUrl ?? undefined,
+        }));
+      const policyError = modePolicyError(targetMode, enabledEntries);
+      if (policyError) {
+        res.status(409).json({ error: policyError });
+        return;
+      }
+
+      let rows: AIProviderSettingsRow[];
+      try {
+        rows = await aiProviderRepository.replaceAllWithReasoningMode(
+          userId!,
+          targetMode,
+          providers.map((p) => ({
+            provider: p.provider,
+            apiKey: p.apiKey,
+            model: p.model,
+            baseUrl: p.baseUrl ?? undefined,
+            priority: p.priority,
+            enabled: p.enabled,
+          })),
+        );
+      } catch (error) {
+        if ((error as { code?: unknown } | null)?.code === 'provider_credential_endpoint_changed') {
+          res.status(409).json({
+            error: 'Enter a fresh API key when changing a provider endpoint.',
+          });
+          return;
+        }
+        throw error;
+      }
 
       res.json({
+        reasoningMode: targetMode,
         providers: rows.map((r: AIProviderSettingsRow) => ({
           provider: r.provider,
           model: r.model,
@@ -467,24 +577,57 @@ export function createSettingsRouter(): Router {
   router.post('/:userId/ai/test', async (req, res, _next) => {
     try {
       const { userId } = req.params;
-      const { provider, apiKey, model, baseUrl } = req.body as {
+      const { provider, apiKey, model, baseUrl, reasoningMode: requestedModeValue } = req.body as {
         provider: string;
         apiKey?: string;
         model: string;
-        baseUrl?: string;
+        baseUrl?: string | null;
+        reasoningMode?: unknown;
       };
 
-      const validProviders = new Set(['anthropic', 'openai', 'google', 'ollama']);
+      const validProviders = new Set(['anthropic', 'openai', 'google', 'ollama', 'trustedrouter', 'nearai']);
       if (!validProviders.has(provider)) {
         res.status(400).json({ error: `Invalid provider: ${provider}` });
         return;
       }
 
-      // If no API key in request, fall back to the stored key for this provider
+      if (apiKey !== undefined && typeof apiKey !== 'string') {
+        res.status(400).json({ success: false, error: 'apiKey must be a string', provider });
+        return;
+      }
+
+      if (baseUrl) {
+        try {
+          validateBaseUrl(baseUrl, provider);
+          await validateBaseUrlWithDns(baseUrl, provider);
+        } catch (error) {
+          res.status(400).json({
+            success: false,
+            error: error instanceof Error ? error.message : 'Invalid base URL',
+            provider,
+          });
+          return;
+        }
+      }
+
+      // A masked/omitted key can be reused only for the same network authority.
+      // Otherwise this endpoint would disclose a stored secret to a new host.
       let resolvedKey = apiKey ?? '';
       if (!resolvedKey && userId) {
         const rows = await aiProviderRepository.getForUser(userId);
         const stored = rows.find((r) => r.provider === provider);
+        if (stored?.api_key && !hasSameProviderCredentialEndpoint(
+          provider as AIProviderName,
+          stored.base_url,
+          baseUrl,
+        )) {
+          res.status(409).json({
+            success: false,
+            error: 'Enter a fresh API key when testing a different provider endpoint.',
+            provider,
+          });
+          return;
+        }
         resolvedKey = stored?.api_key ?? '';
       }
 
@@ -492,10 +635,27 @@ export function createSettingsRouter(): Router {
         name: provider as ProviderEntry['name'],
         apiKey: resolvedKey,
         model,
-        baseUrl,
+        baseUrl: baseUrl ?? undefined,
       };
 
-      const result = await LlmClient.testProvider(entry);
+      const setting = await reasoningModeRepository.getOrCreateForUser(userId!);
+      const requestedMode = requestedModeValue === undefined
+        ? null
+        : parseReasoningMode(requestedModeValue);
+      if (requestedModeValue !== undefined && requestedMode === null) {
+        res.status(400).json({ success: false, error: 'Invalid reasoning mode', provider });
+        return;
+      }
+      const targetMode = requestedMode ?? setting.mode;
+      if (!targetMode || (requestedMode === null && setting.requires_confirmation)) {
+        res.status(409).json({
+          success: false,
+          error: 'Choose a reasoning mode before testing a provider',
+          provider,
+        });
+        return;
+      }
+      const result = await LlmClient.testProviderForReasoningMode(targetMode, entry);
       res.json({ success: true, ...result, provider });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Connection failed';

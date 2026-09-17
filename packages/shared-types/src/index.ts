@@ -21,8 +21,38 @@ export type {
   RoutineSpec,
   Routine,
   Watch,
+  WatchRun,
+  WatchRunEvidenceSnapshot,
+  WatchRunSynthesisMetadata,
+  WatchProjectionPin,
   RoutineParseResult,
 } from './routine.js';
+
+export {
+  MAX_WORKFLOW_PAYLOAD_BYTES,
+  MAX_WORKFLOW_PAYLOAD_DEPTH,
+  assertWorkflowProviderIdentity,
+  canonicalizeWorkflowPayload,
+  snapshotWorkflowAuthoringMetadata,
+  snapshotWorkflowInferenceMetadata,
+  workflowVersionContentHash,
+} from './adaptive-workflow.js';
+export type {
+  AdaptiveWorkflow,
+  AdaptiveWorkflowProposal,
+  AdaptiveWorkflowVersion,
+  WorkflowActivationEvent,
+  WorkflowActivationKind,
+  WorkflowAuthoringMetadataV1,
+  WorkflowAuthoringSource,
+  WorkflowInferenceMetadataV1,
+  WorkflowJsonObject,
+  WorkflowJsonPrimitive,
+  WorkflowJsonValue,
+  WorkflowProposalKind,
+  WorkflowSourceReferenceKind,
+  WorkflowSourceReferenceV1,
+} from './adaptive-workflow.js';
 
 export type {
   TwinProfile,
@@ -108,12 +138,18 @@ export {
   buildExecutableActionPlan,
   IRONCLAW_CORE_ACTION_TYPES,
   OPENCLAW_ACTION_TYPES,
+  ReservedActionCapabilityError,
 } from './action-capabilities.js';
 export type {
   ActionPlanReadiness,
   ExecutableActionPlan,
   ExecutionAdapterName,
 } from './action-capabilities.js';
+
+export { classifyGmailArchiveGenericAction } from './gmail-archive-quarantine.js';
+export type {
+  GmailArchiveGenericActionClassification,
+} from './gmail-archive-quarantine.js';
 
 export {
   EXECUTION_RUNTIME_VERSION_CHECKED_AT,
@@ -128,6 +164,78 @@ export type {
   ExecutionRuntimeVersionSource,
   ExecutionRuntimeVersionSummary,
 } from './execution-runtime-versions.js';
+
+export {
+  REASONING_MODES,
+  canonicalizeProviderBaseUrl,
+  hasSameProviderCredentialEndpoint,
+  parseReasoningMode,
+  providerCredentialEndpointAuthority,
+} from './reasoning-mode.js';
+export type {
+  ProviderAttestationPolicy,
+  ProviderConfidentiality,
+  ProviderExecutionLocation,
+  ProviderExecutionMetadata,
+  ProviderExecutionAttempt,
+  ProviderCostBasis,
+  ProviderModality,
+  ProviderNetworkScope,
+  ProviderPriceKind,
+  ProviderPricingCapability,
+  ProviderPrivacyCapabilities,
+  ProviderRequestIdentity,
+  ProviderRetentionClass,
+  ProviderRetentionDisclosure,
+  ProviderVerificationStatus,
+  ReasoningMode,
+} from './reasoning-mode.js';
+
+export {
+  canonicalJoinedDecisionReceiptContent,
+  buildDecisionReceiptEventKey,
+  isDecisionReceiptEventKey,
+  isJoinedDecisionReceiptTransition,
+  preservesJoinedDecisionReceiptLinks,
+  joinedDecisionReceiptArtifactDigest,
+  joinedDecisionReceiptContentDigest,
+  joinedDecisionReceiptRevisionDigest,
+  normalizeDecisionReceiptSequence,
+  verifyJoinedDecisionReceiptChain,
+  validateJoinedDecisionReceiptContent,
+} from './joined-decision-receipt.js';
+export type {
+  DecisionReceiptArtifactRef,
+  DecisionReceiptArtifactKind,
+  DecisionReceiptApprovalRef,
+  DecisionReceiptApprovalSnapshotV1,
+  DecisionReceiptBarrierRef,
+  DecisionReceiptBarrierSnapshotV1,
+  DecisionReceiptDigest,
+  DecisionReceiptEventKey,
+  DecisionReceiptDisposition,
+  DecisionReceiptEvidenceRef,
+  DecisionReceiptExecutionPlanRef,
+  DecisionReceiptExecutionPlanSnapshotV1,
+  DecisionReceiptExecutionResultRef,
+  DecisionReceiptExecutionResultSnapshotV1,
+  DecisionReceiptFeedbackApplicationRef,
+  DecisionReceiptFeedbackApplicationSnapshotV1,
+  DecisionReceiptInferenceSet,
+  DecisionReceiptPolicyRef,
+  DecisionReceiptPolicyEvaluationV1,
+  DecisionReceiptPreferenceHistoryRef,
+  DecisionReceiptPreferenceHistorySnapshotV1,
+  DecisionReceiptCorrectionV1,
+  DecisionReceiptRiskRef,
+  DecisionReceiptStage,
+  JoinedDecisionReceiptContent,
+  JoinedDecisionReceiptContentV1,
+  JoinedDecisionReceiptContentV2,
+  JoinedDecisionReceiptContentV3,
+  DecisionReceiptRevisionDigestInput,
+  DecisionReceiptChainRevisionV1,
+} from './joined-decision-receipt.js';
 
 export type {
   ActionPolicy,
@@ -151,6 +259,28 @@ export type {
   EvidenceReference,
   PreferenceReference,
 } from './explanation.js';
+export {
+  receiptSealPayload,
+  sha256Hex,
+  signInferenceReceipt,
+  snapshotInferenceReceipt,
+  snapshotInferenceReceiptExport,
+  verifyInferenceReceiptExport,
+  verifyInferenceReceiptSeal,
+} from './inference-receipt.js';
+export type {
+  AttestationVerificationInput,
+  InferenceCostV1,
+  InferenceFallbackV1,
+  InferenceReasoningMode,
+  InferenceReceiptExportV1,
+  InferenceReceiptStatus,
+  InferenceReceiptV1,
+  ReceiptSignatureV1,
+  ReceiptVerificationCode,
+  ReceiptVerificationResult,
+  ReceiptVerificationOptions,
+} from './inference-receipt.js';
 
 export type {
   ExecutionPlan,
@@ -172,6 +302,64 @@ export type {
   OAuthTokenSet,
   ConnectorConfig,
 } from './oauth.js';
+
+export {
+  GMAIL_ARCHIVE_ATTEMPT_SCHEMA,
+  GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA,
+} from './gmail-inbox-mutation.js';
+export type {
+  GmailArchiveAttemptPhase,
+  GmailArchiveAttemptStateV1,
+  GmailInboxMutationBinding,
+  GmailInboxMutationCommand,
+  GmailInboxMutationDispatchGate,
+  GmailInboxMutationDispatchGateResult,
+  GmailInboxMutationPort,
+  GmailInboxMutationResult,
+  GmailInboxMutationTarget,
+} from './gmail-inbox-mutation.js';
+
+export type {
+  GmailInboxObservationBinding,
+  GmailInboxObservationCommand,
+  GmailInboxObservationPort,
+  GmailInboxObservationResult,
+  GmailInboxObservationUnavailableCode,
+} from './gmail-inbox-observation.js';
+
+export type {
+  AbandonedGmailArchiveRecovery,
+  AbandonedGmailArchiveRecoveryQuery,
+  QueryAbandonedGmailArchiveInput,
+  QueryAbandonedGmailArchiveResult,
+} from './gmail-archive-recovery.js';
+
+export type {
+  AcquireGmailArchiveRecoveryLeaseInput,
+  AcquireGmailArchiveRecoveryLeaseResult,
+  BeginGmailArchiveRecoveryObservationResult,
+  GmailArchiveRecoveryLease,
+  GmailArchiveRecoveryLeaseFence,
+  GmailArchiveRecoveryLeaseRepository,
+  GmailArchiveRecoveryMailboxObservedEvidence,
+  GmailArchiveRecoveryObservationEvidence,
+  GmailArchiveRecoveryObservationPermit,
+  GmailArchiveRecoveryObservationState,
+  GmailArchiveRecoveryObservationUnavailableEvidence,
+  GmailArchiveRecoveryWorkKind,
+  RecordGmailArchiveRecoveryObservationInput,
+  RecordGmailArchiveRecoveryObservationResult,
+} from './gmail-archive-recovery-lease.js';
+
+export type {
+  GmailArchiveInterruptedBeforeDispatchEvidence,
+  GmailArchiveMailboxObservationUnavailableEvidence,
+  GmailArchiveMailboxObservedEvidence,
+  GmailArchiveReconciliationCommand,
+  GmailArchiveReconciliationEvidence,
+  GmailArchiveReconciliationRecoveryProof,
+  ReconcileAbandonedGmailArchiveInput,
+} from './gmail-archive-reconciliation.js';
 
 export type {
   BehavioralPattern,
@@ -221,6 +409,18 @@ export type {
   DemoInfoResponse,
   DemoSessionResponse,
   DemoPreviewResponse,
+  SampleSimulationCommand,
+  SampleSimulationActionType,
+  SampleSimulationCommandType,
+  SampleSimulationCorrectionOption,
+  SampleSimulationExplanation,
+  SampleSimulationLearning,
+  SampleSimulationPolicyResult,
+  SampleSimulationPrediction,
+  SampleSimulationProposal,
+  SampleSimulationProposalId,
+  SampleSimulationStateResponse,
+  SampleSimulationStatus,
 } from './demo.js';
 
 export type {
@@ -229,7 +429,97 @@ export type {
 } from './demo-recipes.js';
 export { DEMO_RECIPES, findDemoRecipe } from './demo-recipes.js';
 
+export {
+  normalizeAdapterOutput,
+  normalizeExecutionError,
+  normalizeExecutionEventPayload,
+  normalizeExecutionEventType,
+  normalizeExecutionPlanSteps,
+  normalizeExecutionIdentifier,
+  normalizeExecutionObservation,
+  normalizeMemoryActionAdapterName,
+  normalizeMemoryActionIdentifier,
+  normalizeMemoryActionReference,
+  normalizeMemoryActionReport,
+  normalizeMemoryActionText,
+} from './execution-evidence.js';
+export type {
+  NormalizedAdapterOutput,
+  NormalizeExecutionEvidenceOptions,
+} from './execution-evidence.js';
+
 export type {
   FsScanRoot,
   RawSignal,
 } from './capability-acquisition.js';
+
+export {
+  isAccountBackedActionType,
+  isAccountBackedEmailOrCalendarAction,
+  isAccountBackedIntegration,
+  isAccountBackedIntegrationIdentifier,
+  isAccountBackedRegistryIdentifier,
+  isGoogleAccountActionType,
+  isGoogleAccountIntegration,
+  isGoogleAccountRegistryIdentifier,
+  isGoogleIntegrationIdentifier,
+  isMicrosoftAccountRegistryIdentifier,
+  isMicrosoftIntegrationIdentifier,
+} from './google-preview-boundary.js';
+export type { AccountActionBoundaryInput } from './google-preview-boundary.js';
+export type { IntegrationBoundaryInput } from './google-preview-boundary.js';
+
+export {
+  SOURCE_KEY_BROKER_FAILURE_CODES,
+  SOURCE_KEY_BROKER_OPERATIONS,
+  SOURCE_KEY_BROKER_PROTOCOL_VERSION,
+  SOURCE_KEY_BROKER_ROLES,
+  SOURCE_KEY_ENVELOPE_VERSION,
+  SOURCE_KEY_PURPOSES,
+  SOURCE_KEY_VAULT_STATES,
+  snapshotSourceKeyBrokerContext,
+  snapshotSourceKeyBrokerControlMessage,
+  snapshotSourceKeyBrokerOwnerAuthorityMessage,
+  snapshotSourceKeyBrokerRequest,
+  snapshotSourceKeyBrokerResponse,
+  snapshotSourceKeyBrokerResult,
+  snapshotSourceKeyEnvelope,
+  snapshotSourceKeyBrokerSessionAuthority,
+  sourceKeyBrokerFailure,
+} from './source-key-broker-protocol.js';
+export type {
+  SourceKeyBrokerContext,
+  SourceKeyBrokerCapabilityMessage,
+  SourceKeyBrokerControlMessage,
+  SourceKeyBrokerDecryptRequest,
+  SourceKeyBrokerDecryptSuccess,
+  SourceKeyBrokerEncryptRequest,
+  SourceKeyBrokerEncryptSuccess,
+  SourceKeyBrokerFailure,
+  SourceKeyBrokerFailureCode,
+  SourceKeyBrokerGenerationMessage,
+  SourceKeyBrokerLockAckMessage,
+  SourceKeyBrokerLockMessage,
+  SourceKeyBrokerOperation,
+  SourceKeyBrokerOwnerAuthorityMessage,
+  SourceKeyBrokerOwnerGrantFailure,
+  SourceKeyBrokerOwnerGrantRequest,
+  SourceKeyBrokerOwnerGrantResult,
+  SourceKeyBrokerOwnerGrantSuccess,
+  SourceKeyBrokerOwnerRevokeRequest,
+  SourceKeyBrokerRequest,
+  SourceKeyBrokerResponse,
+  SourceKeyBrokerResponseExpectation,
+  SourceKeyBrokerRewrapRequest,
+  SourceKeyBrokerRewrapSuccess,
+  SourceKeyBrokerRole,
+  SourceKeyBrokerSessionAuthority,
+  SourceKeyBrokerStateRequest,
+  SourceKeyBrokerStateSuccess,
+  SourceKeyBrokerSuccess,
+  SourceKeyBrokerResult,
+  SourceKeyBrokerResultFor,
+  SourceKeyEnvelopeV2,
+  SourceKeyPurpose,
+  SourceKeyVaultState,
+} from './source-key-broker-protocol.js';

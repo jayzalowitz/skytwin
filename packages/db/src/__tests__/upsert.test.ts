@@ -64,7 +64,9 @@ describe('buildUpsertSql (spec 10 Part B)', () => {
 
 describe('seedUpsert execution', () => {
   it('executes the built SQL against the client with bound values', async () => {
-    const client: Queryable = { query: vi.fn().mockResolvedValue({ rows: [] }) };
+    const client: Queryable = {
+      query: vi.fn().mockResolvedValue({ rows: [] }),
+    };
     await seedUpsert(client, {
       table: 'users',
       row: { id: 'u1', email: 'a@x.com' },
@@ -77,8 +79,15 @@ describe('seedUpsert execution', () => {
   });
 
   it('is safe to call repeatedly with the same row (idempotent by construction)', async () => {
-    const client: Queryable = { query: vi.fn().mockResolvedValue({ rows: [] }) };
-    const spec = { table: 'users', row: { id: 'u1' }, conflict: ['id'], update: 'nothing' as const };
+    const client: Queryable = {
+      query: vi.fn().mockResolvedValue({ rows: [] }),
+    };
+    const spec = {
+      table: 'users',
+      row: { id: 'u1' },
+      conflict: ['id'],
+      update: 'nothing' as const,
+    };
     await seedUpsert(client, spec);
     await seedUpsert(client, spec);
     const calls = (client.query as ReturnType<typeof vi.fn>).mock.calls;
@@ -86,5 +95,19 @@ describe('seedUpsert execution', () => {
     const sql1 = calls[1]![0] as string;
     expect(sql0).toBe(sql1); // identical idempotent statement
     expect(sql0).toContain('DO NOTHING');
+  });
+
+  it('rejects tables outside the audited seed allowlist before issuing SQL', async () => {
+    const client: Queryable = {
+      query: vi.fn().mockResolvedValue({ rows: [] }),
+    };
+    await expect(
+      seedUpsert(client, {
+        table: 'oauth_tokens',
+        row: { id: 'token-1' },
+        conflict: ['id'],
+      }),
+    ).rejects.toThrow('not in the audited allowlist');
+    expect(client.query).not.toHaveBeenCalled();
   });
 });

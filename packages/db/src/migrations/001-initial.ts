@@ -1,12 +1,85 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { Client } from 'pg';
 import { getPool, closePool } from '../connection.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const SCHEMA_PATH = join(__dirname, '..', 'schemas', 'schema.sql');
+
+export interface MigrationSqlSource {
+  name: string;
+  sql: string;
+}
+
+function migrationSqlSources(): MigrationSqlSource[] {
+  return [
+    { name: 'schema.sql', sql: readFileSync(SCHEMA_PATH, 'utf-8') },
+    ...readdirSync(__dirname)
+      .filter((file) => file.endsWith('.sql'))
+      .sort()
+      .map((file) => ({ name: file, sql: readFileSync(join(__dirname, file), 'utf-8') })),
+  ];
+}
+
+function unquoteSqlIdentifier(identifier: string): string {
+  return identifier.startsWith('"')
+    ? identifier.slice(1, -1).replaceAll('""', '"')
+    : identifier;
+}
+
+/**
+ * Derive the SkyTwin-owned table boundary from checked-in DDL, never from the
+ * database namespace. `all` includes tables later removed by a migration so a
+ * rollback can also clean an interrupted/older install; `current` applies the
+ * checked-in DROP TABLE statements and is the expected post-up manifest.
+ */
+export function deriveOwnedTableManifest(sources: readonly MigrationSqlSource[]): {
+  all: string[];
+  current: string[];
+} {
+  const all = new Set<string>();
+  const current = new Set<string>();
+  const identifier = '(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)';
+  const createPattern = new RegExp(
+    `\\bCREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(?:(?:public|"public")\\.)?(${identifier})(?![A-Za-z0-9_$"]|\\s*\\.)`,
+    'gi',
+  );
+  const dropPattern = new RegExp(
+    `\\bDROP\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?(?:(?:public|"public")\\.)?(${identifier})(?![A-Za-z0-9_$"]|\\s*\\.)`,
+    'gi',
+  );
+
+  for (const source of sources) {
+    // Ownership is a property of executable DDL, not prose in a migration
+    // comment. The migration runner has the same line-comment limitation.
+    const ddl = source.sql.replace(/--[^\n]*/g, '');
+    const createStatements = ddl.match(/\bCREATE\s+TABLE\b/gi) ?? [];
+    const created = [...ddl.matchAll(createPattern)];
+    if (created.length !== createStatements.length) {
+      throw new Error(`[migration] Cannot derive every owned table from ${source.name}`);
+    }
+    for (const match of created) {
+      const name = unquoteSqlIdentifier(match[1]!);
+      all.add(name);
+      current.add(name);
+    }
+    for (const match of ddl.matchAll(dropPattern)) {
+      current.delete(unquoteSqlIdentifier(match[1]!));
+    }
+  }
+
+  return {
+    all: [...all].sort(),
+    current: [...current].sort(),
+  };
+}
+
+export function getSkyTwinOwnedTableManifest(): { all: string[]; current: string[] } {
+  return deriveOwnedTableManifest(migrationSqlSources());
+}
 
 /**
  * SQLSTATE codes that mean "this DDL object already exists" — re-running
@@ -35,6 +108,44 @@ const SCHEMA_PATH = join(__dirname, '..', 'schemas', 'schema.sql');
  * but only inside a `--` comment line, not as a statement).
  */
 const IDEMPOTENT_DDL_CODES = new Set(['42710', '42P07', '42701']);
+const OWNED_MIGRATION_CONNECTION_TIMEOUT_MS = 5_000;
+const OWNED_MIGRATION_QUERY_TIMEOUT_MS = 120_000;
+
+interface MigrationQueryable {
+  query(text: string): Promise<unknown>;
+}
+
+export interface OwnedMigrationClient extends MigrationQueryable {
+  connect(): Promise<unknown>;
+  end(): Promise<void>;
+}
+
+export interface OwnedMigrationOptions {
+  /** Exact endpoint selected by the desktop-owned CockroachDB capability. */
+  connectionString: string;
+  /**
+   * Revalidates the desktop's child-process capability. This callback is
+   * checked after each non-reconnecting connection is established and
+   * immediately before every write.
+   */
+  authorize: () => boolean;
+  /** Test seam for proving connection and authority sequencing. */
+  createClient?: (connectionString: string) => OwnedMigrationClient;
+}
+
+function requireOwnedMigrationAuthority(authorize: () => boolean): void {
+  if (!authorize()) {
+    throw new Error('CockroachDB ownership changed; refusing migration write');
+  }
+}
+
+function migrationClient(connectionString: string): OwnedMigrationClient {
+  return new Client({
+    connectionString,
+    connectionTimeoutMillis: OWNED_MIGRATION_CONNECTION_TIMEOUT_MS,
+    query_timeout: OWNED_MIGRATION_QUERY_TIMEOUT_MS,
+  });
+}
 
 /**
  * Split a .sql migration file into individual statements.
@@ -133,26 +244,18 @@ export function isIdempotentError(error: unknown): boolean {
   );
 }
 
-/**
- * Run all migrations: schema.sql first, then SQL files 002–011 in order.
- */
-export async function up(): Promise<void> {
-  const pool = getPool();
-
-  // Ensure the database exists
-  try {
-    await pool.query('CREATE DATABASE IF NOT EXISTS skytwin');
-  } catch {
-    // Database may already exist or we may not have permissions; continue
-  }
-
+async function applyMigrations(
+  client: MigrationQueryable,
+  authorize: () => boolean,
+): Promise<void> {
   // Read and execute the entire schema as one batch.
   // Running it as a single query preserves statement ordering so FK
   // references resolve correctly (e.g. connected_accounts → users).
   const schema = readFileSync(SCHEMA_PATH, 'utf-8');
 
   try {
-    await pool.query(schema);
+    requireOwnedMigrationAuthority(authorize);
+    await client.query(schema);
   } catch (error) {
     // Use the same idempotency rule as the per-statement loop below —
     // DDL "already exists" is swallowed; 23505 (unique-violation) and
@@ -181,87 +284,217 @@ export async function up(): Promise<void> {
     const statements = splitSqlStatements(sql);
 
     let applied = 0;
-    for (const stmt of statements) {
-      try {
-        await pool.query(stmt);
-        applied++;
-      } catch (error) {
-        if (isIdempotentError(error)) {
-          // Already applied on a prior run — skip
-          continue;
+    // Migration 088 must temporarily disable connector_cursors.schema_locked
+    // because CockroachDB rejects the required PK/index/FK changes otherwise.
+    // Statements are committed one at a time, so an error after the unlock
+    // would otherwise strand the table unlocked. Track the committed state and
+    // restore it on every authorized exit, including a failed statement.
+    const guardsConnectorCursorSchemaLock = file === '088-gmail-evidence-foundation.sql';
+    let connectorCursorSchemaLockOpen = false;
+    let migrationError: unknown;
+    try {
+      for (const stmt of statements) {
+        try {
+          requireOwnedMigrationAuthority(authorize);
+          await client.query(stmt);
+          applied++;
+          if (guardsConnectorCursorSchemaLock) {
+            if (/^ALTER TABLE connector_cursors SET \(schema_locked = false\)$/i.test(stmt.trim())) {
+              connectorCursorSchemaLockOpen = true;
+            } else if (/^ALTER TABLE connector_cursors SET \(schema_locked = true\)$/i.test(stmt.trim())) {
+              connectorCursorSchemaLockOpen = false;
+            }
+          }
+        } catch (error) {
+          if (isIdempotentError(error)) {
+            // Already applied on a prior run — skip
+            continue;
+          }
+          console.error(`[migration] ${file}: statement failed:\n${stmt.substring(0, 120)}`);
+          throw error;
         }
-        console.error(`[migration] ${file}: statement failed:\n${stmt.substring(0, 120)}`);
-        throw error;
+      }
+    } catch (error) {
+      migrationError = error;
+    } finally {
+      if (connectorCursorSchemaLockOpen) {
+        try {
+          // Preserve the owned-desktop authority invariant: cleanup is a write
+          // and must never be redirected after the managed child is lost.
+          requireOwnedMigrationAuthority(authorize);
+          await client.query('ALTER TABLE IF EXISTS connector_cursors SET (schema_locked = true)');
+          connectorCursorSchemaLockOpen = false;
+        } catch (cleanupError) {
+          throw new AggregateError(
+            migrationError === undefined ? [cleanupError] : [migrationError, cleanupError],
+            `${file} failed and connector_cursors could not be re-locked`,
+          );
+        }
       }
     }
+    if (migrationError !== undefined) throw migrationError;
     console.log(`[migration] ${file}: applied ${applied} statement(s).`);
   }
 }
 
 /**
- * Roll back the initial migration: drop all tables in reverse dependency order.
+ * Run all migrations for CLI/development callers using the shared pool.
  */
-export async function down(): Promise<void> {
+export async function up(): Promise<void> {
   const pool = getPool();
 
-  const dropOrder = [
-    // Added by migration 012 (mempalace)
-    'entity_codes',
-    'episodic_memories',
-    'knowledge_triples',
-    'knowledge_entities',
-    'memory_tunnels',
-    'memory_closets',
-    'memory_drawers',
-    'memory_rooms',
-    'memory_wings',
-    // Added by migrations 002–011 (reverse dependency order)
-    'sessions',
-    'ironclaw_tools',
-    'preference_history',
-    'escalation_triggers',
-    'domain_autonomy_policies',
-    'spend_records',
-    'trust_tier_audit',
-    'briefings',
-    'proactive_scans',
-    'skill_gap_log',
-    'twin_exports',
-    'preference_proposals',
-    'signals',
-    'accuracy_metrics',
-    'eval_runs',
-    'cross_domain_traits',
-    'behavioral_patterns',
-    'connector_configs',
-    'oauth_tokens',
-    // Base schema tables
-    'execution_events',
-    'feedback_events',
-    'explanation_records',
-    'execution_results',
-    'execution_plans',
-    'approval_requests',
-    'decision_outcomes',
-    'candidate_actions',
-    'decisions',
-    'action_policies',
-    'preferences',
-    'twin_profile_versions',
-    'twin_profiles',
-    'connected_accounts',
-    'users',
-  ];
-
-  for (const table of dropOrder) {
-    try {
-      await pool.query(`DROP TABLE IF EXISTS ${table} CASCADE`);
-    } catch (error) {
-      console.error(`[migration] Failed to drop table ${table}:`, error);
-    }
+  // Development deployments normally provision the database externally.
+  // Keep the historical best-effort create for compatibility.
+  try {
+    await pool.query('CREATE DATABASE IF NOT EXISTS skytwin');
+  } catch {
+    // Database may already exist or we may not have permissions; continue.
   }
 
-  console.log('[migration] 001-initial: All tables dropped.');
+  await applyMigrations(pool, () => true);
+}
+
+/**
+ * Run desktop migrations over fixed, non-reconnecting pg clients.
+ *
+ * A Pool may reconnect a later statement to a different process after the
+ * managed CockroachDB child exits and another listener takes the port. The
+ * packaged desktop therefore uses one direct client for database creation
+ * and one direct client for the complete migration corpus. Authority is
+ * rechecked after connect and before every write; if the owned child dies,
+ * the established socket fails instead of redirecting a later statement.
+ */
+export async function upOwned(options: OwnedMigrationOptions): Promise<void> {
+  const targetUrl = new URL(options.connectionString);
+  if (targetUrl.protocol !== 'postgresql:' && targetUrl.protocol !== 'postgres:') {
+    throw new Error('Owned migration connection must use PostgreSQL');
+  }
+  if (targetUrl.pathname !== '/skytwin') {
+    throw new Error('Owned migration connection must target the skytwin database');
+  }
+
+  const adminUrl = new URL(targetUrl);
+  adminUrl.pathname = '/defaultdb';
+  const createClient = options.createClient ?? migrationClient;
+  const admin = createClient(adminUrl.toString());
+  try {
+    await admin.connect();
+    requireOwnedMigrationAuthority(options.authorize);
+    await admin.query('CREATE DATABASE IF NOT EXISTS skytwin');
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+
+  const target = createClient(targetUrl.toString());
+  try {
+    await target.connect();
+    requireOwnedMigrationAuthority(options.authorize);
+    await applyMigrations(target, options.authorize);
+  } finally {
+    await target.end().catch(() => undefined);
+  }
+}
+
+interface PublicTableRow {
+  table_name: string;
+}
+
+interface ForeignDependencyRow {
+  dependency_kind: string;
+  dependency_name: string;
+  owned_table_name: string;
+}
+
+const OWNED_PUBLIC_BASE_TABLES_SQL = `
+  SELECT table_name
+    FROM information_schema.tables
+   WHERE table_schema = 'public'
+     AND table_type = 'BASE TABLE'
+     AND table_name = ANY($1::STRING[])
+   ORDER BY table_name
+`;
+
+const FOREIGN_OWNED_DEPENDENCIES_SQL = `
+  SELECT 'foreign_key' AS dependency_kind,
+         tc.table_schema || '.' || tc.table_name || '.' || tc.constraint_name AS dependency_name,
+         ccu.table_name AS owned_table_name
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.referential_constraints rc
+      ON rc.constraint_catalog = tc.constraint_catalog
+     AND rc.constraint_schema = tc.constraint_schema
+     AND rc.constraint_name = tc.constraint_name
+    JOIN information_schema.constraint_column_usage ccu
+      ON ccu.constraint_catalog = rc.unique_constraint_catalog
+     AND ccu.constraint_schema = rc.unique_constraint_schema
+     AND ccu.constraint_name = rc.unique_constraint_name
+   WHERE tc.constraint_type = 'FOREIGN KEY'
+     AND ccu.table_schema = 'public' AND ccu.table_name = ANY($1::STRING[])
+     AND NOT (tc.table_schema = 'public' AND tc.table_name = ANY($1::STRING[]))
+  UNION ALL
+  SELECT 'view' AS dependency_kind,
+         vtu.view_schema || '.' || vtu.view_name AS dependency_name,
+         vtu.table_name AS owned_table_name
+    FROM information_schema.view_table_usage vtu
+   WHERE vtu.table_schema = 'public' AND vtu.table_name = ANY($1::STRING[])
+     AND NOT (vtu.view_schema = 'public' AND vtu.view_name = ANY($1::STRING[]))
+  ORDER BY dependency_kind, dependency_name, owned_table_name
+`;
+
+/** Quote a database-sourced identifier without treating it as SQL text. */
+export function quoteSqlIdentifier(identifier: string): string {
+  if (identifier.length === 0 || identifier.includes('\0')) {
+    throw new Error('[migration] Refusing to quote an empty or NUL-containing SQL identifier');
+  }
+  return `"${identifier.replaceAll('"', '""')}"`;
+}
+
+export async function down(): Promise<void> {
+  const pool = getPool();
+  // A retired name is no longer proof of current ownership. If an operator
+  // reuses it after an upgrade, rollback must preserve their replacement.
+  const owned = getSkyTwinOwnedTableManifest().current;
+
+  const dependencies = await pool.query<ForeignDependencyRow>(
+    FOREIGN_OWNED_DEPENDENCIES_SQL,
+    [owned],
+  );
+  if (dependencies.rows.length > 0) {
+    const details = dependencies.rows.map((row) =>
+      `${row.dependency_kind} ${row.dependency_name} -> public.${row.owned_table_name}`
+    ).join(', ');
+    throw new Error(
+      `[migration] Refusing rollback: operator-owned objects depend on SkyTwin tables: ${details}`,
+    );
+  }
+
+  // The manifest follows checked-in CREATE/DROP TABLE DDL, including tables
+  // removed by later migrations. Never infer ownership from everything in the
+  // shared `public` namespace: operators may colocate unrelated tables there.
+  const existing = await pool.query<PublicTableRow>(OWNED_PUBLIC_BASE_TABLES_SQL, [owned]);
+  if (existing.rows.length > 0) {
+    const qualifiedTables = existing.rows
+      .map(({ table_name: tableName }) =>
+        `${quoteSqlIdentifier('public')}.${quoteSqlIdentifier(tableName)}`)
+      .join(', ');
+    // One schema change avoids scheduling a separate CockroachDB job for
+    // every table while retaining all-or-error behavior for the enumerated
+    // set.
+    // Listing the complete owned graph lets Cockroach remove its internal FKs
+    // without CASCADE. Any unrecognised external dependency makes the whole
+    // statement fail rather than silently mutating an operator-owned object.
+    await pool.query(`DROP TABLE ${qualifiedTables}`);
+  }
+
+  const survivors = await pool.query<PublicTableRow>(OWNED_PUBLIC_BASE_TABLES_SQL, [owned]);
+  if (survivors.rows.length > 0) {
+    throw new Error(
+      `[migration] 001-initial: rollback left SkyTwin-owned tables behind: ${
+        survivors.rows.map(({ table_name: tableName }) => tableName).join(', ')
+      }`,
+    );
+  }
+
+  console.log('[migration] 001-initial: All SkyTwin-owned tables dropped.');
 }
 
 /**

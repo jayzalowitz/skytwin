@@ -2,12 +2,16 @@
  * Tests for the LLM client factory helper (getLlmClientFromConfig).
  */
 import { describe, it, expect, afterEach } from 'vitest';
+import type { ProviderEntry } from '@skytwin/llm-client';
 
 // We test the non-caching fresh variant to avoid cross-test contamination.
 import {
+  getLlmClientFromConfig,
   getLlmClientFromConfigFresh,
   _resetLlmClientCache,
   buildProviderChain,
+  refreshManagedLlmRuntime,
+  resolveEnvironmentReasoningMode,
 } from '../lib/llm-client-factory.js';
 
 afterEach(() => {
@@ -94,6 +98,24 @@ describe('getLlmClientFromConfigFresh', () => {
     expect(client).not.toBeNull();
   });
 
+  it('canonicalizes OLLAMA_BASE_URL before admitting the provider', () => {
+    const providers = buildProviderChain({
+      OLLAMA_BASE_URL: 'http://127.1:11434///',
+    });
+    expect(providers).toEqual([
+      expect.objectContaining({ baseUrl: 'http://127.0.0.1:11434' }),
+    ]);
+  });
+
+  it('fails closed when OLLAMA_BASE_URL contains a query or fragment', () => {
+    expect(getLlmClientFromConfigFresh({
+      OLLAMA_BASE_URL: 'http://localhost:11434?remote=true',
+    })).toBeNull();
+    expect(getLlmClientFromConfigFresh({
+      OLLAMA_BASE_URL: 'http://localhost:11434#remote',
+    })).toBeNull();
+  });
+
   it('includes multiple providers when multiple keys are set', () => {
     const env: Record<string, string | undefined> = {
       ANTHROPIC_API_KEY: 'key-1',
@@ -112,6 +134,55 @@ describe('getLlmClientFromConfigFresh', () => {
     // Just verify it doesn't throw and returns a client
     const client = getLlmClientFromConfigFresh(env);
     expect(client).not.toBeNull();
+  });
+
+  it('requires an explicit mode for a mixed local and remote fallback chain', () => {
+    const mixed: Record<string, string | undefined> = {
+      OLLAMA_BASE_URL: 'http://localhost:11434',
+      ANTHROPIC_API_KEY: 'key',
+    };
+    expect(getLlmClientFromConfigFresh(mixed)).toBeNull();
+    expect(getLlmClientFromConfigFresh({
+      ...mixed,
+      SKYTWIN_REASONING_MODE: 'bring_your_own_provider',
+    })).not.toBeNull();
+    expect(getLlmClientFromConfigFresh({
+      ...mixed,
+      SKYTWIN_REASONING_MODE: 'on_device',
+    })).toBeNull();
+  });
+
+  it('fails closed on an unknown explicit mode', () => {
+    expect(getLlmClientFromConfigFresh({
+      ANTHROPIC_API_KEY: 'key',
+      SKYTWIN_REASONING_MODE: 'private-ish',
+    })).toBeNull();
+  });
+});
+
+describe('resolveEnvironmentReasoningMode', () => {
+  it('infers only unambiguous legacy chains', () => {
+    const local: ProviderEntry[] = [{ name: 'ollama', apiKey: '', model: 'qwen' }];
+    const remote: ProviderEntry[] = [{ name: 'openai', apiKey: 'key', model: 'gpt' }];
+    expect(resolveEnvironmentReasoningMode({}, local)).toBe('on_device');
+    expect(resolveEnvironmentReasoningMode({}, remote)).toBe('bring_your_own_provider');
+    expect(resolveEnvironmentReasoningMode({}, [...local, ...remote])).toBeNull();
+  });
+});
+
+describe('managed runtime refresh', () => {
+  it('rebuilds a singleton that was cached before a local model became available', () => {
+    const beforeInstall = getLlmClientFromConfig({ SKYTWIN_DISABLE_EMBEDDED: '1' });
+    expect(beforeInstall).toBeNull();
+
+    const afterInstall = {
+      SKYTWIN_LLAMACPP_BIN: '/bin/sh',
+      SKYTWIN_LLAMA_MODEL: '/etc/hosts',
+    };
+    expect(getLlmClientFromConfig(afterInstall)).toBeNull();
+
+    refreshManagedLlmRuntime();
+    expect(getLlmClientFromConfig(afterInstall)).not.toBeNull();
   });
 });
 

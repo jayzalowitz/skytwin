@@ -23,6 +23,7 @@ export type AssistantMessageValidationResult =
       userId: string;
       content: string;
       threadId: string | null;
+      requestId: string;
     }
   | {
       ok: false;
@@ -43,6 +44,7 @@ export function validateAssistantMessage(raw: unknown): AssistantMessageValidati
   const userId = body['userId'];
   const content = body['content'];
   const threadId = body['threadId'];
+  const requestId = body['requestId'];
 
   if (typeof userId !== 'string' || userId.trim().length === 0) {
     errors.push({ field: 'userId', message: 'userId is required and must be a non-empty string' });
@@ -84,6 +86,13 @@ export function validateAssistantMessage(raw: unknown): AssistantMessageValidati
     }
   }
 
+  let normalizedRequestId = '';
+  if (typeof requestId !== 'string' || !UUID_REGEX.test(requestId)) {
+    errors.push({ field: 'requestId', message: 'requestId is required and must be a valid UUID' });
+  } else {
+    normalizedRequestId = requestId;
+  }
+
   if (errors.length > 0) {
     return { ok: false, errors };
   }
@@ -93,5 +102,6 @@ export function validateAssistantMessage(raw: unknown): AssistantMessageValidati
     userId: userId as string,
     content: (content as string).trim(),
     threadId: normalizedThreadId,
+    requestId: normalizedRequestId,
   };
 }

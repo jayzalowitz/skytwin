@@ -27,10 +27,13 @@ import {
   getSettings,
   enqueueEmbeddingJob,
   leaseEmbeddingJob,
+  completeEmbeddingJob,
   markJobDone,
+  markJobFailed,
   countPages,
 } from '../repository.js';
 import { HashEmbeddingProvider } from '../embedding.js';
+import { query } from '@skytwin/db';
 
 const SHOULD_RUN = process.env['RUN_DB_TESTS'] === '1';
 const TEST_USER = process.env['TEST_USER_ID'] ?? '';
@@ -122,11 +125,87 @@ describe.skipIf(!SHOULD_RUN)('integration — CRDB-backed repository', () => {
     if (job) {
       // The leased job may not be ours specifically (other tests run too),
       // but the lifecycle methods must not throw.
-      await markJobDone(job.id);
+      await markJobDone(job.id, job.leaseToken);
     }
 
     // We can also enqueue manually
     await enqueueEmbeddingJob(TEST_USER, page.id);
+  });
+
+  it('fences a stale lease after reclaim and terminalizes an exhausted abandoned lease', async () => {
+    const page = await insertPage({
+      userId: TEST_USER,
+      content: `lease fencing ${Date.now()}`,
+      source: 'note',
+    });
+    try {
+      await query(
+        `UPDATE brain_embedding_jobs
+            SET enqueued_at = now() - INTERVAL '100 years'
+          WHERE page_id = $1`,
+        [page.id],
+      );
+      const stale = await leaseEmbeddingJob();
+      expect(stale?.pageId).toBe(page.id);
+      await query(
+        `UPDATE brain_embedding_jobs
+            SET leased_until = now() - INTERVAL '1 second'
+          WHERE id = $1`,
+        [stale!.id],
+      );
+      const current = await leaseEmbeddingJob();
+      expect(current?.id).toBe(stale?.id);
+
+      await expect(completeEmbeddingJob(
+        stale!.id,
+        stale!.leaseToken,
+        [0.9, 0.1],
+        'stale-model',
+      )).resolves.toBe(false);
+      await expect(markJobFailed(stale!.id, stale!.leaseToken, 'stale failure'))
+        .resolves.toBe(false);
+      const beforeCurrent = await query<{ embedding_model: string | null }>(
+        `SELECT embedding_model FROM brain_pages WHERE id = $1`,
+        [page.id],
+      );
+      expect(beforeCurrent.rows[0]?.embedding_model).toBeNull();
+
+      await expect(completeEmbeddingJob(
+        current!.id,
+        current!.leaseToken,
+        [0.2, 0.8],
+        'current-model',
+      )).resolves.toBe(true);
+      const afterCurrent = await query<{ embedding_model: string | null }>(
+        `SELECT embedding_model FROM brain_pages WHERE id = $1`,
+        [page.id],
+      );
+      expect(afterCurrent.rows[0]?.embedding_model).toBe('current-model');
+
+      await enqueueEmbeddingJob(TEST_USER, page.id);
+      const exhausted = await query<{ id: string }>(
+        `UPDATE brain_embedding_jobs
+            SET status = 'in_progress',
+                attempts = 3,
+                leased_until = now() - INTERVAL '1 second',
+                enqueued_at = now() - INTERVAL '100 years'
+          WHERE page_id = $1 AND status = 'pending'
+          RETURNING id`,
+        [page.id],
+      );
+      expect(exhausted.rows[0]?.id).toBeDefined();
+      await leaseEmbeddingJob();
+      // pg intentionally returns CockroachDB INT8 values as strings to avoid
+      // silently truncating integers outside JavaScript's safe range.
+      const terminal = await query<{ status: string; attempts: string }>(
+        `SELECT status, attempts FROM brain_embedding_jobs WHERE id = $1`,
+        [exhausted.rows[0]!.id],
+      );
+      expect(terminal.rows[0]?.status).toBe('failed');
+      expect(Number(terminal.rows[0]?.attempts)).toBe(3);
+    } finally {
+      await query(`DELETE FROM brain_pages WHERE id = $1 AND user_id = $2`, [page.id, TEST_USER]);
+    }
   });
 
   it('settings round-trip', async () => {

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SkyTwin Demo — five minutes from cold start to trust</title>
-  <meta name="description" content="A five-minute SkyTwin launch demo storyboard: sample profile, briefing, approvals, settings, pause controls, and the automated recorder path.">
+  <meta name="description" content="SkyTwin's demo storyboard, including the current packaged read-only sample boundary and the development recorder path.">
   <link rel="canonical" href="https://jayzalowitz.github.io/skytwin/demo.html">
   <!-- No external font fetch: the --font-* vars below fall back to the system
        stack, matching the self-contained sibling pages (index/privacy/terms)
@@ -142,8 +142,7 @@
       border-bottom: 1px solid var(--border);
       background-image:
         linear-gradient(90deg, rgba(14, 15, 19, .97) 0%, rgba(14, 15, 19, .82) 45%, rgba(14, 15, 19, .28) 100%),
-        linear-gradient(0deg, rgba(14, 15, 19, .82) 0%, rgba(14, 15, 19, .1) 44%),
-        url("screenshots/onboarding.png");
+        linear-gradient(0deg, rgba(14, 15, 19, .82) 0%, rgba(14, 15, 19, .1) 44%);
       background-size: cover;
       background-position: center top;
     }
@@ -299,6 +298,17 @@
       height: auto;
     }
 
+    .frame-note {
+      padding: 1.5rem;
+      color: var(--text-muted);
+    }
+
+    .frame-note strong {
+      display: block;
+      margin-bottom: .75rem;
+      color: var(--text);
+    }
+
     .script {
       display: grid;
       grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr);
@@ -366,8 +376,7 @@
         padding-top: 7rem;
         background-image:
           linear-gradient(90deg, rgba(14, 15, 19, .96) 0%, rgba(14, 15, 19, .86) 100%),
-          linear-gradient(0deg, rgba(14, 15, 19, .84) 0%, rgba(14, 15, 19, .12) 44%),
-          url("screenshots/onboarding.png");
+          linear-gradient(0deg, rgba(14, 15, 19, .84) 0%, rgba(14, 15, 19, .12) 44%);
         background-position: center top;
       }
       .actions { display: grid; }
@@ -385,7 +394,7 @@
       </a>
       <div class="nav-links">
         <a href="index.html">Home</a>
-        <a href="demo.md">Demo script</a>
+        <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/demo.md">Demo script</a>
         <a class="button" href="https://github.com/jayzalowitz/skytwin">GitHub</a>
       </div>
     </div>
@@ -397,10 +406,10 @@
         <div class="hero-copy">
           <p class="eyebrow">Launch demo</p>
           <h1>Five minutes from cold start to trust.</h1>
-          <p class="lede">The demo path uses a seeded sample profile, so the product shows real decisions, real explanations, and real controls without connecting a private inbox.</p>
+          <p class="lede">Current source gives packaged desktop builds a guarded account-free sample for inspecting fictional decisions and explanations without a private inbox. Its product data remains read-only; approve, reject, correct, and learn interactions run only in an isolated session-local simulation with no external effects. Published installers predate it. The planned <code>v0.7.0-beta</code> remains blocked by the evidence gates in the <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/beta-claim-ledger.json">beta claim ledger</a>.</p>
           <div class="actions">
-            <a class="button primary" href="https://github.com/jayzalowitz/skytwin/releases/latest">Download desktop beta</a>
-            <a class="button" href="demo.md">Read the operator script</a>
+            <a class="button primary" href="https://github.com/jayzalowitz/skytwin/releases/latest">Published installers do not include this sample. View technical preview</a>
+            <a class="button" href="https://github.com/jayzalowitz/skytwin/blob/main/docs/demo.md">Read the operator script</a>
           </div>
         </div>
       </div>
@@ -411,15 +420,15 @@
         <div class="demo-grid" role="group" aria-label="Demo facts">
           <div class="metric">
             <strong>0</strong>
-            <span>real accounts needed for the sample-profile demo.</span>
+            <span>real accounts needed for the packaged local sample.</span>
           </div>
           <div class="metric">
             <strong>5 min</strong>
-            <span>target runtime from first screen to pause control.</span>
+            <span>target for the development or connected-account walkthrough.</span>
           </div>
           <div class="metric">
             <strong>1 cmd</strong>
-            <span>automated recorder path for screenshots, narration, and mp4 assembly.</span>
+            <span>development-only recorder path for screenshots, narration, and mp4 assembly.</span>
           </div>
         </div>
       </div>
@@ -430,17 +439,17 @@
         <div class="section-heading">
           <p class="eyebrow">Story spine</p>
           <h2>The demo is a trust arc, not a feature tour.</h2>
-          <p>Each scene proves one thing a launch viewer needs to believe before leaving personal automation running on their machine.</p>
+          <p>The storyboard spans two contexts: the packaged sample combines read-only product data with a separate non-persistent simulation, while connected-account and seeded development runs can exercise real product controls. Each scene states which context it requires.</p>
         </div>
         <div class="story">
           <article class="story-step">
             <div class="copy">
               <span class="step-number">01</span>
               <h3>Start with a safe way in.</h3>
-              <p>The first-run modal offers Google setup, a direct self-description path, and a sample profile. The sample path is the demo path because it avoids private data and shows the full loop immediately.</p>
+              <p>The Setup page displays Google setup as unavailable; the first-run modal does not offer an account-connection path and provides a direct self-description path and a sample profile. In packaged builds produced from current source, that sample is a short-lived, tab-scoped session: it safely shows populated read-only views and offers a separate isolated feedback simulation. Published installers predate this path.</p>
             </div>
             <figure class="frame">
-              <img src="screenshots/onboarding.png" alt="SkyTwin onboarding modal offering email connection, self-description, or a sample profile" loading="lazy">
+              <figcaption>Onboarding capture withheld pending replacement after the public-copy audit.</figcaption>
             </figure>
           </article>
 
@@ -451,7 +460,7 @@
               <p>The briefing is the memorable surface. It separates action from awareness, shows what SkyTwin handled, and gives power users a path to inspect why.</p>
             </div>
             <figure class="frame">
-              <img src="screenshots/briefing.png" alt="SkyTwin briefing with to-dos, topics, and Power view" loading="lazy">
+              <p>Historical briefing capture withheld pending replacement after the public-copy audit.</p>
             </figure>
           </article>
 
@@ -459,10 +468,10 @@
             <div class="copy">
               <span class="step-number">03</span>
               <h3>Every approval carries its why.</h3>
-              <p>The pending-action screen is where the safety model becomes visible. The user sees what the twin wants to do, what evidence it used, and how to say yes or no in plain language.</p>
+              <p>The pending-action screen is where the safety model becomes visible. The packaged sample can approve, reject, or correct fixed fictional proposals and inspect the policy and explanation result. Those interactions change only bounded session-local simulation state; they cannot persist feedback or reach a connector, credential, provider, or execution adapter.</p>
             </div>
             <figure class="frame">
-              <img src="screenshots/approvals.png" alt="SkyTwin approvals page with pending actions that need the user's OK" loading="lazy">
+              <p>Historical approvals capture withheld pending replacement after the public-copy audit.</p>
             </figure>
           </article>
 
@@ -470,10 +479,13 @@
             <div class="copy">
               <span class="step-number">04</span>
               <h3>Trust controls are not buried.</h3>
-              <p>Settings shows autonomy level, spend caps, credential status, connected accounts, and erasure controls. This is where the viewer sees that autopilot is earned, bounded, and reversible where possible.</p>
+              <p>In a connected or seeded development run, Settings makes reasoning location explicit: “On this device” admits embedded inference or local-source-constrained Ollama, while “My configured provider” may send prompts to that endpoint. The same page shows autonomy level, spend caps, credential status, connected accounts, and erasure controls. Settings is intentionally outside the packaged sample session's narrow read authority.</p>
             </div>
             <figure class="frame">
-              <img src="screenshots/settings.png" alt="SkyTwin settings page with autonomy, spend, credential, and privacy controls" loading="lazy">
+              <div class="frame-note">
+                <strong>Current Settings contract — fresh capture pending</strong>
+                “Where reasoning runs” is a saved boundary: On this device or My configured provider. Authorized signal fields, learned preferences, and decision history remain in the local database. A configured remote reasoning endpoint may receive prompt content; a separately administrator-configured embedding endpoint may receive memory text for indexing and semantic-search query text.
+              </div>
             </figure>
           </article>
         </div>
@@ -485,7 +497,7 @@
         <div>
           <p class="eyebrow">No-human render</p>
           <h2>Generate the launch video without screen recording.</h2>
-          <p>The recorder drives the UI with Playwright, captures frames, synthesizes narration with local Piper TTS (via the app's own <code>/api/voice/synthesize</code>), and assembles an mp4 with ffmpeg. No API keys, no cloud — every dependency is local-first and open-source.</p>
+          <p>The recorder drives the UI with Playwright, captures frames, synthesizes narration with a locally installed Piper TTS runtime (via the app's own <code>/api/voice/synthesize</code>), and assembles an mp4 with ffmpeg. This recording path does not require a hosted model key.</p>
         </div>
         <pre><code># one-time: install the standalone recorder + headless browser
 cd scripts/demo
@@ -506,10 +518,10 @@ pnpm record   # narration via local Piper /api/voice/synthesize</code></pre>
           <h2>What the demo must prove.</h2>
         </div>
         <ul class="checklist">
-          <li><strong>Cold load has a useful path.</strong> A stranger can explore with a sample profile before touching OAuth.</li>
+          <li><strong>Cold load has a useful path.</strong> Current source can open an account-free packaged sample before OAuth; published installers do not include it yet.</li>
           <li><strong>The briefing knows the difference between act and FYI.</strong> The accent means attention, not decoration.</li>
-          <li><strong>Approvals teach the model.</strong> Yes, no, edits, and feedback are part of the product loop.</li>
-          <li><strong>Autonomy is inspectable.</strong> Trust tiers, spend limits, credential status, pause, and delete are visible.</li>
+          <li><strong>The sample explains without acting.</strong> It can simulate approve, reject, correct, and learn against fixed proposals, but no interaction persists or reaches an external effect.</li>
+          <li><strong>Autonomy is inspectable in the full product.</strong> Connected or seeded development flows expose trust tiers, spend limits, credential status, pause, and delete; the packaged sample does not.</li>
         </ul>
       </div>
     </section>
@@ -517,8 +529,8 @@ pnpm record   # narration via local Piper /api/voice/synthesize</code></pre>
 
   <footer>
     <div class="wrap">
-      <p>SkyTwin demo assets live in <a href="https://github.com/jayzalowitz/skytwin/tree/main/docs/screenshots">docs/screenshots</a>. The operator script is <a href="demo.md">docs/demo.md</a>.</p>
-      <p>Last updated: 2026-06-16.</p>
+          <p>The operator script is <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/demo.md">docs/demo.md</a>. Historical captures remain withheld as prohibited stale assets; the current-source captures published in the walkthrough and workflow guide were re-audited at their recorded SHA-256 values in the claim ledger.</p>
+      <p>Last updated: 2026-09-16.</p>
     </div>
   </footer>
 </body>

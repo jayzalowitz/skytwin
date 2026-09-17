@@ -585,6 +585,51 @@ describe('GmailConnector History API', () => {
     expect(cursor.snapshot['user-1:gmail:history_id']).toBe('2050');
   });
 
+  it('does not advance process-local state when committing the staged cursor fails', async () => {
+    let historyCalls = 0;
+    vi.stubGlobal('fetch', makeFetchRouter({
+      '/users/me/history': () => {
+        historyCalls++;
+        return jsonResponse({
+          history: [{ messagesAdded: [{ message: { id: 'retry-me' } }] }],
+          historyId: '2050',
+        });
+      },
+      '/users/me/messages/retry-me': () => jsonResponse({
+        id: 'retry-me',
+        threadId: 't-retry-me',
+        labelIds: ['INBOX'],
+        snippet: '',
+        payload: { headers: [] },
+        internalDate: '1735689600000',
+        historyId: '2040',
+      }),
+    }));
+    let failSave = true;
+    const snapshot: Record<string, string> = {
+      'user-1:gmail:history_id': '1000',
+    };
+    const cursor: CursorStore = {
+      get: async (userId, connector, kind) => snapshot[`${userId}:${connector}:${kind}`] ?? null,
+      save: async (userId, connector, kind, value) => {
+        if (failSave) throw new Error('DB down');
+        snapshot[`${userId}:${connector}:${kind}`] = value;
+      },
+    };
+    const conn = new GmailConnector('user-1', makeFreshTokenStore(), cursor);
+    await conn.connect();
+
+    expect((await conn.poll()).map((item) => item.id)).toEqual(['sig_gmail_retry-me']);
+    await expect(conn.commitCursor()).rejects.toThrow('DB down');
+    expect(snapshot['user-1:gmail:history_id']).toBe('1000');
+
+    failSave = false;
+    expect((await conn.poll()).map((item) => item.id)).toEqual(['sig_gmail_retry-me']);
+    await conn.commitCursor();
+    expect(historyCalls).toBe(2);
+    expect(snapshot['user-1:gmail:history_id']).toBe('2050');
+  });
+
   it('commitCursor is a no-op when nothing is staged', async () => {
     vi.stubGlobal('fetch', makeFetchRouter({
       '/users/me/history': () => jsonResponse({ historyId: '5500' }),
@@ -604,7 +649,7 @@ describe('GmailConnector History API', () => {
     expect(cursor.snapshot['user-1:gmail:history_id']).toBe('5500');
   });
 
-  it('cursor save errors do not crash the poll', async () => {
+  it('propagates a durable cursor save failure', async () => {
     vi.stubGlobal('fetch', makeFetchRouter({
       '/users/me/messages?q=': () => jsonResponse({ messages: [] }),
       '/users/me/profile': () => jsonResponse({ historyId: '500' }),
@@ -619,7 +664,7 @@ describe('GmailConnector History API', () => {
 
     const conn = new GmailConnector('user-1', makeFreshTokenStore(), failingCursor);
     await conn.connect();
-    await expect(conn.poll()).resolves.toEqual([]);
+    await expect(conn.poll()).rejects.toThrow('DB down');
   });
 
   it('without a cursor store, the connector still works (back-compat)', async () => {
@@ -699,5 +744,54 @@ describe('GmailConnector History API', () => {
     // once the caller acknowledges the batch.
     await conn.commitCursor();
     expect(cursor.snapshot['user-1:gmail:history_id']).toBe('1300');
+  });
+
+  it('binds cursor, signal identity, and evidence to one stable Gmail account', async () => {
+    vi.stubGlobal('fetch', makeFetchRouter({
+      '/users/me/messages?q=': () => jsonResponse({ messages: [{ id: 'm-account' }] }),
+      '/users/me/messages/m-account': () => jsonResponse({
+        id: 'm-account',
+        threadId: 'thread-account',
+        labelIds: ['INBOX'],
+        snippet: 'preview',
+        payload: { headers: [{ name: 'From', value: 'friend@example.com' }] },
+        internalDate: '1735689600000',
+        historyId: '1400',
+      }),
+    }));
+    const getForAccount = vi.fn().mockResolvedValue(null);
+    const saveForAccount = vi.fn().mockResolvedValue(undefined);
+    const cursor: CursorStore = {
+      get: vi.fn().mockRejectedValue(new Error('legacy cursor must not be used')),
+      save: vi.fn().mockRejectedValue(new Error('legacy cursor must not be used')),
+      getForAccount,
+      saveForAccount,
+    };
+    const accountId = '22222222-2222-4222-8222-222222222222';
+    const conn = new GmailConnector(
+      'user-1', makeFreshTokenStore(), cursor, null, { connectorAccountId: accountId },
+    );
+
+    await conn.connect();
+    const [signal] = await conn.poll();
+    await conn.commitCursor();
+
+    expect(getForAccount).toHaveBeenCalledWith('user-1', accountId, 'gmail', 'history_id');
+    expect(saveForAccount).toHaveBeenCalledWith('user-1', accountId, 'gmail', 'history_id', '1400');
+    expect(signal?.id).toMatch(/^sig_gmail_[0-9a-f]{64}$/);
+    expect(signal?.id).not.toContain('m-account');
+    expect(signal?.data).not.toHaveProperty('messageId');
+    expect(signal?.data).not.toHaveProperty('threadId');
+    expect(signal?.connectorEvidence).toEqual({
+      kind: 'gmail_message',
+      connectorAccountId: accountId,
+      provider: 'google',
+      providerMessageId: 'm-account',
+      providerThreadId: 'thread-account',
+      authoringTier: 'inbox_personal',
+      observedInInbox: true,
+      observedAt: expect.any(String),
+      messageTimestamp: '2025-01-01T00:00:00.000Z',
+    });
   });
 });

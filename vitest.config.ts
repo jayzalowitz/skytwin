@@ -13,9 +13,10 @@ export default defineConfig({
     // attributing half of them to a build artifact — a large part of why the
     // real assertion failure that took `main` red stayed buried in the log.
     //
-    // NOTE: a package-local vitest.config.ts REPLACES this file rather than
-    // merging with it, so any package that needs its own config must repeat
-    // this exclusion. See the "Build gotcha" section of CLAUDE.md.
+    // NOTE: package scripts execute with their package as cwd, so they also
+    // pass this exclusion explicitly. A package-local vitest.config.ts
+    // REPLACES this file rather than merging with it and must repeat the
+    // exclusion too. See the "Build gotcha" section of CLAUDE.md.
     exclude: [...configDefaults.exclude, '**/dist/**'],
   },
 });

@@ -1,22 +1,42 @@
 import type { ActionHandler, ExecutionStep, StepResult } from '@skytwin/shared-types';
 import { appendSkyTwinEmailAttribution } from '@skytwin/shared-types';
-import type { CredentialProvider } from '../credential-provider.js';
+import {
+  didCredentialRequestStart,
+  type CredentialDispatchResult,
+  type CredentialProvider,
+} from '../credential-provider.js';
+import {
+  PreRequestExecutionError,
+  type ExecutionRequestPreparation,
+} from '../ironclaw-adapter.js';
+
+interface ResolvedCredential {
+  accessToken: string;
+}
 
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1';
 
+function throwIfProviderOutcomeIsAmbiguous(service: string, status: number): void {
+  if (status === 408 || status === 429 || status >= 500) {
+    throw new Error(`${service} returned ${status} after request start; outcome is ambiguous.`);
+  }
+}
+
 /**
  * Handler for email actions via the Gmail API.
- * Handles archive, label, send_reply, draft_email, send_email, and delete operations.
+ * Handles label, send_reply, draft_email, send_email, and delete operations.
+ * Archive is reserved for the dedicated Gmail archive lifecycle.
  */
 export class EmailActionHandler implements ActionHandler {
   readonly actionType = 'email';
   readonly domain = 'email';
-
-  constructor(private readonly credentialProvider?: CredentialProvider) {}
+  readonly supportsRollback: boolean;
+  constructor(private readonly credentialProvider?: CredentialProvider) {
+    this.supportsRollback = !credentialProvider;
+  }
 
   canHandle(actionType: string): boolean {
     return [
-      'archive_email',
       'label_email',
       'send_reply',
       'reply_email',
@@ -26,45 +46,122 @@ export class EmailActionHandler implements ActionHandler {
     ].includes(actionType);
   }
 
-  async execute(step: ExecutionStep): Promise<StepResult> {
+  async prepareRequestStart(step: ExecutionStep): Promise<ExecutionRequestPreparation> {
     const actionType = (step.parameters['actionType'] as string) ?? step.type;
-    const accessToken = await this.resolveAccessToken(step);
+    const messageId = step.parameters['emailId'];
+    if (['archive_email', 'label_email', 'send_reply', 'reply_email', 'draft_email', 'delete_email']
+      .includes(actionType) && typeof messageId !== 'string') {
+      throw new PreRequestExecutionError('Missing emailId in step parameters');
+    }
+    if (actionType === 'send_email' &&
+        (typeof step.parameters['to'] !== 'string' || !step.parameters['to'].trim())) {
+      throw new PreRequestExecutionError('Missing to in step parameters');
+    }
+    if (['send_reply', 'reply_email', 'draft_email'].includes(actionType) &&
+        (typeof step.parameters['replyToFrom'] !== 'string' || !step.parameters['replyToFrom'].trim())) {
+      throw new PreRequestExecutionError('Missing replyToFrom in step parameters');
+    }
+    if (this.credentialProvider && typeof step.parameters['userId'] !== 'string') {
+      throw new PreRequestExecutionError('Credential dispatch owner is missing.');
+    }
+    // Planning is deliberately credential-free. OAuth reads, migration and
+    // refresh happen only after the caller has persisted policy/admission and
+    // the router has claimed its one-shot generic request-start authority.
+    return {};
+  }
+
+  async execute(
+    step: ExecutionStep,
+    _preparation?: ExecutionRequestPreparation,
+  ): Promise<StepResult> {
+    const actionType = (step.parameters['actionType'] as string) ?? step.type;
+    if (step.type === 'archive_email' || actionType === 'archive_email') {
+      return { success: false, error: 'archive_email is reserved for its dedicated lifecycle' };
+    }
     const messageId = step.parameters['emailId'] as string | undefined;
 
-    switch (actionType) {
-      case 'archive_email':
-        if (!messageId) throw new Error('Missing emailId in step parameters');
-        return this.archiveEmail(accessToken, messageId);
-      case 'label_email':
-        if (!messageId) throw new Error('Missing emailId in step parameters');
-        return this.labelEmail(
-          accessToken,
-          messageId,
-          step.parameters['labels'] as string[] ?? [],
-        );
-      case 'send_reply':
-      case 'reply_email':
-      case 'draft_email':
-        if (!messageId) throw new Error('Missing emailId in step parameters');
-        return this.sendReply(
-          accessToken,
-          messageId,
-          this.resolveReplyBody(step),
-          step.parameters,
-        );
-      case 'send_email':
-        return this.sendEmail(accessToken, step.parameters);
-      case 'delete_email':
-        if (!messageId) throw new Error('Missing emailId in step parameters');
-        return this.deleteEmail(accessToken, messageId);
-      default:
-        return { success: false, error: `Unknown email action: ${actionType}` };
+    if (['archive_email', 'label_email', 'send_reply', 'reply_email', 'draft_email', 'delete_email']
+      .includes(actionType) && !messageId) {
+      return { success: false, error: 'Missing emailId in step parameters' };
     }
+    if (actionType === 'send_email') {
+      const to = step.parameters['to'];
+      if (typeof to !== 'string' || to.trim().length === 0) {
+        return { success: false, error: 'Missing to in step parameters' };
+      }
+    }
+    if (['send_reply', 'reply_email', 'draft_email'].includes(actionType)) {
+      const replyTo = step.parameters['replyToFrom'];
+      if (typeof replyTo !== 'string' || replyTo.trim().length === 0) {
+        return { success: false, error: 'Missing replyToFrom in step parameters' };
+      }
+    }
+    const supported = new Set([
+      'label_email', 'send_reply', 'reply_email',
+      'draft_email', 'send_email', 'delete_email',
+    ]);
+    if (!supported.has(actionType)) {
+      return { success: false, error: `Unknown email action: ${actionType}` };
+    }
+    let credential: ResolvedCredential;
+    if (this.credentialProvider) {
+      const started = await this.startCredentialDispatch(step);
+      const accessToken = this.credentialProvider.consumeDispatchCredential?.(started) ?? null;
+      if (!accessToken) {
+        throw new Error('Credential vault authority changed before Gmail request start.');
+      }
+      // No await may occur between this synchronous vault-generation check and
+      // the provider fetch selected below.
+      credential = { accessToken };
+    } else {
+      const accessToken = step.parameters['accessToken'];
+      if (typeof accessToken !== 'string' || accessToken.length === 0) {
+        return { success: false, error: 'Missing accessToken — no OAuth token available for Gmail.' };
+      }
+      credential = { accessToken };
+    }
+    let result: StepResult;
+
+    // No await occurs between the credential bind returned above and this
+    // call. The router owns the encompassing request-start lease.
+    switch (actionType) {
+        case 'label_email':
+          result = await this.labelEmail(
+            credential.accessToken, messageId!, step.parameters['labels'] as string[] ?? [],
+          );
+          break;
+        case 'send_reply':
+        case 'reply_email':
+        case 'draft_email':
+          result = await this.sendReply(
+            credential.accessToken, messageId!, this.resolveReplyBody(step), step.parameters,
+          );
+          break;
+        case 'send_email':
+          result = await this.sendEmail(credential.accessToken, step.parameters);
+          break;
+        case 'delete_email':
+          result = await this.deleteEmail(credential.accessToken, messageId!);
+          break;
+        default:
+          throw new Error('Validated email action was not dispatched.');
+    }
+    return result;
   }
 
   async rollback(step: ExecutionStep): Promise<StepResult> {
     const originalAction = (step.parameters['originalActionType'] as string) ?? step.type;
-    const accessToken = await this.resolveAccessToken(step);
+    if (step.type === 'archive_email' || step.type === 'rollback_archive_email' ||
+        originalAction === 'archive_email') {
+      return { success: false, error: 'archive_email rollback requires its dedicated lifecycle' };
+    }
+    if (this.credentialProvider) {
+      return {
+        success: false,
+        error: 'Credential-backed rollback requires a separately admitted dispatch authority.',
+      };
+    }
+    const { accessToken } = await this.resolveAccessToken(step);
     const messageId = step.parameters['emailId'] as string | undefined;
 
     if (!messageId) {
@@ -72,9 +169,6 @@ export class EmailActionHandler implements ActionHandler {
     }
 
     switch (originalAction) {
-      case 'archive_email':
-        // Un-archive: add INBOX label back
-        return this.modifyLabels(accessToken, messageId, ['INBOX'], []);
       case 'label_email':
         // Remove added labels
         return this.modifyLabels(
@@ -88,23 +182,55 @@ export class EmailActionHandler implements ActionHandler {
     }
   }
 
-  private async resolveAccessToken(step: ExecutionStep): Promise<string> {
+  private async startCredentialDispatch(step: ExecutionStep): Promise<CredentialDispatchResult> {
+    const userId = step.parameters['userId'] as string | undefined;
+    const decisionId = step.parameters['credentialDecisionId'];
+    const actionId = step.parameters['credentialActionId'];
+    const executionPlanId = step.parameters['credentialExecutionPlanId'];
+    const authorityRevision = step.parameters['credentialAuthorityRevision'];
+    const policyAuthorityRevision = step.parameters['credentialPolicyAuthorityRevision'];
+    const dispatchCapability = step.parameters['dispatchCapability'];
+    const dispatchLeaseGeneration = step.parameters['dispatchLeaseGeneration'];
+    if (!this.credentialProvider || !userId || typeof decisionId !== 'string' ||
+        typeof actionId !== 'string' || typeof executionPlanId !== 'string' ||
+        typeof authorityRevision !== 'string' || typeof policyAuthorityRevision !== 'string' ||
+        typeof dispatchCapability !== 'string' || typeof dispatchLeaseGeneration !== 'string' ||
+        !this.credentialProvider.startDispatch || !this.credentialProvider.consumeDispatchCredential) {
+      throw new Error('Credential dispatch authority is missing.');
+    }
+    const result = await this.credentialProvider.startDispatch({
+      userId,
+      provider: 'google',
+      accountEmail: typeof step.parameters['accountEmail'] === 'string'
+        ? step.parameters['accountEmail'] : undefined,
+      decisionId,
+      actionId,
+      executionPlanId,
+      authorityRevision,
+      policyAuthorityRevision,
+      dispatchCapability,
+      dispatchLeaseGeneration,
+    });
+    if (!result.success) {
+      if (didCredentialRequestStart(result) === false) throw new PreRequestExecutionError(result.error);
+      throw new Error(result.error);
+    }
+    return result;
+  }
+
+  private async resolveAccessToken(step: ExecutionStep): Promise<ResolvedCredential> {
     const userId = step.parameters['userId'] as string | undefined;
     if (this.credentialProvider && userId) {
       const result = await this.credentialProvider.getAccessToken(userId, 'google');
       if (!result.success) throw new Error(result.error);
-      return result.accessToken;
+      return { accessToken: result.accessToken };
     }
 
     const accessToken = step.parameters['accessToken'] as string | undefined;
     if (!accessToken) {
-      throw new Error('Missing accessToken — no OAuth token available for Gmail. Falling back to next adapter.');
+      throw new PreRequestExecutionError('Missing accessToken — no OAuth token available for Gmail.');
     }
-    return accessToken;
-  }
-
-  private async archiveEmail(accessToken: string, messageId: string): Promise<StepResult> {
-    return this.modifyLabels(accessToken, messageId, [], ['INBOX']);
+    return { accessToken };
   }
 
   private async labelEmail(accessToken: string, messageId: string, labels: string[]): Promise<StepResult> {
@@ -119,6 +245,7 @@ export class EmailActionHandler implements ActionHandler {
     });
 
     if (!response.ok) {
+      throwIfProviderOutcomeIsAmbiguous('Gmail trash', response.status);
       return { success: false, error: `Gmail trash failed: ${response.status}` };
     }
 
@@ -180,20 +307,18 @@ export class EmailActionHandler implements ActionHandler {
     body: string,
     parameters: Record<string, unknown>,
   ): Promise<StepResult> {
-    const original = await this.getOriginalMessageMetadata(accessToken, messageId);
-    const to = typeof parameters['replyToFrom'] === 'string' && parameters['replyToFrom'].trim()
-      ? parameters['replyToFrom']
-      : original.from;
-    if (!to) {
-      throw new Error('Missing reply recipient; original From header was unavailable');
-    }
+    const to = parameters['replyToFrom'] as string;
 
     const subjectParam = parameters['replyToSubject'] ?? parameters['subject'];
     const subject = typeof subjectParam === 'string' && subjectParam.trim()
       ? subjectParam
-      : original.subject;
+      : '';
     const replySubject = /^re:/i.test(subject) ? subject : `Re: ${subject || '(no subject)'}`;
-    const references = [original.references, original.messageId].filter(Boolean).join(' ');
+    const originalMessageId = typeof parameters['replyMessageId'] === 'string'
+      ? parameters['replyMessageId'] : '';
+    const originalReferences = typeof parameters['replyReferences'] === 'string'
+      ? parameters['replyReferences'] : '';
+    const references = [originalReferences, originalMessageId].filter(Boolean).join(' ');
 
     const lines = [
       `To: ${this.safeHeader(to)}`,
@@ -203,16 +328,17 @@ export class EmailActionHandler implements ActionHandler {
       '',
       body,
     ];
-    if (original.messageId) lines.splice(2, 0, `In-Reply-To: ${this.safeHeader(original.messageId)}`);
+    if (originalMessageId) lines.splice(2, 0, `In-Reply-To: ${this.safeHeader(originalMessageId)}`);
     if (references) {
-      const insertAt = original.messageId ? 3 : 2;
+      const insertAt = originalMessageId ? 3 : 2;
       lines.splice(insertAt, 0, `References: ${this.safeHeader(references)}`);
     }
     const raw = this.encodeMime(lines);
 
     return this.sendRawMessage(accessToken, {
       raw,
-      ...(original.threadId ? { threadId: original.threadId } : {}),
+      ...(typeof parameters['replyThreadId'] === 'string' && parameters['replyThreadId']
+        ? { threadId: parameters['replyThreadId'] } : {}),
     }, {
       action: 'reply_sent',
       messageId,
@@ -236,53 +362,11 @@ export class EmailActionHandler implements ActionHandler {
     });
 
     if (!response.ok) {
+      throwIfProviderOutcomeIsAmbiguous('Gmail send', response.status);
       return { success: false, error: `Gmail send failed: ${response.status}` };
     }
 
     return { success: true, output };
-  }
-
-  private async getOriginalMessageMetadata(
-    accessToken: string,
-    messageId: string,
-  ): Promise<{
-    from: string;
-    subject: string;
-    messageId: string;
-    references: string;
-    threadId: string | null;
-  }> {
-    const url = new URL(`${GMAIL_API}/users/me/messages/${encodeURIComponent(messageId)}`);
-    url.searchParams.set('format', 'metadata');
-    for (const header of ['From', 'Subject', 'Message-ID', 'References']) {
-      url.searchParams.append('metadataHeaders', header);
-    }
-
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!response.ok) {
-      throw new Error(`Gmail metadata fetch failed: ${response.status}`);
-    }
-
-    const json = await response.json() as {
-      threadId?: string;
-      payload?: { headers?: Array<{ name?: string; value?: string }> };
-    };
-    const headers = new Map<string, string>();
-    for (const header of json.payload?.headers ?? []) {
-      if (header.name && typeof header.value === 'string') {
-        headers.set(header.name.toLowerCase(), header.value);
-      }
-    }
-    return {
-      from: headers.get('from') ?? '',
-      subject: headers.get('subject') ?? '',
-      messageId: headers.get('message-id') ?? '',
-      references: headers.get('references') ?? '',
-      threadId: json.threadId ?? null,
-    };
   }
 
   private applyAttribution(body: string, parameters: Record<string, unknown>): string {
@@ -319,6 +403,7 @@ export class EmailActionHandler implements ActionHandler {
     });
 
     if (!response.ok) {
+      throwIfProviderOutcomeIsAmbiguous('Gmail modify', response.status);
       return { success: false, error: `Gmail modify failed: ${response.status}` };
     }
 

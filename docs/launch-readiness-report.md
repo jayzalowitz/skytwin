@@ -1,8 +1,30 @@
 # SkyTwin Launch-Readiness Report
 
+> **Current release status (2026-09-16): blocked.** The machine-checked
+> [`beta-claim-ledger.json`](./beta-claim-ledger.json) is authoritative for
+> the `v0.7.0-beta` claim states and stop-ship gates. This report is supporting
+> evidence and historical audit context; it does not authorize a tag, release,
+> or publication. The prohibited historical captures in `docs/screenshots/`
+> remain quarantined and must not be used as public evidence.
+
 **Date:** 2026-06-14 (updated 2026-06-23) · **Version audited:** 0.6.61.0 · **Branch:** `jayzalowitz/pre-launch-dev-audit-toolchain`
 
-This report is the output of a full launch-readiness pass: every open GitHub issue audited against the actual code (not the issue narrative), the whole app built/tested/linted, and the running dashboard QA'd against the [master pre-launch epic #357](https://github.com/jayzalowitz/skytwin/issues/357) launch criteria. It pairs with [`launch-plan.md`](./launch-plan.md) (the procurement/sequencing plan) — this document is the *current-state truth*.
+This report is the output of a full launch-readiness pass: every open GitHub issue audited against the actual code (not the issue narrative), the whole app built/tested/linted, and the running dashboard QA'd against the [master pre-launch epic #357](https://github.com/jayzalowitz/skytwin/issues/357) launch criteria. It pairs with [`launch-plan.md`](./launch-plan.md) (the procurement/sequencing plan). Its checkmarks record the development/source revision named above; they are not certification of a later packaged artifact or the current published release.
+
+## 2026-09-13 packaged-sample release boundary
+
+Current source adds a guarded account-free packaged demo: a short-lived credential bound to one reserved fictional identity and an explicit read allowlist. Its database-backed product surface is deliberately read-only. Approve, reject, correct, reset, and learn interactions run only in a separate loopback-only simulation with bounded in-memory state. The simulation uses the real policy and explanation logic but cannot open settings, mutate the database, invoke connectors or providers, access credentials, or reach execution adapters. Browser authority is scoped to one tab. The service worker applies case-insensitive API route semantics, bypasses all `/api/v1/demo` traffic, and also bypasses normal product routes carrying the sample bearer credential or EventSource query token. It discards stored writes that fail the current replay policy. Source of truth: `apps/api/src/services/sample-simulation.ts`, `apps/web/public/js/sample-session.js`, `apps/web/public/js/pwa/sw-policy.js`, and `apps/web/public/sw.js`.
+
+The currently published installers predate this packaged sample path. The
+account-free desktop launch still requires fresh verified artifacts, signing,
+production key management, packaged sample/model evidence, release evals, and
+the invited-tester bake recorded in the claim ledger. Google OAuth review and
+mobile/store distribution are deferred post-launch; they do not block this
+account-free candidate.
+
+The older Gmail-connect criteria, OAuth blocker classification, and submission
+advice retained in the dated audit below are superseded by this boundary. They
+remain visible only as history and must not be used as current launch actions.
 
 ---
 
@@ -33,15 +55,30 @@ The issue inventory below remains the 2026-06-16 launch-readiness classification
 
 ## Bottom line
 
-**SkyTwin is launch-ready on the engineering side.** The decision pipeline, twin model, policy engine, memory layer, dashboard, and the new Inbox-Intelligence digest all work, are tested, and pass live QA with zero console errors. Every *code-writable* launch criterion in epic #357 has shipped.
+**This report is historical and does not establish current release readiness.**
+The later `v0.7.0-beta` release contract adds code and evidence gates that this
+June 2026 snapshot did not evaluate. Consult
+[`beta-claim-ledger.json`](./beta-claim-ledger.json) for the current support,
+privacy, security, and artifact status. The audited development/source revision
+passed its recorded engineering checks, but that result does not establish that
+published installers contain later source work or that a fresh release artifact
+has passed validation.
 
-The remaining launch blockers are **not code**:
+The dated audit recorded the blockers below. For the current account-free
+desktop launch, the claim ledger is authoritative; Google OAuth and mobile/store
+items in this historical inventory are explicitly non-blocking and deferred.
 
 1. **Procurement** — Apple Developer ($99/yr) + Windows EV code-signing certs (#368/#359). Until these land, the `.dmg`/`.exe` trip Gatekeeper/SmartScreen. This is the single biggest non-engineering blocker.
-2. **External review** — Google OAuth restricted-scope / brand verification (#351, multi-week CASA review) and mobile app-store review (#369/#360, needs Apple/Play accounts).
+2. **External review (superseded for this launch)** — Google OAuth restricted-scope / brand verification (#351) and mobile app-store review (#369/#360) remain future account/mobile work, not account-free desktop launch gates.
 3. **Design assets** — real multi-resolution mobile icons/splash to replace the 1×1 placeholders (#409/#369).
 
-…plus **one code task that needs a human decision first**: **#374** (encrypt user memory + preferences at rest). See [§ The one code-side launch task](#the-one-code-side-launch-task).
+4. **Code and architecture** — the #401 key-management decision is now captured
+   by ADR 0001 and the first locked broker/custody slice exists, but #374 remains
+   incomplete: source clients, an owner-wide cascade/revoke barrier,
+   source-field migration, packaged verification, and bake evidence are still
+   required. See [§ Encryption and key-management detail](#encryption-and-key-management-detail).
+   Other partial code-side items remain tracked under #357 and in the inventory below.
+5. **Artifact verification** — build fresh installers from the intended release head and validate their exact behavior on clean supported systems, including independent proof that the tag-bound CI path generated and attached updater manifests. The source-tree checks below do not substitute for this gate; no qualifying tagged release has yet proved or published those manifests, and the beta remains blocked.
 
 ---
 
@@ -63,25 +100,55 @@ The remaining launch blockers are **not code**:
 |---|---|---|
 | 1 | Download a signed `.dmg`/`.exe`/store build | ⛔ external — certs (#368/#359), store accounts (#369) |
 | 2 | Install without Gatekeeper/SmartScreen warnings | ⛔ external — certs |
-| 3 | Reach a meaningful state ≤60s | ✅ tour mode is instant |
-| 4 | Connect Gmail **or** "Try with a sample profile" → decisions | ✅ sample-profile path loads a fully-populated dashboard |
-| 5 | A real decision in the queue ≤5 min of connecting Gmail | ✅ pipeline verified; tour shows a populated queue |
-| 6 | Understand *why* each decision was made | ✅ "What happened" log, click any row for full reasoning |
-| 7 | Approve/reject without confusion | ✅ microcopy intact (Just watch / Ask me first / Handle small stuff / …) |
-| 8 | Find a "pause everything" button | ✅ global **Pause everything** + Settings **Pause auto-execution** (#379) |
-| 9 | Find a "delete my data" button | ✅ Settings → **Download** + **Delete my data** (#376) |
-| 10 | Receive auto-updates | 🟡 code complete — manifests ship (#370) + the user-facing layer (in-app update banner + "Check for Updates…" menu) landed; only signed-build e2e remains (gated on #368) |
+| 3 | Reach a meaningful state ≤60s | 🟡 development tour verified; current source adds an interactive packaged sample, but published installers predate it and a fresh artifact still needs validation |
+| 4 | Connect Gmail **or** "Try with a sample profile" → decisions | Superseded for the account-free launch. The isolated packaged sample is the only supported preview path; fresh artifact evidence remains required. |
+| 5 | A real decision in the queue ≤5 min of connecting Gmail | Superseded for the account-free launch. Connected-account development results are not launch evidence. |
+| 6 | Understand *why* each decision was made | ✅ development/connected flow verified; current packaged-sample source can inspect allowlisted decision and explanation views |
+| 7 | Approve/reject without confusion | 🟡 connected/development controls and microcopy were verified; current source adds isolated packaged approve/reject/correct interactions, but a fresh artifact still needs validation |
+| 8 | Find a whole-system pause control | 🟡 partial — the global **Pause everything** button stops MCP capability servers only; Settings **Pause auto-execution** routes actions to review while signal sync continues; the desktop tray stops the packaged worker and suppresses delayed replacement, containing partial generations during recovery. No single control currently stops every subsystem. |
+| 9 | Find a "delete my data" button | ✅ connected/development product exposes Settings → **Download** + **Delete my data** (#376); Settings is outside packaged-sample authority |
+| 10 | Receive auto-updates | 🟡 source/CI path implemented — the tagged workflow generates and is designed to attach manifests (#370), and the user-facing layer (in-app update banner + "Check for Updates…" menu) landed; no qualifying tagged release is published, and signed-build e2e remains gated on #368 |
 
-## The one code-side launch task
+## Encryption and key-management detail
+
+> **Current addendum — 2026-09-14:** [ADR 0001](./adr/0001-local-source-field-encryption-boundary.md)
+> resolves the #401 design question for the desktop boundary. Migration 073 now
+> defines the recovery-wrapper registry and deletion intent, and Electron has a
+> locked, capability-scoped source-key broker with private API/worker child IPC.
+> Every production child binding starts with empty owner authority. Exact live
+> human API sessions can now receive session-bound authority after independent
+> API and Electron database revalidation. Token hashes are globally unique,
+> lease refresh is atomic. Concurrent exact grants coalesce, and only a
+> revalidated strictly later expiry for the same session/owner/token rotates
+> one. Transient database loss denies the current source-key operation
+> without manufacturing a revocation. Worker, demo, development-bypass,
+> service, and unauthenticated paths remain unable to grant. Recovery wrappers now use
+> the narrow CockroachDB registry adapter with no Electron-store or plaintext
+> fallback, but no source repository consumes the broker, so it encrypts no
+> production source field. Separately, the API-local OAuth vault encrypts new/reconnected
+> grants when its matching generation is unlocked and can migrate complete plaintext
+> grants on authorized use; without a vault, tokens remain plaintext, and the worker
+> does not receive the API key. Source repository clients and migration, an
+> owner-wide database-cascade/bulk-revoke barrier, an owned-service authority design, clean packaged-platform
+> verification, and bake period remain blockers. See the
+> [implementation status](./security/source-key-broker-implementation.md).
 
 **[#374 — user memory and preferences are stored unencrypted](https://github.com/jayzalowitz/skytwin/issues/374)** (P1, Epic D). Re-audited 2026-06-16 (full code-state findings on the issue). The encryption **infrastructure shipped** via #520 — but it is **dormant** in production and **partial**, and the memory half has an architectural conflict that makes it a design task, not a wiring task:
 
 - **Shipped (#520):** migration `066-encrypt-high-value-tables.sql` adds `_encrypted BYTES` columns to `preferences` / `twin_profiles` / `brain_pages`; `packages/db/src/lib/vault-helper.ts` (`encryptColumn`/`readColumn`/`resolveKey`, AES-256-GCM + scrypt); and encrypt-on-write / decrypt-on-read wiring in `twin-repository-adapter.ts` **for `preferences` only**.
-- **Dormant:** `setPreferenceVaultKeyProvider(...)` is called **only in tests** — no app composition root enables it, so `vaultKeyProvider` stays `null` and even preferences are written plaintext in the running app. Enabling it is the #401 key-management call.
+- **Dormant:** `setPreferenceVaultKeyProvider(...)` is called **only in tests** — no app composition root enables it, so `vaultKeyProvider` stays `null` and even preferences are written plaintext in the running app. ADR 0001 resolves the key-custody design, but authenticated API grants have no source-field client and worker grants remain empty, keeping this path inactive. Database-only account cascades and bulk session revocation also need an owner-wide broker barrier before activation.
 - **Partial:** `twin_profiles`' 7 `_encrypted` columns are unused, and `brain_pages` (user memory) is written plaintext (`insertPage()` in `packages/memory-gbrain-crdb-adapter/src/repository.ts` ignores the `_encrypted` columns).
 - **The hard part:** `brain_pages` is the *searchable* store. RRF retrieval needs `content_tsv @@ plainto_tsquery` (full-text, server-side) and the row's `embedding` (vector — pulled out and scored with `cosineSimilarity` in application code, brute-force; not a CRDB `<=>` operator). Both are derived from plaintext content, and a `tsvector` stores the lexemes in the clear — so encrypting `content` while keeping `content_tsv` queryable leaks it anyway, while encrypting the index breaks search; the embedding likewise has to be read back out in the clear to score. So memory-at-rest encryption needs a design (scope to non-searched columns, index-time decrypt, or searchable encryption), not just an `encryptColumn` call.
 
-**Why it isn't auto-fixable:** enabling the provider with a wrong/ephemeral master key is worse than shipping none (lost key → unrecoverable memory) — that's exactly the #374↔#401 decision — and the memory search-conflict needs a design call. **Recommended sequence:** decide #401 key management → enable the provider (makes the existing preference encryption live) → extend to `twin_profiles` (not searched, straightforward) → design `brain_pages` against the search conflict. Top engineering pre-launch item.
+**Why it still is not a wiring-only fix:** the custody design is accepted, but
+activating it before source-specific clients,
+crash-safe plaintext migration, packaged-platform
+verification, and recovery testing would risk either exposing keys or losing
+data. The memory search conflict also still needs a deliberate boundary.
+**Recommended sequence:** compose source clients over the authenticated grants
+→ migrate the narrow non-search fields with crash recovery → verify
+backup/delete/rotation and packaged lock behavior → resolve the readable search
+derivatives for `brain_pages` → complete the bake gate before making a claim.
 
 ## Issues closed this pass (shipped, verified in code)
 
@@ -114,26 +181,26 @@ Verdict legend: ✅ shipped · 🟡 partial · ⬜ not started · ⛔ external (
 | [#323](https://github.com/jayzalowitz/skytwin/issues/323) | 🟡 partial | — | — | AC3: wire `registryId` into MCP-action spend recording |
 | [#324](https://github.com/jayzalowitz/skytwin/issues/324) | 🟡 partial | — | yes | Rollback wiring + decision→execution-plan join follow-ups |
 | [#351](https://github.com/jayzalowitz/skytwin/issues/351) | ⛔ external | — | — | CASA assessor contract + Google review (post-launch) |
-| [#357](https://github.com/jayzalowitz/skytwin/issues/357) | 🟡 partial | **YES** | — | Code-writable launch criteria have shipped; rest is external |
+| [#357](https://github.com/jayzalowitz/skytwin/issues/357) | 🟡 partial | **YES** | partly | Source capabilities passed the dated audit; fresh artifact validation and the external launch gates remain |
 | [#359](https://github.com/jayzalowitz/skytwin/issues/359) | ⛔ external | **YES** | — | Apple Developer + Windows EV cert purchase/enroll |
 | [#360](https://github.com/jayzalowitz/skytwin/issues/360) | 🟡 partial | **YES** | yes | Mobile: #369 store-readiness gate is the bulk |
-| [#361](https://github.com/jayzalowitz/skytwin/issues/361) | 🟡 partial | — | yes | Epic D: #375 decision-path redactor shipped (#524). Remaining: #374 (encryption — needs #401 key-mgmt decision) + #375 follow-ups (assistant block, number/name). |
+| [#361](https://github.com/jayzalowitz/skytwin/issues/361) | 🟡 partial | — | yes | Epic D: #375 decision-path redactor shipped (#524). Remaining: #374 (encryption — design resolved by #401/ADR 0001; production activation remains) + #375 follow-ups (assistant block, number/name). |
 | [#368](https://github.com/jayzalowitz/skytwin/issues/368) | ⛔ external | **YES** | — | Code-signing certs + notarization (external) |
 | [#369](https://github.com/jayzalowitz/skytwin/issues/369) | 🟡 partial | **YES** | partly | EAS config + CI rewrite (code) · real icons + store accounts (external) |
-| [#370](https://github.com/jayzalowitz/skytwin/issues/370) | ✅ closed | done | yes | Code complete + closed: manifests + curl-latest CI + the user-facing banner + "Check for Updates…" menu all shipped (#523). Only signed-build e2e remains, tracked under #368. |
-| [#374](https://github.com/jayzalowitz/skytwin/issues/374) | ⬜ not started | **YES** | yes | Encrypt ~14 sensitive tables at rest — **needs key-mgmt decision (#401)** |
+| [#370](https://github.com/jayzalowitz/skytwin/issues/370) | ✅ closed | done | yes | Source/CI implementation complete: manifest generation/attachment plumbing, curl-latest CI, user-facing banner, and "Check for Updates…" menu shipped (#523). No qualifying tagged release has proven or published those manifests; signed-build e2e remains tracked under #368. |
+| [#374](https://github.com/jayzalowitz/skytwin/issues/374) | 🟡 partial | **YES** | yes | Accepted design + broker/custody/session-authority foundation shipped; source clients, owner-wide revoke barrier, migration, packaged verification, and bake remain |
 | [#375](https://github.com/jayzalowitz/skytwin/issues/375) | 🟡 partial | — | yes | Decision-pipeline redactor shipped (#524): `redactPromptPii` masks email addresses in `PromptBuilder` by default, ReDoS-hardened. Remaining: assistant memory-context block (needs provider-trust gating) + number/name masking. |
 | [#386](https://github.com/jayzalowitz/skytwin/issues/386) | ✅ closed | done | yes | Shipped + closed: resumable chunked voice upload end-to-end — `voice-chunker.ts` + `transcribeChunked()` (per-chunk retry, progress, cancel) + server `/upload/session`/`/chunk`/finalize + 3 test files. Only the airplane-mode manual smoke is device-only. |
 | [#387](https://github.com/jayzalowitz/skytwin/issues/387) | 🟡 partial | — | yes | Deep-link routing slice shipped + wired (tap → specific approval, scrolled into view; `deep-link.ts` + `App.tsx` + `ApprovalsScreen.tsx`, tested). Remaining: native inline Approve/Reject actions (iOS NSE + Android actions + EAS dev build — gated on #360/#404). |
 | [#399](https://github.com/jayzalowitz/skytwin/issues/399) | ⬜ not started | — | yes | Opt-in crash reporting (P3) |
-| [#400](https://github.com/jayzalowitz/skytwin/issues/400) | ⬜ not started | — | yes | Backup/restore CLI (P3) |
-| [#401](https://github.com/jayzalowitz/skytwin/issues/401) | ⬜ not started | — | yes | OS-keychain for vault passphrase (P3) — pairs with #374 |
+| [#400](https://github.com/jayzalowitz/skytwin/issues/400) | ✅ closed | done | yes | Backup/restore CLI shipped with an encrypted authenticated archive and atomic fresh-user restore. |
+| [#401](https://github.com/jayzalowitz/skytwin/issues/401) | ✅ design resolved | — | yes | ADR 0001 defines mandatory recovery wrapping plus opt-in reviewed OS protection; #374 runtime activation remains open |
 | [#402](https://github.com/jayzalowitz/skytwin/issues/402) | 🟡 partial | — | yes | axe-core CI on web routes is code-fixable; full manual a11y is post-launch |
 | [#403](https://github.com/jayzalowitz/skytwin/issues/403) | ⬜ not started | — | yes | PWA manifest + service worker (P3) |
 | [#404](https://github.com/jayzalowitz/skytwin/issues/404) | ⬜ not started | — | — | EAS TestFlight/Play internal (P3, needs accounts) |
 | [#405](https://github.com/jayzalowitz/skytwin/issues/405) | ⬜ not started | — | yes | Demo recipe library (P3) |
 | [#406](https://github.com/jayzalowitz/skytwin/issues/406) | ⬜ not started | — | yes | Native macOS menu bar (P3) |
-| [#407](https://github.com/jayzalowitz/skytwin/issues/407) | ⬜ not started | — | yes | Worker dead-letter queue (P3) |
+| [#407](https://github.com/jayzalowitz/skytwin/issues/407) | ✅ closed | done | yes | Worker dead-letter queue shipped with durable failure records, operator inspection, and replayed/discarded resolution; the normal cadence reruns eligible jobs. |
 | [#408](https://github.com/jayzalowitz/skytwin/issues/408) | ⬜ not started | — | yes | AsyncLocalStorage request context (P3) |
 | [#409](https://github.com/jayzalowitz/skytwin/issues/409) | ⛔ external | — | — | Designer-made mobile icon/splash set |
 | [#410](https://github.com/jayzalowitz/skytwin/issues/410) | ⬜ not started | — | — | Pricing experiment (P3, business) |
@@ -152,10 +219,16 @@ Verdict legend: ✅ shipped · 🟡 partial · ⬜ not started · ⛔ external (
 | [#487](https://github.com/jayzalowitz/skytwin/issues/487) | ✅ closed | done | yes | Coverage model (`source-coverage.ts`) shipped + exposed in the digest payload; closed. |
 | [#489](https://github.com/jayzalowitz/skytwin/issues/489) | ✅ shipped | — | yes | Closed |
 
-## Recommended next actions (ordered)
+## Current recommended next actions (account-free desktop launch)
 
-1. **Procurement (start now — long lead time):** enroll Apple Developer + buy Windows EV cert (#368/#359). The certs alone aren't enough — `build.yml` currently skips signing (`CSC_IDENTITY_AUTO_DISCOVERY: 'false'`), so someone must also wire the cert secrets into its `package:*` steps (see launch-plan §1.3). Submit Google OAuth verification (#351) — multi-week.
-2. **Make the #374 ↔ #401 key-management decision**, then implement memory/preference encryption in a reviewed PR. Top engineering pre-launch item (the encryption schema + adapter already exist via #520; what remains is the default-on key-management policy decision).
-3. **Mobile cut-or-commit (#360):** decide whether mobile ships at launch. If yes: commission icon/splash assets (#409), land the EAS config + CI (#369/#404), then the native inline notification actions (#387's remaining half). If no: descope to a fast-follow.
+1. **Signing procurement and wiring:** enroll Apple Developer + buy the Windows signing cert (#368/#359), wire the secrets into the package jobs, and produce the required platform evidence. Google OAuth submission is not part of this launch.
+2. **Finish the release-evidence train:** implement the missing CI and machine evidence producers, then validate the guarded sample, model delivery, signing, checksums, SBOM, provenance, and exact artifact set on the release SHA.
+3. **Finish #374 without widening its claims:** compose authenticated broker
+   grants and clients against Cockroach custody, migrate only the reviewed source
+   fields, prove recovery/backup/delete/rotation in packaged builds, resolve the
+   searchable-memory boundary, and complete the bake gate. ADR 0001 has already
+   resolved the #401 custody decision.
 
-**Done since the 2026-06-14 audit (2026-06-16 update):** auto-update code half + user-facing banner/menu (#370, #523 — closed); the 10 dependabot bumps batched + merged (#522, #469–#494 closed); decision-pipeline LLM prompt redaction (#375 decision-path, #524); resumable chunked voice upload verified shipped (#386 — closed); deep-link notification routing verified shipped (#387 routing half); and the Inbox-Intelligence read layer (#324/#474/#478/#481/#482/#485/#486/#487) verified shipped + closed.
+Google account review (#351) and mobile store work (#360) are post-launch tracks.
+
+**Done since the 2026-06-14 audit (2026-06-16 update):** auto-update source/CI implementation + user-facing banner/menu (#370, #523 — closed; no qualifying tagged release has yet proven or published the manifests); the 10 dependabot bumps batched + merged (#522, #469–#494 closed); decision-pipeline LLM prompt redaction (#375 decision-path, #524); resumable chunked voice upload verified shipped (#386 — closed); deep-link notification routing verified shipped (#387 routing half); and the Inbox-Intelligence read layer (#324/#474/#478/#481/#482/#485/#486/#487) verified shipped + closed.

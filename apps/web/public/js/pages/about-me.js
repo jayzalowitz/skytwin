@@ -7,7 +7,7 @@ import {
   renderApiError,
 } from '../api-client.js';
 import { showToast } from '../toast.js';
-import { KEY_USER_ID } from '../storage-keys.js';
+import { getEffectiveUserId } from '../sample-session.js';
 
 // Singleton delegator — see CLAUDE.md "Frontend Event Handling".
 // Hash-gated, not container-gated, because the SPA reuses #page-content
@@ -19,7 +19,7 @@ let _profileText = '';
 let _portrait = null;
 
 function getCurrentUserId() {
-  return localStorage.getItem(KEY_USER_ID) || '';
+  return getEffectiveUserId();
 }
 
 function ensureAboutMeListener() {

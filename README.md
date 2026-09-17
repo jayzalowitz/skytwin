@@ -2,25 +2,92 @@
 
 # SkyTwin
 
-**A digital twin that learns what you'd want — and does it.**
+**Open-source, local-first software for understanding and governing personal decision automation.**
 
 <a href="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml"><img src="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml/badge.svg" alt="Build"></a>
 <a href="https://github.com/jayzalowitz/skytwin/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
 <img src="https://img.shields.io/github/package-json/v/jayzalowitz/skytwin?color=brightgreen&label=version" alt="Version">
 <a href="https://github.com/jayzalowitz/skytwin/releases/latest"><img src="https://img.shields.io/github/v/release/jayzalowitz/skytwin?label=download&color=blue" alt="Download latest release"></a>
-<img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey.svg" alt="Platform">
+<img src="https://img.shields.io/badge/release-desktop%20technical%20preview-lightgrey.svg" alt="Release status: desktop technical preview">
 
 </div>
 
 ---
 
-Every personal assistant today has amnesia. You tell it you prefer aisle seats three times. It asks again. You archive the same newsletter every morning. It keeps notifying you. Every interaction starts from scratch.
+Most assistants start from zero every time. You repeat a preference, explain a risk tolerance, and then re-check whether an automated suggestion is safe. SkyTwin explores a different model: a personal decision system with explicit memory, policy checks, explanations, and controls.
 
-SkyTwin is different. It builds a structured model of your preferences, risk tolerances, and decision patterns — a **digital twin** — then uses that model to act on your behalf. When it's confident, it just handles things. When it's not, it asks the right question instead of the wrong one.
+It builds a structured model of preferences, risk tolerances, and decision patterns—a **digital twin**—so a candidate action can be evaluated against what matters to its owner rather than a generic prompt. The intended product asks for confirmation when it should, and keeps a record of why it stopped or proceeded.
 
 **The core principle: ask the twin before asking the user.**
 
+## Start with the right level of detail
+
+| If you want to… | Start here | Then go deeper |
+|---|---|---|
+| Understand the idea without installing anything | [Documentation site](https://jayzalowitz.github.io/skytwin/) | [Plain-language FAQ](https://jayzalowitz.github.io/skytwin/faq.html) and [glossary](https://jayzalowitz.github.io/skytwin/glossary.html) |
+| See the product model safely | [Five-minute fictional-data walkthrough](https://jayzalowitz.github.io/skytwin/how-to-use.html) | [Safety model](https://jayzalowitz.github.io/skytwin/safety.html) and [data guide](https://jayzalowitz.github.io/skytwin/data.html) |
+| Run and inspect the source | [Source start guide](https://jayzalowitz.github.io/skytwin/start.html) | [Operations guide](https://jayzalowitz.github.io/skytwin/operations.html) and [troubleshooting](https://jayzalowitz.github.io/skytwin/troubleshooting.html) |
+| Extend it with tools or agents | [Agent and MCP guide](https://jayzalowitz.github.io/skytwin/agents.html) | [Architecture](https://jayzalowitz.github.io/skytwin/architecture.html) and [reference](https://jayzalowitz.github.io/skytwin/reference.html) |
+
+## Why people may want this
+
+SkyTwin is for people who want to inspect the decision layer before they hand a system any authority. Its intended model is useful when you want all of the following in one place:
+
+- **A memory that can be examined.** Preferences carry evidence, confidence, provenance, and version history instead of being hidden in an opaque chat history.
+- **Automation that has to justify itself.** Candidate actions are checked for policy, trust tier, spend, risk, reversibility, and origin before an execution path is considered.
+- **A useful answer even when the answer is “stop.”** The system is designed to explain what happened, what evidence it considered, and what a person can correct.
+- **A local-first choice.** On-device reasoning and an explicitly selected hosted provider are distinct modes; a local choice is not silently rerouted over the network.
+- **Source you can inspect and adapt.** SkyTwin is Apache-2.0 licensed and has human-facing guides alongside machine-readable references.
+
+## What you can evaluate today
+
+> **Current supported preview:** use the isolated, account-free fictional-data sample in current source. It is the recommended way to evaluate the interaction model, explanations, controls, and boundaries without giving SkyTwin an inbox, credentials, or a provider key. Published unsigned technical-preview installers predate portions of this guarded sample path.
+
+Google and Microsoft account connections are unavailable on the supported surface. SkyTwin does not ship a managed Google OAuth client, and operator/BYO Google remains unsupported until its callback, client-generation, capability, ownership, and secret-custody gates are complete. Known account-backed email/calendar actions are denied before adapter preparation or dispatch while this boundary is active. Stale account capability rows and imported account-backed tool bundles are also withheld from activation. Connector code in the source tree is not a support claim.
+
+The source tree also contains a default-off Gmail archive proposal experiment
+(`SKYTWIN_GMAIL_ARCHIVE_ENABLED=true`) for unsupported account-connected
+development. It can persist an owner-bound proposal and record an explicit
+approval or rejection, but the response deliberately reports
+`execution: null`: no Gmail mutation caller, recovery worker, or feedback
+projection is wired into runtime yet. Enabling the flag is not an execution or
+release-support claim.
+
+## Start safely in a few minutes
+
+You do not need to connect an inbox, share credentials, or enable an AI provider
+to understand the project. Start with the fictional-data sample in current
+source. It lets you inspect a decision, its explanation, the approval controls,
+and the safety boundaries without external effects.
+
+1. **Choose source over an older download.** The latest source contains the
+   guarded sample path; published unsigned technical-preview installers predate
+   portions of it. The [Start guide](https://jayzalowitz.github.io/skytwin/start.html)
+   explains what the installer changes locally.
+2. **Look at fictional data first.** The sample is intentionally separate from
+   real accounts. Its product views are read-only; its approve/reject/correct
+   interactions are session-local simulations with no provider, connector, or
+   execution-adapter effects.
+3. **Read why an action stopped.** A candidate action is evaluated against
+   policy, trust, spend, risk, reversibility, and provenance. A model suggestion
+   is never the authority to run work.
+4. **Keep the boundary explicit.** Local reasoning does not fall through to a
+   hosted provider. A hosted provider is an explicit network choice. The
+   verified-private boundary admits only explicit interactive TrustedRouter
+   calls after SkyTwin verifies fresh same-session gateway attestation and an
+   exact-byte confidential-route receipt; NEAR AI remains unavailable.
+
+For a plain-language walkthrough, begin with [how to use the fictional sample](https://jayzalowitz.github.io/skytwin/how-to-use.html), then use the [documentation site](https://jayzalowitz.github.io/skytwin/docs.html):
+[how to start](https://jayzalowitz.github.io/skytwin/start.html),
+[how safety works](https://jayzalowitz.github.io/skytwin/safety.html),
+[where inference runs](https://jayzalowitz.github.io/skytwin/inference.html),
+and the [five-minute fictional-data demo](https://jayzalowitz.github.io/skytwin/demo.html).
+
 ## How It Works
+
+This is the source architecture and intended connected-account pipeline. The
+supported preview feeds it only isolated fictional sample data; Google and
+Microsoft account connections are unavailable.
 
 ```
   Gmail, Calendar, etc.
@@ -62,58 +129,17 @@ SkyTwin is different. It builds a structured model of your preferences, risk tol
   └──────────────┘
 ```
 
-Every path produces an explanation. Every outcome feeds back into the twin. The system gets better at predicting what you want over time.
+Supported decision paths can persist explanation and feedback records. Release-wide coverage is still being audited before the public beta.
 
-## Screenshots
+## Illustrative Decision Scenarios
 
-<table>
-<tr>
-<td width="50%">
-<p align="center"><strong>Onboarding</strong></p>
-<img src="docs/screenshots/onboarding.png" alt="Onboarding — connect Gmail, tell your twin about yourself, or explore a sample profile">
-</td>
-<td width="50%">
-<p align="center"><strong>Dashboard</strong></p>
-<img src="docs/screenshots/dashboard.png" alt="Dashboard — your daily briefing: what needs you, what the twin handled, and recent activity">
-</td>
-</tr>
-<tr>
-<td width="50%">
-<p align="center"><strong>Approvals</strong></p>
-<img src="docs/screenshots/approvals.png" alt="Approvals — pending actions that need your OK">
-</td>
-<td width="50%">
-<p align="center"><strong>Decision History</strong></p>
-<img src="docs/screenshots/decisions.png" alt="Decision history — filterable log of every decision with reasoning">
-</td>
-</tr>
-<tr>
-<td width="50%">
-<p align="center"><strong>Setup &amp; Credentials</strong></p>
-<img src="docs/screenshots/setup.png" alt="Setup — execution engines, Google OAuth walkthrough, credential management">
-</td>
-<td width="50%">
-<p align="center"><strong>Settings</strong></p>
-<img src="docs/screenshots/settings.png" alt="Settings — autonomy level, spend limits, connected accounts, privacy controls">
-</td>
-</tr>
-<tr>
-<td width="50%">
-<p align="center"><strong>My Learnings</strong></p>
-<img src="docs/screenshots/twin.png" alt="My Learnings — preferences, inferences, and corrections your twin has learned">
-</td>
-<td width="50%">
-<p align="center"><strong>Daily Briefing</strong></p>
-<img src="docs/screenshots/briefing.png" alt="Daily briefing — a source-cited digest that splits to-dos (act) from topics (FYI), with a Power view for the reasoning behind each call">
-</td>
-</tr>
-</table>
-
-## Concrete Examples
+These examples explain the intended judgment model; they are not a list of
+workflows included in the current desktop artifacts. The beta release contract
+below limits launch support to workflows backed by tagged-artifact evidence.
 
 | Scenario | What SkyTwin Does |
 |----------|-------------------|
-| **Newsletter arrives** | Your twin knows you archive these without reading. Auto-archived. Explanation logged. You never see it. |
+| **Newsletter arrives** | Your twin recognizes your archive pattern and proposes moving the message out of the Inbox. You confirm before the mailbox changes, and the explanation is logged. |
 | **Calendar conflict** | You always prioritize skip-level 1:1s over standups. Standup rescheduled with a note to the organizer. |
 | **Subscription renewal** | $15.99/mo streaming service, used 3x this month, 18 months of renewals. Auto-renewed within your spend norms. |
 | **Grocery reorder** | Repeats your last order with your substitution rules. Flags the one item that jumped 15% in price. |
@@ -126,9 +152,9 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 
 **It earns trust incrementally.** New users start at `observer` — the system only suggests. As you approve and correct, it earns autonomy domain by domain. Trust in email triage doesn't mean trust with your calendar.
 
-**Safety constraints are the product.** Every action passes through a policy engine with hard spend limits, trust tier gating, reversibility checks, and sensitivity classification. The system can be inspected, overridden, narrowed, and shut off at any time. [Read the full safety model →](./docs/safety-model.md)
+**Safety constraints are the product.** Typed candidate-action paths through the policy engine apply spend limits, trust-tier gating, reversibility checks, and sensitivity classification; the release-wide entry-path inventory remains a beta gate. The system can be inspected, overridden, narrowed, and shut off at any time. [Read the full safety model →](./docs/safety-model.md)
 
-**Every action is explainable.** No black boxes. Every automated decision produces an explanation record: what happened, what evidence was used, what preferences were invoked, why this action over alternatives, and how to correct it.
+**Recorded decisions are inspectable.** Supported paths can produce an explanation record covering what happened, the evidence and preferences used, the selected action, and correction guidance. Release-wide explanation coverage is still under audit, and a hosted model's internal reasoning remains subject to that provider's own transparency limits.
 
 **Your twin is inspectable.** It's not a vector embedding or a bag of keywords. It's a typed, versioned data structure where every preference has a confidence level, supporting evidence, and provenance. Contradictions are tracked, not hidden.
 
@@ -140,7 +166,25 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 
 **[⬇ Download the latest release →](https://github.com/jayzalowitz/skytwin/releases/latest)**
 
-Grab the installer for your OS, double-click, and you're in. No terminal, no Docker, no Ollama, no `.env`. CockroachDB ships inside the bundle as a hash-verified native binary and an embedded llama.cpp model is the default LLM — nothing else to install.
+Current desktop artifacts bundle CockroachDB as a hash-verified native binary,
+but they are unsigned technical previews rather than supported public-beta
+installers. The tagged release path can generate and attach updater manifests,
+but no qualifying beta release is currently published; do not infer manifest
+presence or update support from the current preview. Check the release notes for
+the exact features in an artifact. In
+builds from current source, a local model and the `llama.cpp` runtime are not
+bundled: SkyTwin can recommend a maintained artifact for the machine and download
+it only after the user starts the install. A compatible runtime remains a separate
+prerequisite, while a hosted provider remains an explicit opt-in.
+
+> **Release boundary:** published installers currently predate the guarded,
+> account-free sample session and verified managed-model delivery in this source
+> tree. Check the release notes for the exact features in an artifact. Desktop
+> builds produced from current source
+> can open a short-lived sample whose database-backed surface remains read-only;
+> approve, reject, correct, and learn interactions run only in a separate,
+> session-local simulation that cannot reach providers or execution adapters.
+> Its browser credential is tab-scoped and [bypasses offline caching and replay](./apps/web/public/js/pwa/sw-policy.js).
 
 | OS | Installer on the release page |
 |----|-------------------------------|
@@ -152,7 +196,7 @@ Grab the installer for your OS, double-click, and you're in. No terminal, no Doc
 > - **macOS:** right-click the app → **Open** → **Open** (clears Gatekeeper once).
 > - **Windows:** SmartScreen → **More info** → **Run anyway**.
 >
-> Signing lands before the public launch; until then this is the expected first-run experience.
+> Signing and notarization are stop-ship requirements for a supported public beta.
 
 ### Build from source (one-command, macOS / Linux / WSL)
 
@@ -162,20 +206,30 @@ curl -fsSL https://raw.githubusercontent.com/jayzalowitz/skytwin/main/install.sh
 
 The installer detects your OS, installs anything missing (Homebrew on mac, Node 20+, pnpm), fetches the official CockroachDB single-node binary (hash-verified), clones the repo to `~/skytwin`, runs the bootstrap, starts the services, and opens the dashboard at `http://localhost:3200` once it's up. Re-running pulls latest and restarts.
 
+The command above intentionally follows the moving `main` branch. For a
+reviewable, immutable source evaluation, use the exact-commit archive workflow
+in [Internal Source Candidates](./docs/internal-source-candidates.md). Those
+archives are source-only internal materials, not public releases, and preserve
+the existing signed-artifact beta gate.
+
 **No Docker required.** Before v0.6.56 the installer pulled Docker Desktop and ran CockroachDB inside a container — by far the heaviest dependency on the list, with its own EULA and a "open it once after install" gotcha. The default path now installs the CRDB binary directly into `~/.local/share/skytwin/bin/cockroach` and spawns it as a child process. Docker remains supported via `SKYTWIN_USE_DOCKER=true` for users who already have a Docker workflow.
 
 To stop later: `cd ~/skytwin && ./bin/skytwin-dev --stop`.
 
-**The first 60 seconds:**
-1. The dashboard opens. Type any situation into "Ask your twin" — the agent reasons out loud and explains what it would do, with confidence and alternatives. No accounts connected yet, no signals required.
-2. Click **"Just show me around"** on the welcome screen to skip the OAuth setup entirely and poke at a fully populated example twin — Alex, who's alive on every surface: recent decisions, a daily briefing, **4 pending approvals you can actually click through and run**, "What I've learned", Capabilities, Search, and a trust bar climbing toward "handle most things". Two more personas (Pat, a power user; Carol, a brand-new user) ship too, so the dev "Switch user" button tells three stories. The button is enabled whenever the seeded demo is loaded — and tells you exactly what to run (`pnpm db:seed`) when it isn't, instead of silently disappearing.
-3. The welcome screen also shows a one-line **"your AI runs privately on this computer — we'll use `<model>`"** — the app detects your machine's RAM and free disk and picks the best local model that fits, so a non-technical user never has to choose a model or paste an API key. "Change" opens Settings → AI (and the local memory backend).
+**The first 60 seconds in a development/source run:**
+1. The dashboard opens. "Ask your twin" can show a predicted action, confidence, alternatives, and an explanation; the exact model-backed path depends on an available local runtime or provider, while deterministic fallbacks cover supported paths when no model responds.
+2. After `pnpm db:seed`, click **"Just show me around"** on the welcome screen to skip OAuth and use the development demo seed. Alex has recent decisions, a daily briefing, four pending approvals, "What I've learned", Capabilities, Search, and a trust bar climbing toward "handle most things". The development seed also includes Pat (a power user) and Carol (a brand-new user), so the dev "Switch user" button tells three stories. This development path can exercise mock approval actions; it is separate from the packaged build's read-only data authority and isolated, non-persistent simulation.
+3. The welcome screen recommends a local model from the machine's RAM, architecture, and free disk. The current maintained catalog contains one pinned Qwen2.5 1.5B Instruct Q4_K_M artifact (about 1.0 GiB). The artifact is downloaded on request and must pass exact-size, SHA-256, registry, and runtime-compatibility checks before automatic discovery will load it. A compatible llama.cpp binary remains a separate prerequisite. The artifact remains available for ordinary local inference but is not qualified for adaptive-workflow authoring because it did not clear the checked-in quality gate. "Change" opens Settings → AI (and the local memory backend).
 4. Want to look around first? Press **Esc**, click the **×** in the modal corner, or hit **Skip for now** — the dashboard chrome stays navigable behind the modal, and a "Sign in" button on the placeholder gets you back into the wizard whenever you're ready.
-5. When you're ready to wire up your own, the in-app walkthrough handles the Google API setup in about 5 minutes — paste your client ID, click "Save and connect now," and you're at Google's sign-in.
+5. Google and Microsoft account connection controls are intentionally unavailable in this preview.
+   Real-account setup is not supported; use the isolated sample while the OAuth
+   and credential-custody boundaries are completed.
 
 ### Advanced env vars
 
-The defaults give you a working SkyTwin without any LLM API keys or Docker. Power users can opt into:
+The default source install starts SkyTwin's core services without Docker or a
+hosted-model API key. Model-backed reasoning still requires an available local
+runtime plus verified model artifact, or a provider you configure. Power users can opt into:
 
 | Env var | Effect |
 |---------|--------|
@@ -183,9 +237,20 @@ The defaults give you a working SkyTwin without any LLM API keys or Docker. Powe
 | `SKYTWIN_DOCKER_SQL_PORT`, `SKYTWIN_DOCKER_ADMIN_PORT`, `SKYTWIN_DOCKER_API_PORT` | Override Docker Compose host ports for SQL, the Cockroach admin UI, and the optional API container. Useful when another Conductor workspace or local stack already owns `26257`, `8080`, or `3000`. |
 | `TURBO_DEV_CONCURRENCY` | Override the `pnpm dev` Turbo concurrency. The default is `50`, high enough for the current persistent dev task count. |
 | `SKYTWIN_DEV_SKIP_PORT_PREFLIGHT=1` | Bypass the `pnpm dev` port preflight. Use only when you intentionally want Turbo to try starting even though a required dev port is already listening. |
-| `SKYTWIN_WITH_OLLAMA=true` | Install Ollama + pull the gemma4 model (~9.6GB). The default install uses the embedded llama.cpp provider, which doesn't require this. |
+| `SKYTWIN_WITH_OLLAMA=true` | Install Ollama + pull the gemma4 model (~9.6GB). Without this opt-in, local inference requires a separately installed `llama.cpp` binary and compatible model. |
 | `SKYTWIN_DISABLE_EMBEDDED=1` | Skip the embedded LLM provider in the API's provider chain. Pair with hosted-only keys (e.g. `ANTHROPIC_API_KEY`) for reproducible evaluation runs. |
+| `SKYTWIN_LLAMA_MODEL=/path/model.gguf` | Opt into a user-managed model path. This explicit override bypasses the managed-model manifest and registry checks; the user is responsible for the artifact's provenance and compatibility. |
+| `SKYTWIN_REASONING_MODE` | Pin the environment-driven chain to `on_device` or `bring_your_own_provider`. Mixed local/remote chains require this explicit choice. Verified private cloud is configured per user in Settings so its key and isolated provider snapshot are explicit. |
 | `SKYTWIN_CRDB_VERSION` | Pin a non-default CockroachDB version. Refresh the hash tables in `bin/skytwin-db` and `apps/desktop/scripts/build-single-binary.sh` together. |
+
+On-device Ollama requires Ollama 0.18 or newer. SkyTwin adds Ollama's
+request-scoped `:local` source selector to every on-device call and never
+retries the unqualified model name; this prevents a loopback daemon from
+relaying a remote-backed model alias. General local chat is supported, but
+released Ollama builds do not attest the exact served digest/runtime on each
+chat response, so adaptive workflow authoring and summaries currently fail
+closed. For defense in depth, disable Ollama Cloud globally with
+`OLLAMA_NO_CLOUD=1` or `disable_ollama_cloud: true`.
 
 ### Manual setup
 
@@ -247,18 +312,19 @@ machine to verify the platform-specific bits (Homebrew, NSIS, etc.).
 ### Running Tests
 
 ```bash
-pnpm test   # 3,800+ tests across 307 test files in 29 packages + 7 apps
+pnpm test   # 4,800+ tests across 400+ files in 31 packages + 8 apps
 ```
 
 ## Architecture
 
-SkyTwin is a TypeScript monorepo (pnpm + Turborepo) with 29 packages and 7 apps:
+SkyTwin is a TypeScript monorepo (pnpm + Turborepo) with 31 packages and 8 apps:
 
 ```
 apps/
   api/                HTTP API — decisions, user management, webhooks, /api/voice/*
   web/                Dashboard — review decisions, manage preferences, configure policies
   worker/             Background jobs — async execution, briefing generation, memory action loop, tier backfill
+  idle-miner-runner/  Desktop-managed child that scans approved project roots only while the machine is idle
   desktop/            Electron app — macOS (.dmg), Windows (.exe), Linux (.AppImage)
   mobile/             React Native (Expo) — QR pairing, push notifications, SSE, voice capture
   openclaw-bridge/    OpenClaw proxy — bridges local API to OpenClaw execution service
@@ -275,22 +341,23 @@ packages/
   policy-prompts/                 Versioned LLM prompts with JSON schema validation and deterministic fallbacks
   ironclaw-adapter/               Execution adapter with HMAC auth, retries, circuit breaker
   execution-router/               Adapter selection, fallback chains, risk modifiers, plugin discovery
-  llm-client/                     Unified LLM client — Anthropic / OpenAI / Google / Ollama / embedded
+  llm-client/                     Unified LLM client — local, conventional, and admitted TrustedRouter paths; NEAR represented but blocked
+  near-confidential/              Fail-closed NEAR verification contract; no transport is runtime-admitted
   embedded-llm/                   Local-first: llama.cpp text, whisper.cpp STT, Piper TTS — spawn-based
   explanations/                   Human-readable explanation generation
-  connectors/                     Gmail / Google Calendar / Outlook mail+calendar / mock connectors with OAuth, stamps AuthoringTier
+  connectors/                     Gmail / Google Calendar / Outlook mail+calendar / mock connectors; account providers disabled in supported preview
   assistant/                      Stateless chat service wrapping LlmClient with context enrichment
   capability-engine/              Infers user app capabilities from signals (keyword v1 + LLM verification)
-  credential-vault/               Envelope encryption for OAuth tokens (AES-256-GCM + scrypt KDF)
+  credential-vault/               AES-256-GCM + scrypt primitives for the experimental token vault (not production-default encryption)
   idle-miner/                     Filesystem scanner that extracts project metadata during idle time
   mcp-host/                       Manages MCP servers (stdio/HTTP/SSE) with circuit breakers + telemetry
   dxt/                            Serializes/deserializes DXT artifacts (packed MCP server configs)
   observability/                  In-memory metrics + ring-buffered rollup for the capability loop
   registry-client/                Loads curated MCP registry entries with OAuth quirks and service lookup
-  routines/                       No-code Watches: plain-language → read-only digest/notify with scheduler, run history, briefing/chat/web surfaces
+  routines/                       Typed read-only Watch providers: canonical payloads, compilation, replay, semantic diff, and run evidence
   mempalace/                      Legacy memory: episodic, knowledge graph, 4-layer retrieval (opt-in backend)
   memory-port/                    Backend-agnostic MemoryPort interface + capability negotiation
-  memory-gbrain/                  Default memory backend — vector + tsvector RRF on CRDB brain_* tables
+  memory-gbrain/                  Default gbrain-compatible backend on CRDB; upstream CLI interoperability adapter (never runtime-selected)
   memory-gbrain-crdb-adapter/     CRDB driver for gbrain — tier-weighted RRF, pin/hide, embedding providers
   memory-hybrid/                  Composes any two MemoryPort impls — per-capability read routing
   memory-mempalace/               MemoryPort adapter for the legacy mempalace classes
@@ -308,9 +375,9 @@ packages/
 | Build | Turborepo |
 | Desktop | Electron + electron-builder |
 | Mobile | React Native + Expo |
-| Testing | Vitest (3,800+ tests) |
+| Testing | Vitest (4,800+ tests) |
 | CI/CD | GitHub Actions |
-| Execution | [IronClaw](https://github.com/nearai/ironclaw/), OpenClaw (via local bridge), and a Direct fallback — trust-ranked with automatic failover |
+| Execution | [IronClaw](https://github.com/nearai/ironclaw/), OpenClaw (via local bridge), and Direct execution — trust-ranked selection with ambiguous attempts held for reconciliation |
 
 ## Deployment
 
@@ -394,41 +461,68 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 
 | Document | What's Inside |
 |----------|---------------|
+| [How to Use the Fictional Sample](https://jayzalowitz.github.io/skytwin/how-to-use.html) | A plain-language, screenshot-led tour of the current source development sample. It identifies its fictional data and distinguishes it from published technical-preview installers. |
+| [FAQ and Glossary](https://jayzalowitz.github.io/skytwin/faq.html) | Direct answers and defined terms for preview status, safety, privacy, inference, agents, and the release boundary. |
+| [Data and Memory Guide](https://jayzalowitz.github.io/skytwin/data.html) | Current storage disclosure, credential separation, backup/restore semantics, memory backends, and control boundaries. |
+| [Integration Status](https://jayzalowitz.github.io/skytwin/integrations.html) | What is available in the fictional sample, how local MCP and admitted execution differ, and which connector or DXT surfaces remain unavailable or forward-looking. |
+| [Troubleshooting](https://jayzalowitz.github.io/skytwin/troubleshooting.html) | Source-run baseline checks, migrations, seeding, local build recovery, ports, and safe issue-reporting guidance. |
+| [Documentation Site](https://jayzalowitz.github.io/skytwin/docs.html) | Human evaluation guides plus architecture, safety, inference/privacy, MCP-agent, operations, release-evidence, and contribution references. The Pages site is source-first; GitHub remains canonical for implementation details. |
+| [Versioned Workflows](https://jayzalowitz.github.io/skytwin/workflows.html) | Public guide to teaching, replaying, explicitly activating, immutably revising, and rolling back the current read-only signal-digest workflow; the full source contract remains in [Adaptive Workflows](./docs/adaptive-workflows.md). |
 | [The Deck](https://jayzalowitz.github.io/skytwin/deck.html) | 22 slides: every capability claim paired with the mechanism that constrains it. Each claim-and-gate slide carries a collapsible source block citing the file and lines it came from; the "why now" and positioning slides cite external sources instead, and three narrative slides carry no citation block ([source](./docs/deck.html)) |
 | [Product Spec](./docs/product-spec.md) | Vision, target user, operating principles, example workflows |
+| [Adaptive Workflows](./docs/adaptive-workflows.md) | Canonical source contract for immutable signal-digest workflows, model qualification, exact run evidence, backup/restore, and CockroachDB invariants |
 | [Technical Spec](./docs/technical-spec.md) | Architecture, data flow, API endpoints, database schema |
 | [Safety Model](./docs/safety-model.md) | Threat model, trust tiers, defense layers, safety philosophy |
+| [Inference Receipts](./docs/inference-receipts.md) | Versioned receipt contract, decision-event capture, developer verifier, trust boundary, and current UI/export limitations |
+| [Confidential Inference](./docs/confidential-inference.md) | Local-first admission, fail-closed TrustedRouter, and why NEAR AI remains verification-pending |
 | [Decision Engine](./docs/decision-engine.md) | Situation interpretation, risk assessment, confidence scoring |
 | [IronClaw Integration](./docs/ironclaw-integration.md) | Execution adapter, HMAC auth, failure handling |
-| [CockroachDB Architecture](./docs/cockroach-architecture.md) | Schema design (18+ tables), query patterns, versioning |
+| [CockroachDB Architecture](./docs/cockroach-architecture.md) | Schema design, query patterns, versioning, receipt and effect boundaries |
 | [Evals](./docs/evals.md) | Evaluation harness, scenario simulation, calibration metrics |
 | [Launch Plan](./docs/launch-plan.md) | Procurement + sequencing to public download links |
-| [Launch-Readiness Report](./docs/launch-readiness-report.md) | Current launch-blocker status: what's code-done vs. external |
-| [Release Procedure](./docs/release-procedure.md) | How to cut a release (tag → build.yml → draft → publish) + the signing/auto-update gaps |
+| [Launch-Readiness Report](./docs/launch-readiness-report.md) | Historical audit with a current account-free launch override; the claim ledger remains authoritative |
+| [Release Procedure](./docs/release-procedure.md) | How the evidence-gated tag workflow verifies and publishes a release |
+| [Beta Claim Ledger](./docs/beta-claim-ledger.json) | Machine-checked release contract, evidence, limitations, owners, and stop-ship status |
 
 ## Project Status
 
-SkyTwin is in **Tier 1 launch polish** (see [`docs/launch-plan.md`](./docs/launch-plan.md)) — Tier 0 (bundled installer, in-app OAuth setup, Gmail wizard) shipped; Tier 1 (cold-load demo, signed binaries, mobile cut, safety + privacy debt) is the active pre-launch sprint tracked under epic [#357](https://github.com/jayzalowitz/skytwin/issues/357). As of the 2026-06-14 audit ([`docs/launch-readiness-report.md`](./docs/launch-readiness-report.md)) the product is **launch-ready on the engineering side** — every code-writable launch criterion has shipped and the full suite (3,800+ tests) is green. The remaining blockers are external: code-signing certs (#368/#359), Google OAuth verification (#351), and mobile store assets + accounts (#369). The current shipped version is in the badge above and in [`CHANGELOG.md`](./CHANGELOG.md). Core decision pipeline, twin model, policy engine, and swappable memory layer are functional; Gmail and Google Calendar connectors run with real OAuth; desktop builds ship for all three platforms; the mobile app pairs via QR code and captures voice. v0.5.0.0 brought the one-command installer and a non-technical-user UX overhaul; the v0.6 series added the embedded local LLM (#187), tier-aware memory retrieval (#251), per-Lifebook surfaces (#193), the voice loop (mobile capture + Piper TTS), Epic A's cold-load demo unblocker (#358), and the Inbox-Intelligence briefing — a source-cited daily/weekly digest that splits to-dos from FYIs and now persists, routes, and reports memory-derived action opportunities (#484).
+SkyTwin is preparing a desktop-first `v0.7.0-beta`. It is **not release-ready**:
+fresh packaged-sample and managed-model validation, production key management,
+signed/notarized artifacts, SBOMs, provenance, and clean-machine evidence remain
+stop-ship items. The machine-checked
+[`docs/beta-claim-ledger.json`](./docs/beta-claim-ledger.json) is the source of
+truth for release claims and support status. Current builds remain technical
+previews and published installers predate the guarded sample and verified managed
+model source paths. The core decision pipeline, twin model, policy engine, and
+swappable memory layer are implemented. Google connector and OAuth code exists in
+source but is disabled on the supported sample-only preview; managed Google access
+is deferred, and operator/BYO use is not yet supported. Mobile remains a
+source/development surface rather than part of the beta support matrix.
+The supported beta topology is one non-demo human owner per installation.
+Installation credentials and dynamically discovered credential requirements are
+shared installation configuration; local multi-owner and hosted deployments are
+outside the beta support boundary.
 
 **Free and open-source forever for personal use.** Team and hosted tiers are planned for organizations that need shared policies, audit logs, or managed infrastructure — see [`docs/launch-plan.md`](./docs/launch-plan.md) for the split.
 
-**What works today:**
+**What works in the development/source tree today:**
 - One-command install (`curl | bash`) on macOS, Linux, and WSL — installs every dependency, clones the repo, starts the services, opens the dashboard
 - "Ask your twin" widget on the dashboard — type any situation, get a predicted action with reasoning and confidence, no accounts required
-- Tour mode with a fully populated sample profile so you can poke at decisions, learnings, and approvals before connecting your own accounts
+- A fully populated development demo seed with mock approval actions, plus a separate guarded sample session for packaged desktop builds. Its database-backed surface is read-only; a dedicated simulation can approve, reject, or correct fixed proposals and demonstrate session-local learning without invoking real connectors, providers, credentials, or execution adapters. Current published installers predate this packaged sample path.
 - Inbox-Intelligence briefing — a daily/weekly digest that splits **to-dos (act)** from **topics (FYI)**, cites the source signal behind every item, persists memory-derived action opportunities, routes them through policy plus IronClaw/OpenClaw/Direct execution, reports queued/executed/blocked/learning-needed outcomes, and offers a "Power view" toggle for the technical detail behind each call
+- Versioned signal-digest workflows — teach a read-only Watch in plain language, resolve at most one missing detail, replay the candidate against real owner-scoped signals, explicitly activate an immutable version, propose a minimal correction, compare the replay, and atomically roll back. Every adaptive run pins the exact version, compiled payload, complete-evidence commitment, bounded display snapshot, and the version's sanitized inference identity when model-assisted (or an explicit no-inference state for user-authored revisions); deterministic matching remains available when summary generation does not.
 - Full decision pipeline: signal → interpret → decide → policy check → execute/escalate → explain → learn
-- LLM-powered decisions via configurable provider chain (Claude, GPT, Gemini, Ollama) with automatic fallback to built-in rules
+- Mode-scoped model reasoning: on-device embedded/Ollama or an explicitly selected provider chain, with fallback contained inside the selected location boundary, request-scoped local-only enforcement for Ollama, and deterministic rules when no eligible provider responds
 - Twin model with versioned profiles, confidence scoring, and preference learning
 - Policy engine with spend limits, trust tiers, and domain-specific rules
-- Swappable memory backend: gbrain (default — vector + tsvector RRF on CRDB) plus optional hybrid mode that adds the legacy spatial Memory Palace (#197). Selectable per-installation via `MEMORY_BACKEND` and per-user via the dashboard. See [`docs/memory-swap.md`](./docs/memory-swap.md).
+- Swappable memory backend: SkyTwin's gbrain-compatible implementation is the default, running vector + tsvector RRF directly on CRDB. Upstream gbrain v0.50.5.0 supports PGLite and PostgreSQL, not CockroachDB; its unchanged schema/runtime fails the supported CRDB path on PostgreSQL-specific DDL/functions, and its CLI does not implement SkyTwin's complete write, episode, and graph contract. The real CLI integration is therefore only a programmatic interoperability adapter and is not selected by SkyTwin's runtime factory. Optional hybrid mode adds the legacy spatial Memory Palace (#197). Selectable per-installation via `MEMORY_BACKEND` and per-user via the dashboard. See [`docs/memory-swap.md`](./docs/memory-swap.md).
 - Web dashboard for reviewing decisions, managing preferences, configuring AI providers, and auditing
-- Desktop app (macOS, Windows, Linux) with system-browser OAuth for Google accounts
-- Mobile app (iOS, Android) with QR pairing, push notifications, and voice capture that ships audio to the paired desktop for transcription
-- Embedded local LLM stack: llama.cpp text, whisper.cpp STT, Piper TTS (`/api/voice/transcribe` and `/api/voice/synthesize`) — runs entirely on-device when binaries + models are present
+- Desktop build targets for macOS, Windows, and Linux; current artifacts are unsigned and not yet in the beta support matrix
+- Mobile source/development app (iOS, Android) with QR pairing, push notifications, and voice capture that sends audio to the paired desktop for transcription
+- Local model backends for llama.cpp text, whisper.cpp STT, and Piper TTS (`/api/voice/transcribe` and `/api/voice/synthesize`); each backend is on-device only when its compatible binary and model are present
 - SSRF-safe URL validation for all LLM provider endpoints, with DNS rebinding protection
 - Dynamic adapter discovery for third-party execution plugins
-- 3,800+ tests with CI/CD on GitHub Actions
+- Repository-wide tests and packaging workflows on GitHub Actions
 
 **What's next:**
 - More connectors (Slack, Notion, bank feeds)

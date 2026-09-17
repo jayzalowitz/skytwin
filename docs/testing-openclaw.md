@@ -70,8 +70,9 @@ const BUILTIN_TRUST_RANKING = ['ironclaw', 'direct', 'openclaw'];
 OpenClaw is **last**. The `direct` adapter is registered with **no skill set**, so
 `AdapterRegistry.canHandle('direct', anyAction)` returns `true` for everything.
 Result: for any standard action type, the router selects `direct` (or `ironclaw`
-if configured) as **primary**, and OpenClaw is only a **fallback** that runs when
-the higher-trust adapter *throws* before/at execution.
+if configured) as **primary**. Once any adapter is invoked, an exception is
+ambiguous and the router does not try another adapter in the same call; doing so
+could repeat an effect whose response was lost.
 
 So to actually see OpenClaw do the work, do one of:
 
@@ -79,8 +80,8 @@ So to actually see OpenClaw do the work, do one of:
    call `buildPlan()` + `execute()` against the bridge. No router, no DB.
 2. **Router with only OpenClaw registered:** build an `AdapterRegistry`, register
    just `openclaw` with `OPENCLAW_TRUST_PROFILE` + `OPENCLAW_SKILLS`, and route.
-3. **Force fallback:** register a primary adapter whose `buildPlan`/`execute`
-   throws for the chosen action type, so the router falls through to OpenClaw.
+3. **Select by capability:** register skill sets so higher-ranked adapters do not
+   claim the chosen action type and OpenClaw is selected before invocation.
 
 `OPENCLAW_TRUST_PROFILE`: `reversibilityGuarantee: 'none'`, `authModel: 'api_key'`,
 `riskModifier: 1` (so irreversible actions get a +1 risk-tier bump under OpenClaw).
@@ -108,14 +109,14 @@ curl -s http://localhost:4199/execute -H 'Content-Type: application/json' -d '{
   "planId": "test_plan_safe_001",
   "decisionId": "test_decision_safe_001",
   "action": {
-    "type": "archive_email",
-    "description": "Archive a newsletter from test@example.invalid",
-    "parameters": { "messageId": "FAKE-MSG-DOES-NOT-EXIST", "userId": "test-user-no-tokens" },
-    "domain": "email"
+    "type": "create_note",
+    "description": "Create a fake local test note",
+    "parameters": { "title": "OpenClaw bridge test", "body": "No external side effect" },
+    "domain": "productivity"
   },
   "steps": [
-    { "id": "step_1", "type": "archive_email", "description": "Archive the message",
-      "parameters": { "messageId": "FAKE-MSG-DOES-NOT-EXIST" } }
+    { "id": "step_1", "type": "create_note", "description": "Create the fake note",
+      "parameters": { "title": "OpenClaw bridge test" } }
   ]
 }'
 # -> {"status":"completed","adapter":"openclaw-bridge","model":"gemma4:latest",...,"latencyMs":~19000}
@@ -128,6 +129,10 @@ curl -s http://localhost:4199/rollback -H 'Content-Type: application/json' \
 # 4. Clean up
 kill %1   # or kill the bridge PID
 ```
+
+Do not substitute `archive_email` in this generic adapter example. Gmail
+archive proposals are quarantined to their dedicated consent path and are not
+valid OpenClaw bridge execution probes.
 
 ### Optional: full router path against the bridge, via the API
 

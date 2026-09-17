@@ -1,5 +1,13 @@
-import { query } from '../connection.js';
-import type { Watch, RoutineSpec, RoutineStatus } from '@skytwin/shared-types';
+import { query, withTransaction } from '../connection.js';
+import type {
+  Watch,
+  RoutineSpec,
+  RoutineStatus,
+} from '@skytwin/shared-types';
+import { randomUUID } from 'node:crypto';
+import { databaseNullableSafeInteger } from './database-values.js';
+
+const LEGACY_WATCH_QUARANTINE_PROVIDER_KEY = 'legacy_watch.quarantine.v1';
 
 /**
  * Repository for **watches** — the persisted form of no-code routines (#519).
@@ -14,8 +22,8 @@ export interface WatchRow {
   name: string;
   source_text: string;
   cadence: string;
-  hour_of_day: number | null;
-  day_of_week: number | null;
+  hour_of_day: number | string | null;
+  day_of_week: number | string | null;
   filter: Record<string, unknown> | null;
   action: string;
   status: string;
@@ -23,17 +31,44 @@ export interface WatchRow {
   updated_at: Date;
   last_run_at: Date | null;
   next_run_at: Date | null;
+  schedule_revision: string;
+  workflow_id: string | null;
+  workflow_version_id: string | null;
+  workflow_provider_key: string | null;
+  workflow_provider_schema_version: string | null;
+  content_hash: string | null;
+  projection_version: number | string | null;
+}
+
+function isFilterNarrowed(spec: RoutineSpec): boolean {
+  const f = spec.filter;
+  return Boolean(f.sources?.length || f.fromContains?.length || f.keywords?.length || f.domains?.length);
+}
+
+function storedFilter(spec: RoutineSpec): Required<RoutineSpec['filter']> {
+  return {
+    sources: spec.filter.sources ?? [],
+    fromContains: spec.filter.fromContains ?? [],
+    keywords: spec.filter.keywords ?? [],
+    domains: spec.filter.domains ?? [],
+  };
 }
 
 function rowToWatch(r: WatchRow): Watch {
+  const hourOfDay = databaseNullableSafeInteger(r.hour_of_day, 'watches.hour_of_day');
+  const dayOfWeek = databaseNullableSafeInteger(r.day_of_week, 'watches.day_of_week');
+  const projectionVersion = databaseNullableSafeInteger(
+    r.projection_version,
+    'watches.projection_version',
+  );
   return {
     id: r.id,
     userId: r.user_id,
     name: r.name,
     sourceText: r.source_text,
     cadence: r.cadence as Watch['cadence'],
-    ...(r.hour_of_day !== null ? { hourOfDay: r.hour_of_day } : {}),
-    ...(r.day_of_week !== null ? { dayOfWeek: r.day_of_week } : {}),
+    ...(hourOfDay !== null ? { hourOfDay } : {}),
+    ...(dayOfWeek !== null ? { dayOfWeek } : {}),
     filter: (r.filter ?? {}) as Watch['filter'],
     action: r.action as Watch['action'],
     status: r.status as RoutineStatus,
@@ -41,6 +76,12 @@ function rowToWatch(r: WatchRow): Watch {
     updatedAt: r.updated_at,
     lastRunAt: r.last_run_at,
     nextRunAt: r.next_run_at,
+    workflowId: r.workflow_id ?? null,
+    workflowVersionId: r.workflow_version_id ?? null,
+    workflowProviderKey: r.workflow_provider_key ?? null,
+    workflowProviderSchemaVersion: r.workflow_provider_schema_version ?? null,
+    contentHash: r.content_hash ?? null,
+    projectionVersion,
   };
 }
 
@@ -63,7 +104,8 @@ export const watchRepository = {
     const nextRunAt = status === 'active' ? (input.nextRunAt ?? new Date()) : null;
     const result = await query<WatchRow>(
       `INSERT INTO watches
-         (user_id, name, source_text, cadence, hour_of_day, day_of_week, filter, action, status, next_run_at)
+       (user_id, name, source_text, cadence, hour_of_day, day_of_week, filter,
+          action, status, next_run_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
@@ -73,7 +115,7 @@ export const watchRepository = {
         s.cadence,
         s.hourOfDay ?? null,
         s.dayOfWeek ?? null,
-        JSON.stringify(s.filter ?? {}),
+        JSON.stringify(storedFilter(s)),
         s.action,
         status,
         nextRunAt,
@@ -109,10 +151,27 @@ export const watchRepository = {
     const effectiveNext = status === 'active' ? (nextRunAt ?? new Date()) : null;
     const result = await query<WatchRow>(
       `UPDATE watches
-          SET status = $3, next_run_at = $4, updated_at = now()
+          SET status = $3, next_run_at = $4, schedule_revision = $5, updated_at = now()
         WHERE id = $1 AND user_id = $2
+          AND (
+            $3 <> 'active'
+            OR jsonb_array_length(filter->'sources') > 0
+            OR jsonb_array_length(filter->'fromContains') > 0
+            OR jsonb_array_length(filter->'keywords') > 0
+            OR jsonb_array_length(filter->'domains') > 0
+          )
+          AND (
+            $3 <> 'active'
+            OR workflow_id IS NULL
+            OR EXISTS (
+              SELECT 1 FROM workflows
+               WHERE workflows.id = watches.workflow_id
+                 AND workflows.user_id = watches.user_id
+                 AND workflows.active_version_id = watches.workflow_version_id
+            )
+          )
       RETURNING *`,
-      [id, userId, status, effectiveNext],
+      [id, userId, status, effectiveNext, randomUUID()],
     );
     return result.rows[0] ? rowToWatch(result.rows[0]) : null;
   },
@@ -128,8 +187,10 @@ export const watchRepository = {
       `UPDATE watches
           SET name = $3, cadence = $4, hour_of_day = $5, day_of_week = $6,
               filter = $7, action = $8, source_text = COALESCE($9, source_text),
-              updated_at = now()
+              schedule_revision = $11, updated_at = now()
         WHERE id = $1 AND user_id = $2
+          AND workflow_id IS NULL
+          AND (status <> 'active' OR $10 = true)
       RETURNING *`,
       [
         id,
@@ -138,68 +199,62 @@ export const watchRepository = {
         spec.cadence,
         spec.hourOfDay ?? null,
         spec.dayOfWeek ?? null,
-        JSON.stringify(spec.filter ?? {}),
+        JSON.stringify(storedFilter(spec)),
         spec.action,
         sourceText === undefined ? null : sourceText,
+        isFilterNarrowed(spec),
+        randomUUID(),
       ],
     );
     return result.rows[0] ? rowToWatch(result.rows[0]) : null;
   },
 
   async delete(id: string, userId: string): Promise<boolean> {
-    const result = await query<{ id: string }>(
-      `DELETE FROM watches WHERE id = $1 AND user_id = $2 RETURNING id`,
-      [id, userId],
-    );
-    return result.rows.length > 0;
+    return withTransaction(async (client) => {
+      const target = await client.query<{
+        id: string;
+        workflow_id: string | null;
+        workflow_provider_key: string | null;
+      }>(
+        `SELECT id, workflow_id, workflow_provider_key
+           FROM watches
+          WHERE id = $1 AND user_id = $2
+          FOR UPDATE`,
+        [id, userId],
+      );
+      const watch = target.rows[0];
+      if (!watch) return false;
+
+      if (watch.workflow_id === null) {
+        const deleted = await client.query<{ id: string }>(
+          `DELETE FROM watches
+            WHERE id = $1 AND user_id = $2 AND workflow_id IS NULL
+          RETURNING id`,
+          [id, userId],
+        );
+        return deleted.rows.length > 0;
+      }
+
+      // Versioned workflows are immutable and must not be removed through the
+      // legacy Watch endpoint. The sole exception is an inactive quarantine
+      // workflow created when a legacy Watch cannot be compiled safely. Delete
+      // the owning workflow so its version and Watch projection cascade as one
+      // operation, while re-checking the quarantine/no-active-version boundary
+      // atomically in the DELETE itself.
+      if (watch.workflow_provider_key !== LEGACY_WATCH_QUARANTINE_PROVIDER_KEY) {
+        return false;
+      }
+      const deleted = await client.query<{ id: string }>(
+        `DELETE FROM workflows
+          WHERE id = $1
+            AND user_id = $2
+            AND provider_key = $3
+            AND active_version_id IS NULL
+        RETURNING id`,
+        [watch.workflow_id, userId, LEGACY_WATCH_QUARANTINE_PROVIDER_KEY],
+      );
+      return deleted.rows.length > 0;
+    });
   },
 
-  /**
-   * List active watches whose next run is due, oldest-first and bounded. This
-   * is a plain READ — it does NOT claim or lock. The scheduler (a later part)
-   * owns claim semantics (a status/next_run_at transition, or
-   * `SELECT … FOR UPDATE SKIP LOCKED`) to avoid double-processing across
-   * concurrent workers.
-   */
-  async listDue(now: Date = new Date(), limit = 100): Promise<Watch[]> {
-    const result = await query<WatchRow>(
-      `SELECT * FROM watches
-        WHERE status = 'active' AND next_run_at IS NOT NULL AND next_run_at <= $1
-        ORDER BY next_run_at ASC
-        LIMIT $2`,
-      [now, limit],
-    );
-    return result.rows.map(rowToWatch);
-  },
-
-  /** Record a firing and schedule the next one (scheduler, a later part). */
-  async markRan(id: string, ranAt: Date, nextRunAt: Date | null): Promise<void> {
-    await query(
-      `UPDATE watches SET last_run_at = $2, next_run_at = $3, updated_at = now() WHERE id = $1`,
-      [id, ranAt, nextRunAt],
-    );
-  },
-
-  /**
-   * Optimistically CLAIM a due watch before processing it: atomically advance
-   * `next_run_at`/`last_run_at`, gated on the `next_run_at` the scheduler saw in
-   * `listDue`. Returns true if this caller won the claim, false if another
-   * worker already advanced it (so the caller skips) — this is what makes the
-   * scheduler safe to run on multiple worker instances without double-firing.
-   */
-  async claimDue(
-    id: string,
-    seenNextRunAt: Date,
-    nextRunAt: Date,
-    ranAt: Date,
-  ): Promise<boolean> {
-    const result = await query<{ id: string }>(
-      `UPDATE watches
-          SET next_run_at = $3, last_run_at = $4, updated_at = now()
-        WHERE id = $1 AND status = 'active' AND next_run_at = $2
-      RETURNING id`,
-      [id, seenNextRunAt, nextRunAt, ranAt],
-    );
-    return result.rows.length > 0;
-  },
 };

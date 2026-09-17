@@ -1,19 +1,97 @@
-import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
+import type { ChildProcess, spawn } from 'node:child_process';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const electronState = vi.hoisted(() => ({
+  userData: '/tmp/skytwin-crdb-test',
+}));
 
 // Mock electron BEFORE importing CockroachManager so app.* doesn't blow up in node.
 vi.mock('electron', () => ({
   app: {
     isPackaged: false,
-    getPath: (key: string) => `/tmp/electron-userdata-${key}`,
+    getPath: () => electronState.userData,
   },
 }));
 
 const { CockroachManager } = await import('../cockroach-manager.js');
 
+interface CockroachManagerInternals {
+  isCrdbResponding(): Promise<boolean>;
+  ensureDatabase(): Promise<void>;
+  process: ChildProcess | null;
+  authority: {
+    process: ChildProcess;
+    revoked: boolean;
+  } | null;
+  terminateProcess(process: ChildProcess, timeoutMs?: number): Promise<void>;
+}
+
+interface FakeChild extends ChildProcess {
+  exitCode: number | null;
+}
+
+function fakeChild(pid: number, emitExitOnKill = true): FakeChild {
+  const child = new EventEmitter() as FakeChild;
+  Object.assign(child, {
+    pid,
+    exitCode: null,
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    kill: vi.fn(() => {
+      child.exitCode = 0;
+      if (emitExitOnKill) queueMicrotask(() => child.emit('exit', 0, null));
+      return true;
+    }),
+  });
+  return child;
+}
+
+function stubbornChild(pid: number, closeOnKill = false): FakeChild {
+  const child = new EventEmitter() as FakeChild;
+  Object.assign(child, {
+    pid,
+    exitCode: null,
+    signalCode: null,
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    kill: vi.fn((signal: NodeJS.Signals) => {
+      if (closeOnKill && signal === 'SIGKILL') {
+        queueMicrotask(() => child.emit('close', null, 'SIGKILL'));
+      }
+      return true;
+    }),
+  });
+  return child;
+}
+
+function markerPath(args: readonly string[], prefix: string): string {
+  const arg = args.find((value) => value.startsWith(prefix));
+  if (!arg) throw new Error(`missing ${prefix}`);
+  return arg.slice(prefix.length);
+}
+
+function writeOwnedMarkers(child: FakeChild, args: readonly string[]): void {
+  writeFileSync(markerPath(args, '--pid-file='), String(child.pid));
+  writeFileSync(
+    markerPath(args, '--listening-url-file='),
+    'postgresql://root@127.0.0.1:26257/defaultdb?sslmode=disable',
+  );
+}
+
 describe('CockroachManager', () => {
   beforeEach(() => {
+    electronState.userData = mkdtempSync(join(tmpdir(), 'skytwin-crdb-test-'));
     delete process.env['SKYTWIN_DB_PORT'];
     delete process.env['SKYTWIN_DB_HTTP_PORT'];
+  });
+
+  afterEach(() => {
+    rmSync(electronState.userData, { recursive: true, force: true });
   });
 
   it('honors SKYTWIN_DB_PORT for the connection string', () => {
@@ -23,9 +101,7 @@ describe('CockroachManager', () => {
     // accidentally bind IPv6 :: on systems whose /etc/hosts maps
     // localhost to the unspecified address — that would expose the
     // --insecure CRDB to the LAN.
-    expect(mgr.getConnectionString()).toBe(
-      'postgresql://root@127.0.0.1:29257/skytwin?sslmode=disable',
-    );
+    expect(mgr.getConnectionString()).toBe('postgresql://root@127.0.0.1:29257/skytwin?sslmode=disable');
   });
 
   it('defaults to port 26257 when no env override', () => {
@@ -48,11 +124,223 @@ describe('CockroachManager', () => {
 
   it('keeps the data dir under app.getPath(userData)', () => {
     const mgr = new CockroachManager();
-    expect(mgr.getDataDir()).toBe('/tmp/electron-userdata-userData/crdb-data');
+    expect(mgr.getDataDir()).toBe(join(electronState.userData, 'crdb-data'));
   });
 
   it('allows explicit port overrides via constructor', () => {
     const mgr = new CockroachManager({ sqlPort: 31000 });
     expect(mgr.getConnectionString()).toContain(':31000/');
+  });
+
+  it('does not claim ownership of a pre-existing CockroachDB responder', async () => {
+    const mgr = new CockroachManager() as InstanceType<typeof CockroachManager> & CockroachManagerInternals;
+    mgr.isCrdbResponding = vi.fn().mockResolvedValue(true);
+    mgr.ensureDatabase = vi.fn().mockResolvedValue(undefined);
+
+    await expect(mgr.start()).resolves.toEqual({
+      ownership: 'preexisting',
+      dataDir: null,
+      generation: null,
+    });
+    expect(mgr.ensureDatabase).not.toHaveBeenCalled();
+  });
+
+  it('rejects a foreign responder that wins the port while the child remains live', async () => {
+    const spawned = fakeChild(4101);
+    const spawnImpl = vi.fn(() => spawned) as unknown as typeof spawn;
+    const mgr = new CockroachManager({
+      startTimeoutMs: 10,
+      spawnImpl,
+    }) as InstanceType<typeof CockroachManager> & CockroachManagerInternals;
+    mgr.getBinaryPath = vi.fn().mockReturnValue(process.execPath);
+    mgr.isCrdbResponding = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+
+    await expect(mgr.start()).rejects.toThrow(/owned SQL readiness/);
+    expect(spawned.kill).toHaveBeenCalledWith('SIGTERM');
+  });
+
+  it('cleans a timed-out child before a retry establishes fresh ownership', async () => {
+    const first = fakeChild(4102);
+    const second = fakeChild(4103);
+    let starts = 0;
+    const spawnImpl = vi.fn((_bin: string, args: readonly string[]) => {
+      if (args[0] !== 'start-single-node') {
+        const sql = fakeChild(5100 + starts);
+        queueMicrotask(() => {
+          sql.exitCode = 0;
+          sql.emit('exit', 0, null);
+        });
+        return sql;
+      }
+      const child = starts++ === 0 ? first : second;
+      if (child === second) writeOwnedMarkers(child, args);
+      return child;
+    }) as unknown as typeof spawn;
+    const mgr = new CockroachManager({
+      startTimeoutMs: 10,
+      spawnImpl,
+    }) as InstanceType<typeof CockroachManager> & CockroachManagerInternals;
+    mgr.getBinaryPath = vi.fn().mockReturnValue(process.execPath);
+    mgr.isCrdbResponding = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+
+    await expect(mgr.start()).rejects.toThrow(/owned SQL readiness/);
+    (mgr.isCrdbResponding as ReturnType<typeof vi.fn>).mockReset();
+    (mgr.isCrdbResponding as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false).mockResolvedValue(true);
+    const startup = await mgr.start();
+
+    expect(first.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(startup).toMatchObject({ ownership: 'managed-child' });
+    expect(startup.generation).toBeGreaterThan(1);
+    expect(mgr.isManagedStartCurrent(startup)).toBe(true);
+    expect(spawnImpl.mock.calls.filter((call) => call[1]?.[0] === 'start-single-node')).toHaveLength(2);
+  });
+
+  it('rejects a capability whose store path does not exactly match the spawned store', async () => {
+    const child = fakeChild(4104);
+    const spawnImpl = vi.fn((_bin: string, args: readonly string[]) => {
+      if (args[0] === 'start-single-node') writeOwnedMarkers(child, args);
+      else queueMicrotask(() => child.emit('exit', 0, null));
+      return child;
+    }) as unknown as typeof spawn;
+    const mgr = new CockroachManager({ spawnImpl }) as InstanceType<typeof CockroachManager> &
+      CockroachManagerInternals;
+    mgr.getBinaryPath = vi.fn().mockReturnValue(process.execPath);
+    mgr.isCrdbResponding = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+    mgr.ensureDatabase = vi.fn().mockResolvedValue(undefined);
+    const startup = await mgr.start();
+
+    expect(
+      mgr.isManagedStartCurrent({
+        ...startup,
+        dataDir: join(electronState.userData, 'other'),
+      }),
+    ).toBe(false);
+  });
+
+  it('does not let an old child exit clear a newer managed generation', async () => {
+    const first = fakeChild(4105, false);
+    const second = fakeChild(4106);
+    let starts = 0;
+    const spawnImpl = vi.fn((_bin: string, args: readonly string[]) => {
+      const child = starts++ === 0 ? first : second;
+      writeOwnedMarkers(child, args);
+      return child;
+    }) as unknown as typeof spawn;
+    const mgr = new CockroachManager({ spawnImpl }) as InstanceType<typeof CockroachManager> &
+      CockroachManagerInternals;
+    mgr.getBinaryPath = vi.fn().mockReturnValue(process.execPath);
+    mgr.isCrdbResponding = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+    mgr.ensureDatabase = vi.fn().mockResolvedValue(undefined);
+    await mgr.start();
+    await mgr.stop();
+    (mgr.isCrdbResponding as ReturnType<typeof vi.fn>).mockReset();
+    (mgr.isCrdbResponding as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false).mockResolvedValue(true);
+    const current = await mgr.start();
+
+    first.emit('exit', 0, null);
+    expect(mgr.isManagedStartCurrent(current)).toBe(true);
+  });
+
+  it('reports loss of the exact managed generation when its child exits', async () => {
+    const child = fakeChild(4108, false);
+    const spawnImpl = vi.fn((_bin: string, args: readonly string[]) => {
+      writeOwnedMarkers(child, args);
+      return child;
+    }) as unknown as typeof spawn;
+    const mgr = new CockroachManager({ spawnImpl }) as InstanceType<typeof CockroachManager> &
+      CockroachManagerInternals;
+    const onAuthorityLost = vi.fn();
+    mgr.setAuthorityLossHandler(onAuthorityLost);
+    mgr.getBinaryPath = vi.fn().mockReturnValue(process.execPath);
+    mgr.isCrdbResponding = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+    const startup = await mgr.start();
+
+    child.exitCode = 1;
+    child.emit('exit', 1, null);
+
+    expect(onAuthorityLost).toHaveBeenCalledExactlyOnceWith(startup.generation);
+    expect(mgr.isManagedStartCurrent(startup)).toBe(false);
+  });
+
+  it('serializes overlapping starts onto one attested child generation', async () => {
+    const child = fakeChild(4107);
+    const spawnImpl = vi.fn((_bin: string, args: readonly string[]) => {
+      writeOwnedMarkers(child, args);
+      return child;
+    }) as unknown as typeof spawn;
+    const mgr = new CockroachManager({ spawnImpl }) as InstanceType<typeof CockroachManager> &
+      CockroachManagerInternals;
+    mgr.getBinaryPath = vi.fn().mockReturnValue(process.execPath);
+    let releaseReadiness: ((value: boolean) => void) | undefined;
+    mgr.isCrdbResponding = vi
+      .fn()
+      .mockResolvedValueOnce(false)
+      .mockImplementationOnce(() => new Promise<boolean>((resolve) => (releaseReadiness = resolve)))
+      .mockResolvedValue(true);
+    mgr.ensureDatabase = vi.fn().mockResolvedValue(undefined);
+
+    const first = mgr.start();
+    await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalledOnce());
+    const second = mgr.start();
+    releaseReadiness?.(true);
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(firstResult).toEqual(secondResult);
+    expect(spawnImpl).toHaveBeenCalledOnce();
+  });
+
+  it('retains an unproven Cockroach child and authority after TERM and KILL time out', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = stubbornChild(4110);
+      const spawnImpl = vi.fn((_bin: string, args: readonly string[]) => {
+        writeOwnedMarkers(child, args);
+        return child;
+      }) as unknown as typeof spawn;
+      const mgr = new CockroachManager({ spawnImpl }) as InstanceType<typeof CockroachManager> &
+        CockroachManagerInternals;
+      mgr.getBinaryPath = vi.fn().mockReturnValue(process.execPath);
+      mgr.isCrdbResponding = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+      const startup = await mgr.start();
+      const authority = mgr.authority;
+
+      const stopped = mgr.stop();
+      const assertion = expect(stopped).rejects.toMatchObject({
+        code: 'COCKROACH_TERMINATION_UNPROVEN',
+      });
+      await Promise.resolve();
+      expect(mgr.isManagedStartCurrent(startup)).toBe(false);
+      await vi.runAllTimersAsync();
+      await assertion;
+
+      expect(child.kill).toHaveBeenNthCalledWith(1, 'SIGTERM');
+      expect(child.kill).toHaveBeenNthCalledWith(2, 'SIGKILL');
+      expect(mgr.process).toBe(child);
+      expect(mgr.authority).toBe(authority);
+      expect(mgr.authority?.revoked).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not clear a Cockroach child until forced close is observed', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = stubbornChild(4111, true);
+      const mgr = new CockroachManager() as InstanceType<typeof CockroachManager> &
+        CockroachManagerInternals;
+      mgr.process = child;
+      mgr.authority = { process: child, revoked: true };
+
+      const stopped = mgr.terminateProcess(child, 10);
+      await vi.advanceTimersByTimeAsync(10);
+      await stopped;
+
+      expect(child.kill).toHaveBeenNthCalledWith(2, 'SIGKILL');
+      expect(mgr.process).toBeNull();
+      expect(mgr.authority).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

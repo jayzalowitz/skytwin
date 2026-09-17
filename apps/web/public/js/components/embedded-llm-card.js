@@ -13,7 +13,6 @@
 import {
   cancelModelDownload,
   escapeHtml,
-  fetchEmbeddedLlmModelDir,
   fetchEmbeddedLlmRegistry,
   fetchModelDownload,
   listUserModelDownloads,
@@ -23,14 +22,14 @@ import {
   resumeModelDownload,
   startModelDownload,
 } from '../api-client.js';
-import { KEY_USER_ID } from '../storage-keys.js';
+import { getEffectiveUserId } from '../sample-session.js';
 import { showErrorToast, showSavedToast } from '../toast.js';
 
 const CARD_TARGET_ID = 'embedded-llm-card-target';
 
 function getCurrentUserId() {
   try {
-    return localStorage.getItem(KEY_USER_ID) || '';
+    return getEffectiveUserId();
   } catch {
     return '';
   }
@@ -39,16 +38,16 @@ function getCurrentUserId() {
 // Statuses that mean "something is in flight" — drives the polling
 // loop and keeps the card showing a progress UI rather than the picker.
 const ACTIVE_STATUSES = new Set(['pending', 'downloading', 'verifying', 'installing']);
+const CANCELLABLE_STATUSES = new Set(['pending', 'downloading', 'verifying']);
 // Subset where the backend can actually pause. pauseDownload() returns
 // ok:false for verifying/installing, so we hide the Pause button there.
-// Cancel still works through verify/install — the runner checks the
-// cancelled flag at phase boundaries.
 const PAUSABLE_STATUSES = new Set(['pending', 'downloading']);
 
 const POLL_INTERVAL_MS = 1000;
 
 let _pollTimer = null;
 let _activeDownloadId = null;
+let _activeDownloadStatus = null;
 
 /**
  * Estimate the user's RAM bracket. Browsers don't expose system RAM
@@ -111,8 +110,10 @@ function downloadCardHtml(download, modelName) {
       const pauseBtn = isPausable
         ? `<button class="btn btn-outline btn-sm" data-action="embedded-pause-download" data-download-id="${escapeHtml(download.id)}">Pause</button>`
         : '';
-      return `${pauseBtn}
-              <button class="btn btn-outline btn-sm" data-action="embedded-cancel-download" data-download-id="${escapeHtml(download.id)}">Cancel</button>`;
+      const cancelBtn = CANCELLABLE_STATUSES.has(status)
+        ? `<button class="btn btn-outline btn-sm" data-action="embedded-cancel-download" data-download-id="${escapeHtml(download.id)}">Cancel</button>`
+        : '';
+      return `${pauseBtn}${cancelBtn}`;
     }
     if (isPaused) {
       return `<button class="btn btn-primary btn-sm" data-action="embedded-resume-download" data-download-id="${escapeHtml(download.id)}">Resume</button>
@@ -145,22 +146,24 @@ function downloadCardHtml(download, modelName) {
  * changes and the DOM gets replaced atomically.
  */
 async function renderCardInto(container, userId) {
-  const [registryRes, dirRes, listRes] = await Promise.allSettled([
+  const [registryRes, listRes] = await Promise.allSettled([
     fetchEmbeddedLlmRegistry(),
-    fetchEmbeddedLlmModelDir(),
     listUserModelDownloads(userId),
   ]);
   const models = registryRes.status === 'fulfilled' && Array.isArray(registryRes.value?.models)
     ? registryRes.value.models
     : [];
-  const modelDir = dirRes.status === 'fulfilled' ? dirRes.value?.modelDir ?? '' : '';
   const downloads = listRes.status === 'fulfilled' && Array.isArray(listRes.value?.downloads)
     ? listRes.value.downloads
     : [];
 
-  const active = downloads.find((d) => ACTIVE_STATUSES.has(d.status))
-    ?? downloads.find((d) => d.status === 'paused' || d.status === 'failed');
-  const completed = downloads.find((d) => d.status === 'complete');
+  const currentDownloads = downloads.filter((d) => d.catalogMatch === true);
+  const active = currentDownloads.find((d) => ACTIVE_STATUSES.has(d.status))
+    ?? currentDownloads.find((d) => d.status === 'paused' || d.status === 'failed');
+  const completed = downloads.find((d) =>
+    d.status === 'complete' && d.catalogMatch === true && d.installed === true);
+  const retired = downloads.find((d) =>
+    d.catalogMatch !== true && (d.status === 'paused' || d.status === 'failed'));
 
   // Prefer the real server-side pick (actual RAM + free disk on this machine).
   // Fall back to the browser's coarse RAM estimate only if that call fails —
@@ -192,9 +195,9 @@ async function renderCardInto(container, userId) {
   if (completed && !active) {
     body = `
       <div style="padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">
-        <div style="font-weight: 500; color: var(--success);">✓ Your twin's brain is installed</div>
+        <div style="font-weight: 500; color: var(--success);">✓ Local model artifact verified</div>
         <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">
-          ${escapeHtml(completed.modelId)} · saved to <code>${escapeHtml(completed.targetPath)}</code>
+          ${escapeHtml(completed.modelId)} · a compatible llama.cpp runtime is still required for local inference
         </div>
       </div>
     `;
@@ -204,7 +207,7 @@ async function renderCardInto(container, userId) {
   } else {
     body = `
       <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.75rem;">
-        Your twin works fully offline once a brain is installed. We'll download it once and save it to <code>${escapeHtml(modelDir)}</code>. No API keys, no per-message costs.
+        SkyTwin can run a verified model locally once both the model artifact and a compatible llama.cpp runtime are available. Downloading the artifact does not install the runtime.
       </div>
       <div style="display: flex; gap: 0.5rem; align-items: stretch;">
         <select class="form-input" id="embedded-model-select" style="flex: 1;">
@@ -214,6 +217,16 @@ async function renderCardInto(container, userId) {
       </div>
       ${recommended ? `<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem;">${recommendReason ? escapeHtml(recommendReason) : `Recommended for your machine: <strong>${escapeHtml(recommended.displayName)}</strong> (${recommendedSize}).`}</div>` : ''}
     `;
+    if (retired) {
+      body += `
+        <div style="margin-top: 0.75rem; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">
+          <div style="font-size: 0.8rem; color: var(--text-muted);">
+            A saved download for ${escapeHtml(retired.modelId)} no longer matches the maintained catalog. Dismissing marks it cancelled; legacy model files may remain on disk and can be reviewed in your configured local-model storage.
+          </div>
+          <button class="btn btn-outline btn-sm" style="margin-top: 0.5rem;" data-action="embedded-dismiss-retired-download" data-download-id="${escapeHtml(retired.id)}">Dismiss</button>
+        </div>
+      `;
+    }
   }
 
   container.innerHTML = `
@@ -224,19 +237,25 @@ async function renderCardInto(container, userId) {
       ${body}
     </div>
   `;
+  container.setAttribute('aria-busy', 'false');
+  container.dispatchEvent(new Event('skytwin:embedded-llm-ready'));
 
   // Manage polling: poll while we have an active download.
   if (active && ACTIVE_STATUSES.has(active.status)) {
-    startPolling(container, userId, active.id);
+    startPolling(container, userId, active.id, active.status);
   } else {
     stopPolling();
   }
 }
 
-function startPolling(container, userId, downloadId) {
-  if (_activeDownloadId === downloadId && _pollTimer !== null) return;
+function startPolling(container, userId, downloadId, status) {
+  if (_activeDownloadId === downloadId && _pollTimer !== null) {
+    _activeDownloadStatus = status;
+    return;
+  }
   stopPolling();
   _activeDownloadId = downloadId;
+  _activeDownloadStatus = status;
   _pollTimer = setInterval(async () => {
     // Stop polling if the user navigated away from Settings or the
     // card container was detached/replaced (e.g. by a different
@@ -255,9 +274,9 @@ function startPolling(container, userId, downloadId) {
     try {
       const data = await fetchModelDownload(downloadId);
       const dl = data?.download;
-      if (!dl || !ACTIVE_STATUSES.has(dl.status)) {
-        // Status changed — re-render entire card (transitions to
-        // verifying / installing / complete / failed).
+      if (!dl || !ACTIVE_STATUSES.has(dl.status) || dl.status !== _activeDownloadStatus) {
+        // Any phase change needs a full render because status-specific
+        // controls differ even while both phases are active.
         await renderCardInto(container, userId);
         return;
       }
@@ -286,6 +305,7 @@ function stopPolling() {
     _pollTimer = null;
   }
   _activeDownloadId = null;
+  _activeDownloadStatus = null;
 }
 
 let _listenerWired = false;
@@ -329,7 +349,12 @@ function ensureListener() {
       const id = el.getAttribute('data-download-id');
       if (!id) return;
       try {
-        await pauseModelDownload(id);
+        const result = await pauseModelDownload(id);
+        if (result?.ok !== true) {
+          showErrorToast("Couldn't pause: the download is no longer pausable");
+          await renderCardInto(container, userId);
+          return;
+        }
         showSavedToast('Paused');
         await renderCardInto(container, userId);
       } catch (err) {
@@ -354,11 +379,34 @@ function ensureListener() {
       if (!id) return;
       if (!confirm('Cancel the download? The partial file will be deleted.')) return;
       try {
-        await cancelModelDownload(id);
+        const result = await cancelModelDownload(id);
+        if (result?.ok !== true) {
+          showErrorToast("Couldn't cancel: the download is no longer cancellable");
+          await renderCardInto(container, userId);
+          return;
+        }
         showSavedToast('Cancelled');
         await renderCardInto(container, userId);
       } catch (err) {
         showErrorToast(`Couldn't cancel: ${err?.message ?? 'unknown error'}`);
+      }
+      return;
+    }
+    if (action === 'embedded-dismiss-retired-download') {
+      const id = el.getAttribute('data-download-id');
+      if (!id) return;
+      if (!confirm('Dismiss this saved download? It will be marked cancelled, but legacy model files may remain on disk.')) return;
+      try {
+        const result = await cancelModelDownload(id);
+        if (result?.ok !== true) {
+          showErrorToast("Couldn't dismiss: the saved download changed");
+          await renderCardInto(container, userId);
+          return;
+        }
+        showSavedToast('Download dismissed. Review configured local-model storage if you need to reclaim legacy disk space.');
+        await renderCardInto(container, userId);
+      } catch (err) {
+        showErrorToast(`Couldn't dismiss: ${err?.message ?? 'unknown error'}`);
       }
       return;
     }

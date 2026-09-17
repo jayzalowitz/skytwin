@@ -1,6 +1,7 @@
 import { createLogger } from '@skytwin/core';
 import { mcpServerMetricsRepository } from '@skytwin/db';
 import { MetricsRollupService, sharedMetricsCollector } from '@skytwin/observability';
+import { runAdmitted } from './job-admission.js';
 
 const log = createLogger('worker:metrics-rollup');
 
@@ -9,6 +10,7 @@ const rollupService = new MetricsRollupService(sharedMetricsCollector, mcpServer
 export interface MetricsRollupJobDeps {
   /** Inject a different service for testing. */
   service?: MetricsRollupService;
+  signal?: AbortSignal;
 }
 
 /**
@@ -28,11 +30,12 @@ export async function runMetricsRollupJob(
   const svc = deps.service ?? rollupService;
 
   try {
-    const written = await svc.rollup();
+    const written = await runAdmitted(deps.signal, () => svc.rollup());
     if (written > 0) {
       log.info(`Metrics rollup: flushed ${written} server bucket(s) to DB`);
     }
   } catch (err) {
+    deps.signal?.throwIfAborted();
     log.warn('Metrics rollup job failed', {
       error: err instanceof Error ? err.message : String(err),
     });

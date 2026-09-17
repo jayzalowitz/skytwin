@@ -1,6 +1,7 @@
+import { canonicalizeProviderBaseUrl } from '@skytwin/shared-types';
 import type { ChatMessage, GenerateOptions } from '../types.js';
 import { splitSystemAndConversation, toMessages } from '../messages.js';
-import { validateBaseUrl } from '../url-validation.js';
+import { fetchCustomProviderUrl, type SafeProviderFetch } from '../url-validation.js';
 
 const DEFAULT_URL = 'https://generativelanguage.googleapis.com';
 
@@ -23,10 +24,10 @@ export async function generate(
   prompt: string | ChatMessage[],
   options: GenerateOptions & { baseUrl?: string } = {},
 ): Promise<string> {
-  const baseUrl = options.baseUrl || DEFAULT_URL;
-  if (options.baseUrl) validateBaseUrl(options.baseUrl, 'google');
+  const baseUrl = canonicalizeProviderBaseUrl(options.baseUrl) ?? DEFAULT_URL;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 30_000);
+  let customFetch: SafeProviderFetch | undefined;
 
   try {
     // Issue #149: pass through multi-turn history natively. System messages
@@ -40,9 +41,8 @@ export async function generate(
     );
     const contents = conversation.map(toGeminiContent);
 
-    const res = await fetch(
-      `${baseUrl}/v1beta/models/${encodeURIComponent(model)}:generateContent`,
-      {
+    const requestUrl = `${baseUrl}/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+    const requestInit = {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -59,8 +59,11 @@ export async function generate(
           },
         }),
         signal: controller.signal,
-      },
-    );
+      } satisfies RequestInit;
+    customFetch = options.baseUrl
+      ? await fetchCustomProviderUrl(requestUrl, 'google', requestInit)
+      : undefined;
+    const res = customFetch?.response ?? await fetch(requestUrl, requestInit);
 
     if (!res.ok) {
       const body = await res.text().catch(() => '');
@@ -73,5 +76,6 @@ export async function generate(
     return data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
   } finally {
     clearTimeout(timeout);
+    await customFetch?.close();
   }
 }

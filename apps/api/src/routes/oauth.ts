@@ -2,11 +2,18 @@ import { Router } from 'express';
 import { createHmac, timingSafeEqual, randomUUID } from 'crypto';
 import { createLogger } from '@skytwin/core';
 import { loadConfig } from '@skytwin/config';
-import { withTransaction } from '@skytwin/db';
+import { encryptColumn, readColumn, withTransaction } from '@skytwin/db';
+import type { OAuthTokenRowWithEncrypted } from '@skytwin/db';
 
 const log = createLogger('api:oauth');
 import {
   oauthRepository,
+  CredentialDispatchConflictError,
+  CredentialDisconnectInProgressError,
+  CredentialVaultLockedError,
+  CredentialConnectionAuthorityError,
+  credentialVaultMetaRepository,
+  OAuthAccountBindingConflictError,
   oauthPkcePendingRepository,
   oauthPendingSigninRepository,
   serviceCredentialRepository,
@@ -23,8 +30,10 @@ import {
   MICROSOFT_GRAPH_SCOPES,
 } from '@skytwin/connectors';
 import type { GoogleOAuthConfig, MicrosoftOAuthConfig } from '@skytwin/connectors';
+import { isAccountBackedIntegrationIdentifier } from '@skytwin/shared-types';
 import { sessionAuth } from '../middleware/session-auth.js';
 import { requireOwnership } from '../middleware/require-ownership.js';
+import { sharedKeyCache } from './credential-vault.js';
 
 /**
  * Secret used to HMAC-sign OAuth state. Reuses SESSION_SECRET (same secret
@@ -65,10 +74,7 @@ export const NEW_USER_RATE_LIMIT_MAX_BUCKETS = 5_000;
 const newUserRateBuckets = new Map<string, { count: number; resetAt: number }>();
 const pendingPollRateBuckets = new Map<string, { count: number; resetAt: number }>();
 
-function evictExpiredBuckets(
-  buckets: Map<string, { count: number; resetAt: number }>,
-  now: number,
-): void {
+function evictExpiredBuckets(buckets: Map<string, { count: number; resetAt: number }>, now: number): void {
   for (const [ip, bucket] of buckets) {
     if (bucket.resetAt <= now) buckets.delete(ip);
   }
@@ -103,17 +109,8 @@ function checkBucket(
   return { allowed: true, resetAt: bucket.resetAt };
 }
 
-export function checkNewUserRateLimit(
-  ip: string,
-  now: number = Date.now(),
-): { allowed: boolean; resetAt: number } {
-  return checkBucket(
-    newUserRateBuckets,
-    ip,
-    now,
-    NEW_USER_RATE_LIMIT_MAX,
-    NEW_USER_RATE_LIMIT_WINDOW_MS,
-  );
+export function checkNewUserRateLimit(ip: string, now: number = Date.now()): { allowed: boolean; resetAt: number } {
+  return checkBucket(newUserRateBuckets, ip, now, NEW_USER_RATE_LIMIT_MAX, NEW_USER_RATE_LIMIT_WINDOW_MS);
 }
 
 /**
@@ -122,17 +119,8 @@ export function checkNewUserRateLimit(
  * ?newUser=true bucket's tight 5/minute limit. A poll-friendly 120/min
  * leaves comfortable headroom for jitter and retries.
  */
-export function checkPendingPollRateLimit(
-  ip: string,
-  now: number = Date.now(),
-): { allowed: boolean; resetAt: number } {
-  return checkBucket(
-    pendingPollRateBuckets,
-    ip,
-    now,
-    PENDING_POLL_RATE_LIMIT_MAX,
-    PENDING_POLL_RATE_LIMIT_WINDOW_MS,
-  );
+export function checkPendingPollRateLimit(ip: string, now: number = Date.now()): { allowed: boolean; resetAt: number } {
+  return checkBucket(pendingPollRateBuckets, ip, now, PENDING_POLL_RATE_LIMIT_MAX, PENDING_POLL_RATE_LIMIT_WINDOW_MS);
 }
 
 /** Test helper — clears all rate-limit buckets between cases. */
@@ -156,6 +144,16 @@ interface GoogleUserInfo {
   verified_email?: boolean;
   name?: string;
   picture?: string;
+}
+
+/** Runtime boundary for provider userinfo subjects (TS casts are not validation). */
+export function validateProviderSubject(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const subject = raw.trim();
+  if (subject.length < 1 || subject.length > 512 || /[\u0000-\u001f\u007f]/.test(subject)) {
+    return null;
+  }
+  return subject;
 }
 
 async function fetchGoogleUserInfo(accessToken: string): Promise<GoogleUserInfo> {
@@ -247,6 +245,10 @@ interface ParsedState {
    * non-desktop flow.
    */
   pendingKey: string | null;
+  /** Durable provider epoch captured before leaving for the OAuth provider. */
+  connectionGeneration: string | null;
+  /** One-shot DB-issued authority for an account-unknown sign-in flow. */
+  newUserAuthorizationId: string | null;
 }
 
 /**
@@ -272,9 +274,7 @@ export function isValidPendingKey(value: string): boolean {
 }
 
 function signStatePayload(payload: string, expiresAtMs: number): string {
-  const mac = createHmac('sha256', STATE_SECRET)
-    .update(`${payload}.${expiresAtMs}`)
-    .digest('hex');
+  const mac = createHmac('sha256', STATE_SECRET).update(`${payload}.${expiresAtMs}`).digest('hex');
   return `${STATE_VERSION}.${payload}.${expiresAtMs}.${mac}`;
 }
 
@@ -296,17 +296,12 @@ function parseSignedState(state: string): ParsedState {
     throw new InvalidStateError('expiry not a number');
   }
 
-  const expectedMac = createHmac('sha256', STATE_SECRET)
-    .update(`${payload}.${expiresAtMs}`)
-    .digest('hex');
+  const expectedMac = createHmac('sha256', STATE_SECRET).update(`${payload}.${expiresAtMs}`).digest('hex');
 
   // Constant-time compare so we don't leak the secret one byte at a time.
   const providedBuf = Buffer.from(providedMac, 'hex');
   const expectedBuf = Buffer.from(expectedMac, 'hex');
-  if (
-    providedBuf.length !== expectedBuf.length ||
-    !timingSafeEqual(providedBuf, expectedBuf)
-  ) {
+  if (providedBuf.length !== expectedBuf.length || !timingSafeEqual(providedBuf, expectedBuf)) {
     throw new InvalidStateError('signature mismatch');
   }
 
@@ -329,6 +324,8 @@ function parseSignedState(state: string): ParsedState {
   // table column is TEXT for portability; the constraint lives in
   // application code).
   let pendingKey: string | null = null;
+  let connectionGeneration: string | null = null;
+  let newUserAuthorizationId: string | null = null;
   for (const t of rawTags) {
     if (t.startsWith('next=')) {
       const candidate = t.slice('next='.length);
@@ -340,6 +337,12 @@ function parseSignedState(state: string): ParsedState {
       if (isValidPendingKey(candidate)) {
         pendingKey = candidate;
       }
+    } else if (t.startsWith('cg=')) {
+      const candidate = t.slice('cg='.length);
+      if (UUID_V4_RE.test(candidate)) connectionGeneration = candidate;
+    } else if (t.startsWith('ng=')) {
+      const candidate = t.slice('ng='.length);
+      if (UUID_V4_RE.test(candidate)) newUserAuthorizationId = candidate;
     }
   }
   return {
@@ -348,6 +351,8 @@ function parseSignedState(state: string): ParsedState {
     newAccount: tags.has('new'),
     nextHash,
     pendingKey,
+    connectionGeneration,
+    newUserAuthorizationId,
   };
 }
 
@@ -363,12 +368,9 @@ export const _stateTtlMsForTests = STATE_TTL_MS;
  * in the dashboard.
  */
 /**
- * Source of the Google OAuth config currently in use. Drives the
- * tier-gating below: only `userSupplied` configs can request the
- * restricted Gmail scopes, because the bundled client is intentionally
- * NOT submitted for Google's restricted-scope security assessment
- * (that's a $15k–$50k annual third-party CASA audit we don't want to
- * pay for at launch). The same OAuth code path serves both tiers.
+ * Source of the experimental Google OAuth config currently in use. This
+ * distinction remains for minimum-scope enforcement in source development;
+ * the supported preview keeps the entire route family disabled.
  */
 type GoogleConfigSource = 'user-supplied' | 'bundled' | 'unset';
 
@@ -377,20 +379,17 @@ interface ResolvedGoogleConfig extends GoogleOAuthConfig {
 }
 
 /**
- * Build the Google OAuth config. Three sources, in priority order:
+ * Build the experimental Google OAuth config. Three sources, in priority order:
  *   1. User-supplied credentials in the DB (Setup page) — wins. These
  *      come from a Google Cloud OAuth client the user created in their
- *      own GCP project. Google does NOT require app verification for
- *      a user's own OAuth client used only by themselves, so this is
- *      how we light up Gmail (restricted-scope) without a SkyTwin-side
- *      security assessment.
+ *      own GCP project. This path remains unsupported until the OAuth
+ *      generation, transaction, session, scope, and custody gates land.
  *   2. Confidential-client env vars (`GOOGLE_CLIENT_ID`/`_SECRET`) —
  *      the self-hosted/ops path. Operator-owned clients also count as
  *      user-supplied for tier-gating purposes.
- *   3. PKCE-only default client_id baked into the desktop bundle
- *      (`SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID`). The SkyTwin team owns
- *      this client; it is verified by Google for identity + calendar
- *      scopes only, so the bundled flow CANNOT request Gmail.
+ *   3. An explicitly injected PKCE-only default client_id
+ *      (`SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID`). Official packaged previews
+ *      forcibly clear this value and ship no project-owned Google client.
  *
  * `clientSecret` is the literal empty string in PKCE mode — downstream
  * code keys on `secret === ''` to choose the PKCE token-exchange
@@ -423,10 +422,9 @@ async function resolveGoogleConfig(): Promise<ResolvedGoogleConfig> {
     // No service_credentials table yet — fall through.
   }
 
-  // Layer 3: PKCE-only default (desktop bundle). Used iff neither env
-  // vars nor DB supplied a clientId. Marked source: 'bundled' so the
-  // /authorize handler can reject ?include=gmail requests until the
-  // user wires their own OAuth client via Setup.
+  // Layer 3: legacy PKCE-only default label. Official packaged previews
+  // clear this input; it remains solely for explicit experimental source
+  // testing and preserves the narrower scope behavior.
   if (!clientId) {
     const bundled = process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'] ?? '';
     if (bundled) {
@@ -464,13 +462,31 @@ export function resolveMicrosoftEnvConfig(env: NodeJS.ProcessEnv = process.env):
 
   const envClientId = env['MICROSOFT_CLIENT_ID'] ?? '';
   if (envClientId) {
-    return { clientId: envClientId, clientSecret: env['MICROSOFT_CLIENT_SECRET'] ?? '', redirectUri, tenant, source: 'user-supplied' };
+    return {
+      clientId: envClientId,
+      clientSecret: env['MICROSOFT_CLIENT_SECRET'] ?? '',
+      redirectUri,
+      tenant,
+      source: 'user-supplied',
+    };
   }
   const bundled = env['SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID'] ?? '';
   if (bundled) {
-    return { clientId: bundled, clientSecret: '', redirectUri, tenant, source: 'bundled' };
+    return {
+      clientId: bundled,
+      clientSecret: '',
+      redirectUri,
+      tenant,
+      source: 'bundled',
+    };
   }
-  return { clientId: '', clientSecret: '', redirectUri, tenant, source: 'unset' };
+  return {
+    clientId: '',
+    clientSecret: '',
+    redirectUri,
+    tenant,
+    source: 'unset',
+  };
 }
 
 /**
@@ -513,30 +529,136 @@ export function providerSupportsRevoke(provider: string): boolean {
   return provider === 'google';
 }
 
+export type DisconnectTokenResult =
+  | { success: true; token: string | null }
+  | {
+      success: false;
+      error: 'credential_vault_locked' | 'credential_decrypt_failed';
+    };
+
+/** Materialize the exact fenced token without treating ciphertext as a token. */
+export function resolveDisconnectToken(row: OAuthTokenRowWithEncrypted, key: Buffer | null): DisconnectTokenResult {
+  // Once either encrypted representation exists, the row is vault-owned as
+  // a whole. Never fall back to a leftover plaintext sibling: it may be an
+  // older grant whose invalidation says nothing about the encrypted grant.
+  const vaultOwned = Boolean(row.encrypted_refresh_token || row.encrypted_access_token);
+  const refresh = readColumn(row.encrypted_refresh_token, vaultOwned ? null : row.refresh_token, key);
+  if (!refresh.success) {
+    return {
+      success: false,
+      error: refresh.error === 'vault_locked' ? 'credential_vault_locked' : 'credential_decrypt_failed',
+    };
+  }
+  if (refresh.value) return { success: true, token: refresh.value };
+
+  const access = readColumn(row.encrypted_access_token, vaultOwned ? null : row.access_token, key);
+  if (!access.success) {
+    return {
+      success: false,
+      error: access.error === 'vault_locked' ? 'credential_vault_locked' : 'credential_decrypt_failed',
+    };
+  }
+  return { success: true, token: access.value || null };
+}
+
+async function resolveDisconnectTokenForUser(
+  userId: string,
+  row: OAuthTokenRowWithEncrypted,
+): Promise<DisconnectTokenResult> {
+  const vaultOwned = Boolean(row.encrypted_refresh_token || row.encrypted_access_token);
+  if (!vaultOwned) return resolveDisconnectToken(row, null);
+  const meta = await credentialVaultMetaRepository.getForUser(userId);
+  const key = sharedKeyCache.get(userId);
+  if (
+    !meta ||
+    meta.vault_state !== 'unlocked' ||
+    !key ||
+    sharedKeyCache.getGeneration(userId) !== meta.vault_generation
+  ) {
+    return { success: false, error: 'credential_vault_locked' };
+  }
+  return resolveDisconnectToken(row, key);
+}
+
+async function saveConnectedToken(input: {
+  userId: string;
+  provider: string;
+  accountEmail: string;
+  accountProviderId: string | null;
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: Date;
+  scopes: string[];
+  expectedConnectionGeneration?: string;
+  newUserAuthorization?: { id: string; claimGeneration: string };
+}): Promise<void> {
+  const meta = await credentialVaultMetaRepository.getForUser(input.userId);
+  if (!meta) {
+    await oauthRepository.saveTokenForAccount({
+      ...input,
+      credentialStorage: { mode: 'plaintext' },
+    });
+    return;
+  }
+  const key = sharedKeyCache.get(input.userId);
+  const cachedGeneration = sharedKeyCache.getGeneration(input.userId);
+  if (!key || meta.vault_state !== 'unlocked' || cachedGeneration !== meta.vault_generation) {
+    throw new CredentialVaultLockedError();
+  }
+  await oauthRepository.saveTokenForAccount({
+    ...input,
+    credentialStorage: {
+      mode: 'encrypted',
+      encryptedAccessToken: encryptColumn(input.accessToken, key),
+      encryptedRefreshToken: encryptColumn(input.refreshToken, key),
+      keyVersion: meta.current_key_version,
+      vaultGeneration: cachedGeneration,
+    },
+  });
+}
+
+function handleCredentialSaveConflict(
+  error: unknown,
+  res: { status(code: number): { json(body: unknown): unknown } },
+): boolean {
+  if (error instanceof CredentialDispatchConflictError) {
+    res.status(409).json({
+      error: error.message,
+      code: error.code,
+      retryAfter: error.retryAfter?.toISOString() ?? null,
+    });
+    return true;
+  }
+  if (error instanceof CredentialDisconnectInProgressError) {
+    res.status(409).json({ error: error.message, code: error.code });
+    return true;
+  }
+  if (error instanceof CredentialVaultLockedError) {
+    res.status(423).json({ error: error.message, code: error.code });
+    return true;
+  }
+  if (error instanceof CredentialConnectionAuthorityError) {
+    res.status(409).json({ error: error.message, code: error.code });
+    return true;
+  }
+  return false;
+}
+
 /**
- * Scope tiers. The split exists for two reasons:
+ * Experimental source-development scope tiers. The split exists to keep
+ * requests minimal while the supported preview rejects Google entirely.
  *
- *   1. Google classifies Gmail's `readonly`/`modify` as **restricted**
- *      scopes — requesting them in a published OAuth client means
- *      passing the annual CASA Tier 2/3 security assessment ($15k–$50k,
- *      4–8 weeks). Calendar's `readonly`/`events` are **sensitive** but
- *      not restricted — just normal app review, no assessor fee.
+ *   1. Google classifies Gmail's `readonly`/`modify` as restricted scopes,
+ *      while Calendar's `readonly`/`events` are sensitive. The applicable
+ *      review and assessment requirements must be verified before support.
  *
  *   2. Most users only need calendar + identity to get value from the
  *      twin (scheduling, meeting suggestions). Forcing the Gmail
  *      consent prompt on those users is unnecessary friction even when
- *      we *do* have the bundled client verified for Gmail.
+ *      a future supported client can request them.
  *
- * Stage 1 (now): the bundled SkyTwin-team client is verified for
- *   IDENTITY + CALENDAR. Users who want Gmail features paste their own
- *   OAuth credentials into Setup; their own GCP project + their own
- *   email as a test user → no app verification needed.
- *
- * Stage 2 (post-launch, when revenue funds the audit): submit the
- *   bundled client through CASA. The code below stays the same — the
- *   gate just turns into "always allow Gmail with bundled" once Google
- *   updates the verification status. Document the rollout in
- *   docs/google-verification.md.
+ * No client or scope set in this helper is a release-readiness claim. See
+ * docs/google-verification.md for the deferred architecture and approval work.
  */
 const IDENTITY_SCOPES_LIST = ['openid', 'email', 'profile'];
 
@@ -557,10 +679,10 @@ const CALENDAR_SCOPES_LIST = [
  * UI (so the dashboard can show "Connect Gmail" as a follow-up CTA
  * rather than silently lying about coverage).
  */
-export function resolveRequestedScopes(opts: {
-  source: GoogleConfigSource;
-  includeGmail: boolean;
-}): { scopes: string[]; skipped: Array<{ capability: 'gmail'; reason: string }> } {
+export function resolveRequestedScopes(opts: { source: GoogleConfigSource; includeGmail: boolean }): {
+  scopes: string[];
+  skipped: Array<{ capability: 'gmail'; reason: string }>;
+} {
   const scopes = [...IDENTITY_SCOPES_LIST, ...CALENDAR_SCOPES_LIST];
   const skipped: Array<{ capability: 'gmail'; reason: string }> = [];
 
@@ -624,6 +746,37 @@ async function consumePkceVerifier(state: string): Promise<string | undefined> {
  */
 export function createOAuthRouter(): Router {
   const router = Router();
+
+  // The release-candidate surface is account-free by default. Keep this
+  // guard ahead of both authentication and every provider-specific handler so
+  // stale callbacks, pending handoffs, and stored token rows cannot revive a
+  // disabled integration. Source developers must opt in explicitly; client
+  // credentials alone are never treated as authority to enable an account.
+  router.use((req, res, next) => {
+    const rawProvider = req.path.split('/').find((segment) => segment.length > 0);
+    let provider = rawProvider;
+    try {
+      provider = rawProvider === undefined ? undefined : decodeURIComponent(rawProvider);
+    } catch {
+      // Leave malformed encoding to Express's route handling. It cannot equal
+      // the blocked provider token without first decoding successfully.
+    }
+    if (!provider || !isAccountBackedIntegrationIdentifier(provider)) {
+      next();
+      return;
+    }
+    if (loadConfig().googleConnectionMode === 'experimental') {
+      next();
+      return;
+    }
+    const microsoft = provider.toLowerCase() !== 'google';
+    res.status(503).json({
+      error: `${microsoft ? 'Microsoft account' : 'Google'} connection is unavailable in this preview.`,
+      code: microsoft ? 'MICROSOFT_CONNECTION_DISABLED' : 'GOOGLE_CONNECTION_DISABLED',
+      available: false,
+      mode: 'disabled',
+    });
+  });
 
   // All OAuth management endpoints require an authenticated user except:
   //   - /google/callback                  public (browser redirect from Google)
@@ -708,7 +861,7 @@ export function createOAuthRouter(): Router {
         res.status(503).json({
           error:
             'Google sign-in is not configured. ' +
-            "Open the Connect Gmail walkthrough — the same five-step flow sets up Google sign-in for this build, " +
+            'Open the Connect Gmail walkthrough — the same five-step flow sets up Google sign-in for this build, ' +
             'or rebuild the desktop with SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID set.',
           code: 'NO_GOOGLE_CLIENT_CONFIGURED',
           help: '#/connect-gmail',
@@ -723,9 +876,8 @@ export function createOAuthRouter(): Router {
       // dashboard can render a "Connect Gmail" CTA. The caller can
       // still get Gmail today by pasting their own OAuth credentials
       // into Setup; that's the `source === 'user-supplied'` path.
-      const includeGmail = req.query['include'] === 'gmail'
-        || req.query['scopes'] === 'gmail'
-        || req.query['gmail'] === 'true';
+      const includeGmail =
+        req.query['include'] === 'gmail' || req.query['scopes'] === 'gmail' || req.query['gmail'] === 'true';
 
       const { scopes, skipped } = resolveRequestedScopes({
         source: googleConfig.source,
@@ -756,8 +908,7 @@ export function createOAuthRouter(): Router {
         return;
       }
 
-      const queryUserId =
-        typeof req.query['userId'] === 'string' ? req.query['userId'] : undefined;
+      const queryUserId = typeof req.query['userId'] === 'string' ? req.query['userId'] : undefined;
       const newAccount = req.query['newAccount'] === 'true';
       const desktop = req.query['desktop'] === 'true';
       // Optional dashboard-deep-link target after the OAuth round-trip.
@@ -766,16 +917,13 @@ export function createOAuthRouter(): Router {
       // can't be coerced into redirecting to a route that doesn't exist
       // (or worse, an attacker-controlled external URL).
       const nextQuery = typeof req.query['next'] === 'string' ? req.query['next'] : undefined;
-      const nextTagValue = nextQuery && Object.prototype.hasOwnProperty.call(NEXT_HASH_ROUTES, nextQuery)
-        ? nextQuery
-        : undefined;
+      const nextTagValue =
+        nextQuery && Object.prototype.hasOwnProperty.call(NEXT_HASH_ROUTES, nextQuery) ? nextQuery : undefined;
       // Pollable handoff key for desktop new-user flows. Validated to
       // UUIDv4 shape up-front; anything else is dropped silently so a
       // malformed query param can't poison state.
       const pendingKeyQuery = typeof req.query['pendingKey'] === 'string' ? req.query['pendingKey'] : undefined;
-      const pendingKey = pendingKeyQuery && isValidPendingKey(pendingKeyQuery)
-        ? pendingKeyQuery
-        : undefined;
+      const pendingKey = pendingKeyQuery && isValidPendingKey(pendingKeyQuery) ? pendingKeyQuery : undefined;
 
       let stateHead: string;
       if (newUser) {
@@ -783,20 +931,30 @@ export function createOAuthRouter(): Router {
       } else {
         const userId = queryUserId ?? req.authenticatedUserId;
         if (!userId) {
-          res.status(400).json({ error: 'Missing userId. Pass ?userId=… or ?newUser=true.' });
+          res.status(400).json({
+            error: 'Missing userId. Pass ?userId=… or ?newUser=true.',
+          });
           return;
         }
         stateHead = userId;
       }
 
+      const expiresAtMs = Date.now() + STATE_TTL_MS;
       const tags: string[] = [];
+      if (stateHead === 'new') {
+        const authorizationId = await oauthRepository.issueNewUserAuthorization('google', new Date(expiresAtMs));
+        tags.push(`ng=${authorizationId}`);
+      } else {
+        const connectionGeneration = await oauthRepository.getOrCreateConnectionAuthority(stateHead, 'google');
+        tags.push(`cg=${connectionGeneration}`);
+      }
       if (desktop) tags.push('desktop');
       if (newAccount) tags.push('new');
       if (nextTagValue) tags.push(`next=${nextTagValue}`);
       if (pendingKey) tags.push(`key=${pendingKey}`);
 
       const payload = [stateHead, ...tags].join('|');
-      const state = signStatePayload(payload, Date.now() + STATE_TTL_MS);
+      const state = signStatePayload(payload, expiresAtMs);
 
       // PKCE mode when no client_secret. Generate verifier+challenge,
       // stash verifier server-side keyed on the signed state token, send
@@ -812,6 +970,14 @@ export function createOAuthRouter(): Router {
       const url = generateAuthUrl(googleConfig, scopes, state, codeChallenge);
       res.json({ url });
     } catch (error) {
+      if (error instanceof CredentialDispatchConflictError) {
+        res.status(409).json({
+          error: error.message,
+          code: error.code,
+          retryAfter: error.retryAfter?.toISOString() ?? null,
+        });
+        return;
+      }
       next(error);
     }
   });
@@ -845,6 +1011,20 @@ export function createOAuthRouter(): Router {
         });
         return;
       }
+      if (parsed.userId && !parsed.connectionGeneration) {
+        res.status(409).json({
+          error: 'This OAuth authorization flow predates the current connection authority. Start again.',
+          code: 'credential_connection_stale',
+        });
+        return;
+      }
+      if (!parsed.userId && !parsed.newUserAuthorizationId) {
+        res.status(409).json({
+          error: 'This sign-in flow predates the current connection authority. Start again.',
+          code: 'credential_connection_stale',
+        });
+        return;
+      }
 
       const googleConfig = await resolveGoogleConfig();
       // Recover the PKCE verifier stashed at /authorize. Consume-on-read
@@ -857,8 +1037,7 @@ export function createOAuthRouter(): Router {
         // stale browser tab where /authorize ran against a different
         // process (Electron restart, etc.).
         res.status(400).json({
-          error:
-            'OAuth verifier expired or missing. Re-start the sign-in flow from the dashboard.',
+          error: 'OAuth verifier expired or missing. Re-start the sign-in flow from the dashboard.',
         });
         return;
       }
@@ -868,13 +1047,18 @@ export function createOAuthRouter(): Router {
       // the actual account email (rather than guessing from state) and
       // optionally materialize a user.
       const userInfo = await fetchGoogleUserInfo(tokenSet.accessToken);
-      const accountEmail = typeof userInfo.email === 'string' ? userInfo.email.trim() : '';
-      const accountProviderId = userInfo.id;
+      const accountEmail = typeof userInfo.email === 'string' ? userInfo.email.trim().toLowerCase() : '';
+      const accountProviderId = validateProviderSubject(userInfo.id);
 
       if (!accountEmail) {
         res.status(502).json({
-          error:
-            'Google userinfo did not include an email. Ensure the authorize URL requests "openid email".',
+          error: 'Google userinfo did not include an email. Ensure the authorize URL requests "openid email".',
+        });
+        return;
+      }
+      if (!accountProviderId) {
+        res.status(502).json({
+          error: 'Google userinfo did not include a valid stable account subject.',
         });
         return;
       }
@@ -894,40 +1078,33 @@ export function createOAuthRouter(): Router {
       const NEW_USER_TIER = 'observer';
 
       let userId = parsed.userId;
+      let newUserAuthorization: { id: string; claimGeneration: string } | undefined;
       if (!userId) {
-        // Auto-create or attach to a user keyed on the verified Google email.
-        const existing = await userRepository.findByEmail(accountEmail);
-        if (existing) {
-          userId = existing.id;
-        } else {
-          const created = await userRepository.create({
-            email: accountEmail,
-            name: userInfo.name ?? accountEmail,
-            trustTier: NEW_USER_TIER,
-          });
-          userId = created.id;
-        }
+        // Claim, tombstone-check, and create/lock the verified owner as one
+        // serializable DB operation. A purge that wins first makes this
+        // pre-purge authorization stale without affecting other accounts.
+        const claimed = await oauthRepository.claimNewUserAuthorization({
+          authorizationId: parsed.newUserAuthorizationId!,
+          provider: 'google',
+          accountEmail,
+          userName: userInfo.name ?? accountEmail,
+          trustTier: NEW_USER_TIER,
+        });
+        userId = claimed.userId;
+        newUserAuthorization = {
+          id: parsed.newUserAuthorizationId!,
+          claimGeneration: claimed.claimGeneration,
+        };
       } else {
-        // Validate that the userId in state actually exists; if not, fall
-        // back to auto-create so we don't leave an orphaned token row.
+        // A known-owner state is never authority to recreate a deleted user.
         const existing = await userRepository.findById(userId);
         if (!existing) {
-          const byEmail = await userRepository.findByEmail(accountEmail);
-          if (byEmail) {
-            userId = byEmail.id;
-          } else {
-            const created = await userRepository.create({
-              email: accountEmail,
-              name: userInfo.name ?? accountEmail,
-              trustTier: NEW_USER_TIER,
-            });
-            userId = created.id;
-          }
+          throw new CredentialConnectionAuthorityError();
         }
       }
 
       // Persist tokens keyed on (user, provider, account_email).
-      await oauthRepository.saveTokenForAccount({
+      await saveConnectedToken({
         userId,
         provider: 'google',
         accountEmail,
@@ -936,6 +1113,8 @@ export function createOAuthRouter(): Router {
         refreshToken: tokenSet.refreshToken,
         expiresAt: tokenSet.expiresAt,
         scopes: tokenSet.scopes,
+        ...(parsed.connectionGeneration ? { expectedConnectionGeneration: parsed.connectionGeneration } : {}),
+        ...(newUserAuthorization ? { newUserAuthorization } : {}),
       });
 
       // Profile sync (#486): capture the user's language (Google locale) and
@@ -1049,6 +1228,11 @@ export function createOAuthRouter(): Router {
       // The dashboard hash router reads the bit before `?` as the route.
       res.redirect(`${webBase}/?${topLevel}${hashRoute}?${hashQuery}`);
     } catch (error) {
+      if (error instanceof OAuthAccountBindingConflictError) {
+        res.status(409).json({ error: error.code });
+        return;
+      }
+      if (handleCredentialSaveConflict(error, res)) return;
       next(error);
     }
   });
@@ -1091,7 +1275,8 @@ export function createOAuthRouter(): Router {
       // State carries only the userId — connect-for-existing-user, no tags.
       // Reuses the same HMAC signing as the Google flow so /microsoft/callback
       // can't be spoofed into attaching an account to another user.
-      const state = signStatePayload(userId, Date.now() + STATE_TTL_MS);
+      const connectionGeneration = await oauthRepository.getOrCreateConnectionAuthority(userId, 'microsoft');
+      const state = signStatePayload(`${userId}|cg=${connectionGeneration}`, Date.now() + STATE_TTL_MS);
 
       let codeChallenge: string | undefined;
       if (!config.clientSecret) {
@@ -1132,13 +1317,24 @@ export function createOAuthRouter(): Router {
       try {
         parsed = parseSignedState(state);
       } catch (err) {
-        res.status(400).json({ error: err instanceof InvalidStateError ? err.message : 'Invalid state' });
+        res.status(400).json({
+          error: err instanceof InvalidStateError ? err.message : 'Invalid state',
+        });
         return;
       }
 
       const userId = parsed.userId;
       if (!userId) {
-        res.status(400).json({ error: 'Microsoft connect requires an existing user in the signed state.' });
+        res.status(400).json({
+          error: 'Microsoft connect requires an existing user in the signed state.',
+        });
+        return;
+      }
+      if (!parsed.connectionGeneration) {
+        res.status(409).json({
+          error: 'This OAuth authorization flow predates the current connection authority. Start again.',
+          code: 'credential_connection_stale',
+        });
         return;
       }
 
@@ -1155,9 +1351,16 @@ export function createOAuthRouter(): Router {
       const tokenSet = await microsoftOAuth.exchangeCode(config, code, codeVerifier);
       const userInfo = await fetchMicrosoftUserInfo(tokenSet.accessToken);
       const accountEmail = userInfo.email.trim();
+      const accountProviderId = validateProviderSubject(userInfo.id);
       if (!accountEmail) {
         res.status(502).json({
           error: 'Microsoft Graph /me returned no mail or userPrincipalName — cannot key the account.',
+        });
+        return;
+      }
+      if (!accountProviderId) {
+        res.status(502).json({
+          error: 'Microsoft Graph /me did not include a valid stable account subject.',
         });
         return;
       }
@@ -1170,22 +1373,31 @@ export function createOAuthRouter(): Router {
         return;
       }
 
-      await oauthRepository.saveTokenForAccount({
+      await saveConnectedToken({
         userId,
         provider: 'microsoft',
         accountEmail,
-        accountProviderId: userInfo.id,
+        accountProviderId,
         accessToken: tokenSet.accessToken,
         refreshToken: tokenSet.refreshToken,
         expiresAt: tokenSet.expiresAt,
         scopes: tokenSet.scopes,
+        ...(parsed.connectionGeneration ? { expectedConnectionGeneration: parsed.connectionGeneration } : {}),
       });
 
       const webBase = process.env['WEB_BASE_URL'] ?? `http://localhost:${process.env['WEB_PORT'] ?? '3200'}`;
       const topLevel = new URLSearchParams({ userId }).toString();
-      const hashQuery = new URLSearchParams({ connected: 'microsoft', account: accountEmail }).toString();
+      const hashQuery = new URLSearchParams({
+        connected: 'microsoft',
+        account: accountEmail,
+      }).toString();
       res.redirect(`${webBase}/?${topLevel}#/?${hashQuery}`);
     } catch (error) {
+      if (error instanceof OAuthAccountBindingConflictError) {
+        res.status(409).json({ error: error.code });
+        return;
+      }
+      if (handleCredentialSaveConflict(error, res)) return;
       next(error);
     }
   });
@@ -1201,9 +1413,9 @@ export function createOAuthRouter(): Router {
    * **Security model.** Possession of the pendingKey IS the
    * authorization. The endpoint:
    *   1. Does NOT just return the userId — that would chain with the
-   *      pre-existing `POST /api/sessions` (which accepts any userId
-   *      from a localhost caller) to make a leaked key worth a 7-day
-   *      session token. Instead, this endpoint mints the session
+   *      `POST /api/sessions` pairing flow (which requires a pre-existing
+   *      real session) to make a leaked key worth a second credential.
+   *      Instead, this endpoint mints the initial session
    *      itself, returning a fresh token. The wizard stashes the
    *      token; subsequent API calls flow through `Authorization:
    *      Bearer …` exactly like the QR-paired mobile flow.
@@ -1325,8 +1537,7 @@ export function createOAuthRouter(): Router {
     try {
       const { provider } = req.params;
       const userId =
-        (typeof req.query['userId'] === 'string' ? req.query['userId'] : undefined) ??
-        req.authenticatedUserId;
+        (typeof req.query['userId'] === 'string' ? req.query['userId'] : undefined) ?? req.authenticatedUserId;
       if (!userId) {
         res.status(400).json({ error: 'Missing userId' });
         return;
@@ -1394,11 +1605,20 @@ export function createOAuthRouter(): Router {
       }
 
       const decodedEmail = decodeURIComponent(accountEmail);
-      const token = await oauthRepository.getTokenByAccount(userId, provider, decodedEmail);
-      if (!token) {
+      const begun = await oauthRepository.beginDisconnect(userId, provider, decodedEmail);
+      if (begun.status === 'not_found') {
         res.status(404).json({ error: 'Account not connected.' });
         return;
       }
+      if (begun.status === 'pending') {
+        res.status(409).json({
+          error: 'Credential disconnect is pending an active request.',
+          code: 'credential_dispatch_pending',
+          retryAfter: begun.retryAfter?.toISOString() ?? null,
+        });
+        return;
+      }
+      const token = begun.accounts[0]!;
 
       // Google docs: revoking the refresh_token invalidates the entire
       // grant; revoking only the access_token still leaves the long-lived
@@ -1407,16 +1627,45 @@ export function createOAuthRouter(): Router {
       // ONLY revoke for providers with a revoke endpoint — see
       // providerSupportsRevoke; for Microsoft, deleting the row is the
       // disconnect (revoking there would leak the token to Google).
-      const tokenToRevoke = token.refresh_token ?? token.access_token;
-      if (providerSupportsRevoke(provider) && tokenToRevoke) {
-        try {
-          await revokeToken(tokenToRevoke);
-        } catch {
-          // Already revoked / expired — proceed with local cleanup.
+      if (providerSupportsRevoke(provider)) {
+        const resolved = await resolveDisconnectTokenForUser(userId, token);
+        if (!resolved.success) {
+          res.status(resolved.error === 'credential_vault_locked' ? 423 : 500).json({
+            error:
+              resolved.error === 'credential_vault_locked'
+                ? 'Unlock the credential vault before disconnecting this account.'
+                : 'The stored credential could not be decrypted for revocation.',
+            code: resolved.error,
+          });
+          return;
+        }
+        if (resolved.token) {
+          try {
+            await revokeToken(resolved.token);
+          } catch {
+            // The row remains durably fenced. A later retry can converge only
+            // after the provider proves the old credential is unusable.
+            res.status(502).json({
+              error: 'Provider revocation could not be confirmed; disconnect remains pending.',
+              code: 'credential_revoke_pending',
+            });
+            return;
+          }
         }
       }
-      const removed = await oauthRepository.deleteAccount(userId, provider, decodedEmail);
-      res.json({ status: removed ? 'disconnected' : 'not_found', provider, accountEmail: decodedEmail });
+      const removed = (await oauthRepository.completeDisconnect(userId, provider, begun.accounts)) > 0;
+      if (!removed) {
+        res.status(409).json({
+          error: 'Credential changed while disconnect was in progress.',
+          code: 'credential_dispatch_conflict',
+        });
+        return;
+      }
+      res.json({
+        status: removed ? 'disconnected' : 'not_found',
+        provider,
+        accountEmail: decodedEmail,
+      });
     } catch (error) {
       next(error);
     }
@@ -1433,8 +1682,7 @@ export function createOAuthRouter(): Router {
     try {
       const { provider } = req.params;
       const userId =
-        (typeof req.body?.['userId'] === 'string' ? req.body['userId'] : undefined) ??
-        req.authenticatedUserId;
+        (typeof req.body?.['userId'] === 'string' ? req.body['userId'] : undefined) ?? req.authenticatedUserId;
       if (!userId) {
         res.status(400).json({ error: 'Missing userId' });
         return;
@@ -1445,7 +1693,16 @@ export function createOAuthRouter(): Router {
         return;
       }
 
-      const accounts = await oauthRepository.listAccountsForUser(userId, provider);
+      const begun = await oauthRepository.beginDisconnect(userId, provider);
+      if (begun.status === 'pending') {
+        res.status(409).json({
+          error: 'Credential disconnect is pending an active request.',
+          code: 'credential_dispatch_pending',
+          retryAfter: begun.retryAfter?.toISOString() ?? null,
+        });
+        return;
+      }
+      const accounts = begun.status === 'ready' ? begun.accounts : [];
       // Google supports server-side token revocation; Microsoft Entra has no
       // equivalent token-revoke endpoint, so for Microsoft we just drop the
       // stored rows (deleting the token is the disconnect).
@@ -1453,25 +1710,59 @@ export function createOAuthRouter(): Router {
         // Revoke each connected account in turn, then drop all rows. Prefer
         // refresh_token (invalidates the full grant); access_token alone
         // leaves the grant active per Google's revocation semantics.
+        const resolvedTokens: string[] = [];
         for (const acct of accounts) {
-          const tokenToRevoke = acct.refresh_token ?? acct.access_token;
-          if (!tokenToRevoke) continue;
+          const resolved = await resolveDisconnectTokenForUser(userId, acct);
+          if (!resolved.success) {
+            res.status(resolved.error === 'credential_vault_locked' ? 423 : 500).json({
+              error:
+                resolved.error === 'credential_vault_locked'
+                  ? 'Unlock the credential vault before disconnecting this provider.'
+                  : 'A stored credential could not be decrypted for revocation.',
+              code: resolved.error,
+            });
+            return;
+          }
+          if (resolved.token) resolvedTokens.push(resolved.token);
+        }
+        for (const tokenToRevoke of resolvedTokens) {
           try {
             await revokeToken(tokenToRevoke);
           } catch {
-            // Revocation can fail if a token is already expired — continue.
+            res.status(502).json({
+              error: 'Provider revocation could not be confirmed; disconnect remains pending.',
+              code: 'credential_revoke_pending',
+            });
+            return;
           }
         }
       }
-      await oauthRepository.deleteAllForProvider(userId, provider);
+      const deleted =
+        begun.status === 'ready' ? await oauthRepository.completeDisconnect(userId, provider, begun.accounts) : 0;
+      if (begun.status === 'ready' && deleted !== accounts.length) {
+        res.status(409).json({
+          error: 'Credential changed while disconnect was in progress.',
+          code: 'credential_dispatch_conflict',
+        });
+        return;
+      }
 
       res.json({
         status: 'disconnected',
         provider,
         // Microsoft has no revoke endpoint, so for it `revoked` is always 0;
         // `deleted` reflects the rows dropped for either provider.
-        revoked: providerSupportsRevoke(provider) ? accounts.length : 0,
-        deleted: accounts.length,
+        revoked: providerSupportsRevoke(provider)
+          ? accounts.filter((account) =>
+              Boolean(
+                account.encrypted_refresh_token ||
+                account.refresh_token ||
+                account.encrypted_access_token ||
+                account.access_token,
+              ),
+            ).length
+          : 0,
+        deleted,
       });
     } catch (error) {
       next(error);

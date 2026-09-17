@@ -1,5 +1,7 @@
 import { getPool, closePool, withTransaction } from '../connection.js';
 import { seedDemoShowcase } from './demo-showcase.js';
+import { upsertSourceDemoUser } from './source-demo-user.js';
+import { cleanupLegacyFlatDecisions } from './legacy-decision-cleanup.js';
 
 /**
  * Seed the database with sample data for development.
@@ -12,43 +14,22 @@ async function seed(): Promise<void> {
     // ========================================================================
     // 1. Create a sample user with autonomy settings
     // ========================================================================
-    const userResult = await client.query(
-      `INSERT INTO users (id, email, name, trust_tier, autonomy_settings)
-       VALUES (
-         'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
-         'alex@example.com',
-         'Alex Thompson',
-         -- low_autonomy (not moderate): the trust bar only shows live *progress*
-         -- below the top tiers. At low_autonomy Alex is visibly climbing toward
-         -- "Handle most things" (50-approval threshold), which is the story the
-         -- demo wants — moderate_autonomy renders a flat "Maximum trust" dead-end.
-         'low_autonomy',
-         $1
-       )
-       ON CONFLICT (id) DO UPDATE SET
-         email = EXCLUDED.email,
-         name = EXCLUDED.name,
-         trust_tier = EXCLUDED.trust_tier,
-         autonomy_settings = EXCLUDED.autonomy_settings,
-         updated_at = now()
-       RETURNING id`,
-      [
-        JSON.stringify({
-          maxAutoSpend: 5000, // $50.00 in cents
-          autoApproveRecurring: true,
-          requireApprovalForNewVendors: true,
-          allowCalendarManagement: true,
-          allowEmailDrafts: true,
-          allowEmailSend: false,
-          notificationPreferences: {
-            email: true,
-            push: true,
-            sms: false,
-          },
-        }),
-      ],
-    );
-    const userId = userResult.rows[0].id;
+    // low_autonomy (not moderate): the trust bar only shows live *progress*
+    // below the top tiers. The helper also stamps `is_demo=true`, which is the
+    // authorization marker required by account-free sample discovery.
+    const userId = await upsertSourceDemoUser(client, {
+      maxAutoSpend: 5000, // $50.00 in cents
+      autoApproveRecurring: true,
+      requireApprovalForNewVendors: true,
+      allowCalendarManagement: true,
+      allowEmailDrafts: true,
+      allowEmailSend: false,
+      notificationPreferences: {
+        email: true,
+        push: true,
+        sms: false,
+      },
+    });
     console.log(`[seed] Created user: ${userId}`);
 
     // ========================================================================
@@ -837,18 +818,43 @@ async function seed(): Promise<void> {
     // NULL — nothing here can actually call Google (db-token-store returns "no
     // usable token" for a NULL row), it only represents the connection so the
     // digest, coverage panel, and "connected" chrome reflect a real user.
+    const sampleGoogleAccount = await client.query<{ id: string }>(
+      `INSERT INTO connected_accounts
+         (id, user_id, provider, account_id, scopes, is_active, connected_at,
+          account_display, identity_verified, updated_at)
+       VALUES
+         ('ac000001-0000-4000-8000-000000000002', $1, 'google',
+          'sample:google:alex',
+          ARRAY['https://www.googleapis.com/auth/gmail.modify','https://www.googleapis.com/auth/calendar'],
+          true, now(), 'alex@example.com', false, now())
+       ON CONFLICT (user_id, provider, account_id) DO UPDATE SET
+         scopes = EXCLUDED.scopes,
+         is_active = true,
+         disconnected_at = NULL,
+         account_display = EXCLUDED.account_display,
+         updated_at = now()
+       RETURNING id`,
+      [userId],
+    );
+    const sampleGoogleAccountId = sampleGoogleAccount.rows[0]?.id;
+    if (!sampleGoogleAccountId) {
+      throw new Error('Sample Google connector account could not be created.');
+    }
+
     await client.query(
       `INSERT INTO oauth_tokens
-         (id, user_id, provider, account_email, scopes, expires_at, encryption_key_version, created_at, updated_at)
+         (id, user_id, provider, account_email, scopes, expires_at,
+          encryption_key_version, connector_account_id, created_at, updated_at)
        VALUES
          ('ac000001-0000-4000-8000-000000000001', $1, 'google', 'alex@example.com',
           ARRAY['https://www.googleapis.com/auth/gmail.modify','https://www.googleapis.com/auth/calendar'],
-          now() + INTERVAL '30 days', 1, now(), now())
+          now() + INTERVAL '30 days', 1, $2, now(), now())
        ON CONFLICT (user_id, provider, account_email) DO UPDATE SET
          scopes = EXCLUDED.scopes,
          expires_at = EXCLUDED.expires_at,
+         connector_account_id = EXCLUDED.connector_account_id,
          updated_at = now()`,
-      [userId],
+      [userId, sampleGoogleAccountId],
     );
     console.log('[seed] Marked the sample profile as Gmail + Calendar connected (synthetic, NULL tokens).');
 
@@ -1283,36 +1289,9 @@ async function seed(): Promise<void> {
     // The subtree has real depth from worker-run items:
     //   execution_results / execution_events → execution_plans → candidate_actions
     //   decision_outcomes → { candidate_actions, execution_plans }
-    // so the order below is dependents-before-parents, not a flat loop.
-    const flatDecisionFilter = `SELECT id FROM decisions WHERE user_id = $1 AND raw_event->'data' IS NULL`;
-    const flatPlanFilter = `SELECT id FROM execution_plans WHERE decision_id IN (${flatDecisionFilter})`;
-
-    // 1. execution subtree (keyed on plan_id)
-    await client.query(`DELETE FROM execution_results WHERE plan_id IN (${flatPlanFilter})`, [userId]);
-    await client.query(`DELETE FROM execution_events WHERE plan_id IN (${flatPlanFilter})`, [userId]);
-    // 2. decision_outcomes — references BOTH candidate_actions and execution_plans
-    await client.query(`DELETE FROM decision_outcomes WHERE decision_id IN (${flatDecisionFilter})`, [userId]);
-    // 3. execution_plans — references candidate_actions
-    await client.query(`DELETE FROM execution_plans WHERE decision_id IN (${flatDecisionFilter})`, [userId]);
-    // 4. remaining decision_id-keyed children
-    for (const childTable of [
-      'candidate_actions',
-      'approval_requests',
-      'explanation_records',
-      'feedback_events',
-      'skill_gap_log',
-      'episodic_memories',
-    ]) {
-      await client.query(
-        `DELETE FROM ${childTable} WHERE decision_id IN (${flatDecisionFilter})`,
-        [userId],
-      );
-    }
-    const cleanup = await client.query(
-      `DELETE FROM decisions WHERE user_id = $1 AND raw_event->'data' IS NULL`,
-      [userId],
-    );
-    console.log(`[seed] Cleaned up ${cleanup.rowCount ?? 0} legacy flat decisions for the sample profile.`);
+    // so the cleanup helper uses dependents-before-parents ordering.
+    const cleaned = await cleanupLegacyFlatDecisions(client, userId);
+    console.log(`[seed] Cleaned up ${cleaned} legacy flat decisions for the sample profile.`);
 
     for (const d of demoDecisions) {
       // raw_event carries the signal two ways on purpose:

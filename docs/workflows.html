@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Versioned workflows — SkyTwin</title>
+    <meta
+      name="description"
+      content="How SkyTwin teaches, replays, activates, revises, and rolls back an immutable signal-digest workflow without granting a model authority."
+    />
+    <link
+      rel="canonical"
+      href="https://jayzalowitz.github.io/skytwin/workflows.html"
+    />
+    <link rel="stylesheet" href="guides.css" />
+    <style>
+      .capture {
+        margin: 1.6rem 0 2.4rem;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--surface);
+      }
+      .capture img {
+        display: block;
+        width: 100%;
+        height: auto;
+        background: #101218;
+      }
+      .capture figcaption {
+        padding: 1rem 1.1rem;
+        color: var(--muted);
+        font-size: 0.94rem;
+      }
+      .capture strong {
+        color: var(--text);
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="index.html">SkyTwin</a>
+        <div class="nav-links">
+          <a href="start.html">Start</a
+          ><a href="workflows.html" aria-current="page">Workflows</a
+          ><a href="docs.html">Docs</a
+          ><a class="keep" href="https://github.com/jayzalowitz/skytwin"
+            >GitHub</a
+          >
+        </div>
+      </div>
+    </nav>
+    <main class="wrap page">
+      <aside class="toc">
+        <p>Versioned workflows</p>
+        <a href="#current">What exists now</a
+        ><a href="#teach">Teach and activate</a
+        ><a href="#runtime">What a run proves</a
+        ><a href="#model">Model boundary</a><a href="#data">Data lifecycle</a
+        ><a href="#limits">Current limits</a>
+      </aside>
+      <article class="content">
+        <p class="eyebrow">Adaptive behavior, explicit control</p>
+        <span class="status">Current source</span>
+        <h1>Teach one useful routine without handing the model the keys.</h1>
+        <p class="lede">
+          SkyTwin's first versioned workflow is a read-only signal digest:
+          describe what to watch for, replay the proposal against your recent
+          signals, and activate an immutable version only after you review it.
+        </p>
+        <div class="callout warn">
+          <strong>Honest launch boundary:</strong> the maintained embedded model
+          is available for ordinary local inference but is not qualified for
+          workflow authoring. Released stock Ollama builds also lack the
+          response-bound model identity this path requires. AI authoring
+          therefore fails closed unless an eligible provider and model satisfy
+          the checked-in contract.
+        </div>
+
+        <figure class="capture">
+          <img
+            src="assets/demo-current/watches-source-demo.png"
+            alt="SkyTwin Watches page in a seeded source-development profile showing Model artifact unavailable, a disabled Preview with AI button, and an Open settings action."
+          />
+          <figcaption>
+            <strong>Cold start fails closed.</strong> This seeded
+            source-development profile has no qualified local model artifact.
+            Watches reports the missing artifact, keeps
+            <em>Preview with AI</em> disabled, and points to Settings instead of
+            silently changing provider or reasoning location. The disposable
+            fictional sample does not expose this authoring surface.
+          </figcaption>
+        </figure>
+
+        <h2 id="current">What exists now</h2>
+        <p>
+          <code>signal_digest.v1</code> is a vertical, read-only Watch. It can
+          match owner-scoped signals on a schedule and present cited results. It
+          does not send, delete, modify, spend, install, execute code, choose
+          credentials, or expand its own authority.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>AI may</th>
+              <th>Deterministic code owns</th>
+              <th>The user owns</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                Translate intent, ask one bounded clarification, summarize cited
+                matches, and propose a minimal correction.
+              </td>
+              <td>
+                Validation, canonical compilation, hashing, replay, ownership,
+                policy boundaries, persistence, and exact run pins.
+              </td>
+              <td>
+                Submitting authoring work, activating a version, choosing a
+                correction, and rolling back.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2 id="teach">Teach, replay, activate, improve</h2>
+        <ol class="steps">
+          <li>
+            <strong>Describe one digest.</strong> In Watches, state the source
+            or filter, cadence, time when needed, and desired summary.
+          </li>
+          <li>
+            <strong>Resolve at most one missing detail.</strong> Recoverable
+            setup or provider failures preserve the draft instead of discarding
+            the user's work.
+          </li>
+          <li>
+            <strong>Replay against real owner-scoped signals.</strong> The
+            review shows caught and ignored counts, bounded cited examples,
+            schedule, scope, and whether AI synthesis was available. Synthetic
+            pasted-example replay is not part of this slice.
+          </li>
+          <li>
+            <strong>Activate explicitly.</strong> Creating or editing a proposal
+            never changes the active version. Activation atomically moves the
+            version pointer and replaces the Watch projection.
+          </li>
+          <li>
+            <strong>Revise without rewriting history.</strong> A correction
+            creates a new immutable version and a server-computed semantic diff.
+            The new version must be replayed and activated separately.
+          </li>
+          <li>
+            <strong>Roll back by selecting prior truth.</strong> Rollback
+            appends an activation event and restores a previously active
+            version; it does not mutate old versions or runs.
+          </li>
+        </ol>
+
+        <h2 id="runtime">What every claimed run proves</h2>
+        <p>
+          A claimed Watch slot pins the workflow and version IDs,
+          provider/schema versions, canonical payload and content hash, compiler
+          projection, time window, and sanitized inference identity when
+          model-assisted. User-authored revisions carry an explicit no-inference
+          state. Completion stores a bounded display sample and a commitment
+          over the complete matched evidence set.
+        </p>
+        <div class="callout">
+          <strong
+            >Temporary model outage does not erase deterministic value.</strong
+          >
+          Matching stays deterministic. If summary inference is unavailable, the
+          cited matches still complete with <em>AI summary unavailable</em>; a
+          local failure never silently crosses to a cloud provider.
+        </div>
+        <p>
+          Retries after a committed authoring request reuse the durable
+          proposal. Two simultaneous first attempts can both spend inference
+          before the database uniqueness boundary reconciles them, but only one
+          durable version/proposal survives. This is bounded duplicate inference
+          cost, not duplicate workflow state.
+        </p>
+
+        <h2 id="model">Model readiness is a separate capability</h2>
+        <p>
+          Recommendation, download, runtime availability, structured authoring
+          quality, and exact runtime identity are different checks. The
+          authoring path requires the evaluated artifact/runtime pair to meet
+          the checked-in semantic, revision-preservation, safety, latency, and
+          identity gates. Unknown or changing identity fails closed.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>State</th>
+              <th>What the user should see</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>setup_required</code></td>
+              <td>
+                Configure a provider or choose the clearly labeled
+                deterministic, non-versioned Watch fallback.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>artifact_unavailable</code> /
+                <code>runtime_unavailable</code>
+              </td>
+              <td>
+                Install or repair the exact local artifact/runtime; keep the
+                draft intact.
+              </td>
+            </tr>
+            <tr>
+              <td><code>unsupported_model</code></td>
+              <td>
+                The model cannot satisfy the authoring or identity contract.
+                Ordinary chat may still work, but workflow authoring remains
+                blocked.
+              </td>
+            </tr>
+            <tr>
+              <td><code>temporarily_unavailable</code></td>
+              <td>
+                Retry later without changing reasoning location or silently
+                selecting another provider class.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h2 id="data">Backup, restore, purge, and CockroachDB</h2>
+        <p>
+          CockroachDB is the source of truth for workflows, immutable versions,
+          proposals, activation history, idempotency bindings, and the active
+          Watch projection. Backup schema v6 includes those user artifacts and
+          sanitized inference metadata. Restore validates ownership, hashes,
+          lineage, proposal transitions, projection pins, and active pointers
+          before one transaction writes anything. User purge removes this state
+          through owner-scoped database relationships and repository cleanup.
+        </p>
+
+        <h2 id="limits">Current limits and future states</h2>
+        <p>
+          This is not a universal generated-code workflow engine. Action-bearing
+          workflows, scoped autonomy, durable multi-step composition, parallel
+          investigations, and portable workflow packs remain separately reviewed
+          milestones. The stable envelope can grow to new typed providers
+          without turning a model-authored graph into trusted runtime code.
+        </p>
+        <p class="footnotes">
+          <a
+            href="https://github.com/jayzalowitz/skytwin/blob/main/docs/adaptive-workflows.md"
+            >Full source reference</a
+          >
+          · <a href="architecture.html">Architecture</a> ·
+          <a href="inference.html">Inference boundary</a> ·
+          <a href="data.html">Data lifecycle</a> ·
+          <a href="https://github.com/jayzalowitz/skytwin/issues/744"
+            >Future-state epic</a
+          >
+        </p>
+      </article>
+    </main>
+    <footer class="wrap">
+      <p>
+        SkyTwin is Apache-2.0 open source. Questions or security reports:
+        <a href="https://github.com/jayzalowitz/skytwin/issues">open an issue</a
+        >.
+      </p>
+    </footer>
+  </body>
+</html>

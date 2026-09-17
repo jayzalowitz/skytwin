@@ -8,6 +8,7 @@ import type { SignalRow } from '@skytwin/db';
 import { RegistryClient } from '@skytwin/registry-client';
 import { CapabilityInferenceEngine } from '@skytwin/capability-engine';
 import type { SignalLike } from '@skytwin/capability-engine';
+import { requireJobAdmission, runAdmitted } from './job-admission.js';
 
 const log = createLogger('worker:capability-inference');
 
@@ -57,6 +58,7 @@ export function shouldRunCapabilityInference(input: {
 export interface CapabilityInferenceJobDeps {
   registry?: RegistryClient;
   signalLookbackHours?: number;
+  signal?: AbortSignal;
 }
 
 function signalKindFromRow(row: SignalRow): SignalLike['kind'] {
@@ -106,6 +108,7 @@ function excerptFromRow(row: SignalRow): string {
 export async function runCapabilityInferenceJob(
   deps: CapabilityInferenceJobDeps = {},
 ): Promise<void> {
+  requireJobAdmission(deps.signal);
   const registry = deps.registry ?? new RegistryClient({ smitheryEnabled: false });
   const lookbackHours = deps.signalLookbackHours ?? SIGNAL_LOOKBACK_HOURS;
 
@@ -116,7 +119,7 @@ export async function runCapabilityInferenceJob(
 
   let users: { id: string }[];
   try {
-    users = await userRepository.findAll();
+    users = await runAdmitted(deps.signal, () => userRepository.findAll());
   } catch (err) {
     log.error('Failed to load users for capability inference', {
       error: err instanceof Error ? err.message : String(err),
@@ -129,6 +132,7 @@ export async function runCapabilityInferenceJob(
   let totalSkipped = 0;
 
   for (const user of users) {
+    requireJobAdmission(deps.signal);
     try {
       const rows = await signalRepository.getRecent(user.id, undefined, lookbackHours);
 
@@ -154,6 +158,7 @@ export async function runCapabilityInferenceJob(
       let userSkipped = 0;
 
       for (const suggestion of suggestions) {
+        requireJobAdmission(deps.signal);
         if (dismissedByRegistry.has(suggestion.registryId)) {
           userSkipped++;
           continue;
@@ -181,6 +186,7 @@ export async function runCapabilityInferenceJob(
           confidenceScore: suggestion.confidenceScore,
           reasonSummary: suggestion.reasonSummary,
         });
+        requireJobAdmission(deps.signal);
         userSuggestions++;
       }
 
@@ -191,12 +197,14 @@ export async function runCapabilityInferenceJob(
         log.info(`User ${user.id}: ${userSuggestions} suggestion(s) upserted, ${userSkipped} skipped`);
       }
     } catch (err) {
+      requireJobAdmission(deps.signal);
       log.error(`Capability inference failed for user ${user.id}`, {
         error: err instanceof Error ? err.message : String(err),
       });
     }
   }
 
+  requireJobAdmission(deps.signal);
   log.info(
     `Capability inference complete: ${totalSuggestions} suggestion(s) upserted, ${totalSkipped} skipped`,
     { users: users.length, totalSuggestions, totalSkipped },

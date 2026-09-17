@@ -1,28 +1,28 @@
 /**
- * Public system router — hardware detection + hardware-aware local-model
- * recommendation. Mounted WITHOUT auth (like /api/v1/demo) because onboarding
- * asks "what's the best local AI for this computer?" before the user has signed
- * in. Returns only coarse, non-sensitive machine facts (RAM/disk/cores/arch)
- * and a model pick from the public catalog.
+ * Public system router — a minimized local-model recommendation for onboarding.
+ * Raw host hardware remains server-internal.
  */
 
 import { Router } from 'express';
-import { detectHardware, recommendLocalModel } from '../system/hardware.js';
+import { recommendLocalModel } from '../system/hardware.js';
 
 export function createSystemRouter(): Router {
   const router = Router();
-
-  // GET /api/system/hardware — coarse machine profile for sizing decisions.
-  router.get('/hardware', (_req, res) => {
-    res.json(detectHardware());
-  });
 
   // GET /api/system/recommend-local-model — the single best local model that
   // actually fits this machine (RAM + free disk), with a human explanation.
   // This is what lets onboarding say "we'll use X for your computer" instead of
   // making a non-technical user choose from a list.
   router.get('/recommend-local-model', (_req, res) => {
-    res.json(recommendLocalModel());
+    const recommendation = recommendLocalModel();
+    res.json({
+      model: recommendation.model,
+      reason: recommendation.model
+        ? `Recommended local model: ${recommendation.model.displayName} (~${recommendation.downloadGB ?? "?"} GB). A compatible llama.cpp runtime is also required.`
+        : "No maintained local model fits the available resources on this computer.",
+      fitsDisk: recommendation.fitsDisk,
+      downloadGB: recommendation.downloadGB,
+    });
   });
 
   return router;

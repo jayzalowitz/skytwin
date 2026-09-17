@@ -1,3 +1,4 @@
+import './source-key-broker.js';
 import { loadConfig } from '@skytwin/config';
 import { RealIronClawAdapter } from '@skytwin/ironclaw-adapter';
 import type { SignalConnector, RawSignal } from '@skytwin/connectors';
@@ -7,7 +8,6 @@ import {
   OutlookMailConnector,
   OutlookCalendarConnector,
   DbTokenStore,
-  OAuthRefreshError,
   type CursorStore,
   type LabelObserver,
   type GoogleOAuthConfig,
@@ -24,9 +24,10 @@ import {
   serviceCredentialRepository,
   accessLogRepository,
   workerDeadLetterRepository,
+  setWorkerGenerationAuthorityLossHandler,
 } from '@skytwin/db';
-import { withRetry, RetryableHttpError, CircuitBreaker, createLogger } from '@skytwin/core';
-import { KeyCache } from '@skytwin/credential-vault';
+import { CircuitBreaker, createLogger } from '@skytwin/core';
+import { workerCredentialKeyCache } from './credential-key-cache.js';
 import { SignalDeduper, DEFAULT_TTL_MS } from './signal-dedupe.js';
 import { buildIngestHeaders } from './ingest-headers.js';
 import { createPruneThrottle } from './label-signal-pruner.js';
@@ -45,14 +46,17 @@ import {
   capabilityInferenceEnabled,
   shouldRunCapabilityInference,
 } from './jobs/capability-inference.js';
-import {
-  runWatchSchedulerJob,
-  watchSchedulerEnabled,
-  shouldRunWatchScheduler,
-} from './jobs/watch-scheduler.js';
+import { runWatchSchedulerJob, watchSchedulerEnabled, shouldRunWatchScheduler } from './jobs/watch-scheduler.js';
 import { extractErrorCode } from './oauth-error-code.js';
-import { recordPermanentOAuthFailure } from './oauth-circuit.js';
-import { DeadLetterTracker } from './dead-letter.js';
+import { isPermanentOAuthRefreshError, recordPermanentOAuthFailure } from './oauth-circuit.js';
+import { DeadLetterTracker, reportDeadLetterRetentionFailure } from './dead-letter.js';
+import { createWorkerGenerationAdmission, isWorkerGenerationRevoked } from './generation-admission.js';
+import { forwardSignalToApi as forwardSignalUnderAdmission } from './signal-forwarder.js';
+import { createWorkerLifecycle } from './worker-lifecycle.js';
+import { installGenerationFetch } from './generation-fetch.js';
+import { buildAccountConnectorTopology, loadUserOAuthConnections } from './connector-discovery.js';
+import { buildSignalIngestPayload } from './signal-ingest-payload.js';
+import { connectorHealthName, connectorRuntimeKey, sameConnectorTopology } from './connector-runtime-key.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -67,7 +71,7 @@ const deadLetterTracker = new DeadLetterTracker();
 /** Resolved dead-letter rows are GC'd after 30 days (#407). */
 const DEAD_LETTER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** Per-user circuit breakers to skip users with persistent failures. */
+/** Per-account connector breakers; one revoked mailbox must not suspend peers. */
 const userCircuitBreakers = new Map<string, CircuitBreaker>();
 
 /**
@@ -76,15 +80,15 @@ const userCircuitBreakers = new Map<string, CircuitBreaker>();
  * fire (without setKeyCache, plaintext-token rows never get encrypted —
  * the at-rest encryption feature is dead weight).
  *
- * Cross-process unlock IPC is not yet implemented (see #212 follow-up): the
- * API process unlocks via passphrase but the worker process doesn't see that
- * derived key. Until that lands, this cache is empty and the worker behaves
- * exactly as it did before — plaintext tokens flow through, encrypted-only
- * rows surface as `credentials unavailable`. The wiring below ensures that
- * once IPC lands, the worker's DbTokenStore instances will decrypt and
- * lazy-migrate without any further code change.
+ * This legacy OAuth cache is intentionally not connected to the general
+ * source-key broker client. The new client receives no owner grants and no
+ * repository consumes it in this slice, while the worker still never receives
+ * the API-local derived key. Consequently this cache remains empty: plaintext
+ * token rows behave as before and encrypted-only rows surface as
+ * `credentials unavailable`. A later reviewed repository gateway must replace
+ * this compatibility seam instead of copying key material into it.
  */
-const workerKeyCache = new KeyCache({ ttlMs: 60 * 60 * 1000 });
+const workerKeyCache = workerCredentialKeyCache;
 
 /**
  * Persistent cursor for Gmail's History API. Survives worker restarts so
@@ -98,6 +102,14 @@ const gmailCursorStore: CursorStore = {
   },
   async save(userId, provider, kind, value) {
     await connectorCursorRepository.save(userId, provider, kind, value);
+  },
+  async getForAccount(userId, connectorAccountId, provider, kind) {
+    const row = await connectorCursorRepository.getForAccount(userId, connectorAccountId, provider, kind);
+    return row?.cursor_value ?? null;
+  },
+  async saveForAccount(userId, connectorAccountId, provider, kind, value) {
+    const row = await connectorCursorRepository.saveForAccount(userId, connectorAccountId, provider, kind, value);
+    if (!row) throw new Error('Connector account is inactive or not owned by this user.');
   },
 };
 
@@ -162,16 +174,16 @@ const signalDeduper = new SignalDeduper({
   },
 });
 
-function getCircuitBreaker(userId: string): CircuitBreaker {
-  let breaker = userCircuitBreakers.get(userId);
+function getCircuitBreaker(runtimeKey: string): CircuitBreaker {
+  let breaker = userCircuitBreakers.get(runtimeKey);
   if (!breaker) {
-    breaker = new CircuitBreaker(`user:${userId}`, {
+    breaker = new CircuitBreaker(`connector:${runtimeKey}`, {
       failureThreshold: 3,
-      resetTimeoutMs: 300_000,   // 5 minutes
+      resetTimeoutMs: 300_000, // 5 minutes
       backoffMultiplier: 2,
       maxResetTimeoutMs: 1_200_000, // 20 minutes
     });
-    userCircuitBreakers.set(userId, breaker);
+    userCircuitBreakers.set(runtimeKey, breaker);
   }
   return breaker;
 }
@@ -186,7 +198,12 @@ function getCircuitBreaker(userId: string): CircuitBreaker {
  * the worker polls their connected services.
  */
 
-let running = true;
+const generationAdmission = createWorkerGenerationAdmission();
+setWorkerGenerationAuthorityLossHandler((error) => {
+  generationAdmission.revoke(error.message);
+});
+const workerLifecycle = createWorkerLifecycle(generationAdmission);
+installGenerationFetch(generationAdmission);
 let lastIronClawToolRefreshAt = 0;
 const IRONCLAW_TOOL_REFRESH_MS = 15 * 60 * 1000;
 
@@ -195,35 +212,36 @@ interface UserConnectors {
   connectors: SignalConnector[];
 }
 
+function beginWorkerShutdown(reason: string): void {
+  workerLifecycle.beginShutdown(reason);
+}
+
+async function waitForNextPoll(timeoutMs: number): Promise<void> {
+  if (!generationAdmission.isActive()) return;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(finish, timeoutMs);
+    function finish(): void {
+      clearTimeout(timer);
+      generationAdmission.signal.removeEventListener('abort', finish);
+      resolve();
+    }
+    generationAdmission.signal.addEventListener('abort', finish, {
+      once: true,
+    });
+  });
+}
+
 /**
  * Forward a signal to the API for processing, with retry on transient failures.
  */
 async function forwardSignalToApi(signal: RawSignal, userId: string): Promise<void> {
-  const url = `${config.apiBaseUrl}/api/events/ingest`;
-  const body = JSON.stringify({
-    ...signal.data,
-    source: signal.source,
-    type: signal.type,
-    signalId: signal.id,
-    userId,
+  const payload = buildSignalIngestPayload(signal, userId);
+  const { source: _source, type: _type, signalId: _signalId, userId: _userId, ...forwardedData } = payload;
+  await forwardSignalUnderAdmission({ ...signal, data: forwardedData }, userId, {
+    apiBaseUrl: config.apiBaseUrl,
+    admission: generationAdmission,
+    headers: () => buildIngestHeaders(),
   });
-
-  await withRetry(async () => {
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: buildIngestHeaders(),
-      body,
-    });
-
-    if (!resp.ok) {
-      if ([429, 500, 502, 503].includes(resp.status)) {
-        throw new RetryableHttpError(resp.status, `API ingest failed: ${resp.status}`, null);
-      }
-      throw new Error(`API ingest failed: ${resp.status}`);
-    }
-
-    return resp;
-  }, { maxRetries: 2, baseDelayMs: 500 });
 
   log.info(`Forwarded signal ${signal.id} (${signal.source}/${signal.type}) for user ${userId}`);
 }
@@ -236,34 +254,31 @@ function markSignalForwarded(signal: RawSignal, userId: string): void {
   signalDeduper.mark(signal, userId);
 }
 
-/**
- * Poll connectors for a single user, guarded by per-user circuit breaker.
- */
+/** Poll each connector through its account-isolated circuit breaker. */
 async function pollUser(userConnectors: UserConnectors): Promise<void> {
-  const breaker = getCircuitBreaker(userConnectors.userId);
-
-  if (!breaker.canExecute()) {
-    log.warn(`Skipping user ${userConnectors.userId} — circuit open, retry in ${Math.round(breaker.getTimeUntilRetryMs() / 1000)}s`, {
-      retryInMs: breaker.getTimeUntilRetryMs(),
-    });
-    return;
-  }
-
-  let hadFailure = false;
-
+  if (!generationAdmission.isActive()) return;
   for (const connector of userConnectors.connectors) {
-    // Per-connector flag so the heal at the bottom of this iteration
-    // reflects THIS connector's outcome, not the loop-wide state. A
-    // failing Gmail must not block the success heal for a working
-    // Calendar (#377).
+    if (!generationAdmission.isActive()) return;
+    const runtimeKey = connectorRuntimeKey(userConnectors.userId, connector);
+    const healthName = connectorHealthName(connector);
+    const breaker = getCircuitBreaker(runtimeKey);
+    if (!breaker.canExecute()) {
+      log.warn(`Skipping ${healthName} for user ${userConnectors.userId} — circuit open`, {
+        retryInMs: breaker.getTimeUntilRetryMs(),
+      });
+      continue;
+    }
     let thisConnectorFailed = false;
     try {
-      const signals = await connector.poll();
+      const signals = await connector.poll(generationAdmission.signal);
+      generationAdmission.requireActive();
       for (const signal of signals) {
+        generationAdmission.requireActive();
         if (hasForwardedSignal(signal, userConnectors.userId)) {
           continue;
         }
         await forwardSignalToApi(signal, userConnectors.userId);
+        generationAdmission.requireActive();
         markSignalForwarded(signal, userConnectors.userId);
       }
       // Only now is it safe to advance the connector's durable cursor. A
@@ -272,16 +287,21 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
       // the next poll re-delivers those messages instead of skipping them
       // forever. Connectors without staged cursors implement this as a no-op
       // (or not at all — it is optional on the interface).
+      generationAdmission.requireActive();
       await connector.commitCursor?.();
+      generationAdmission.requireActive();
     } catch (error) {
-      hadFailure = true;
+      if (isWorkerGenerationRevoked(error) || !generationAdmission.isActive()) return;
       thisConnectorFailed = true;
 
-      if (error instanceof OAuthRefreshError && error.permanent) {
-        log.error(`Permanent OAuth failure for user ${userConnectors.userId} on ${connector.name} — user must re-authorize`, {
-          error: error.message,
-          statusCode: error.statusCode,
-        });
+      if (isPermanentOAuthRefreshError(error)) {
+        log.error(
+          `Permanent OAuth failure for user ${userConnectors.userId} on ${connector.name} — user must re-authorize`,
+          {
+            error: error.message,
+            statusCode: error.statusCode,
+          },
+        );
         // Record the needs-reauth state so the dashboard banner can
         // surface it (#377). Best-effort: a DB write failure here
         // must not break the existing circuit-breaker logic — the
@@ -290,7 +310,7 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
         try {
           await connectorHealthRepository.upsert({
             userId: userConnectors.userId,
-            connectorName: connector.name,
+            connectorName: healthName,
             status: 'needs_reauth',
             errorCode: extractErrorCode(error.message) ?? 'invalid_grant',
             lastFailureAt: new Date(),
@@ -298,29 +318,28 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
         } catch (writeErr) {
           log.warn('connector_health upsert failed (needs_reauth) — continuing', {
             userId: userConnectors.userId,
-            connector: connector.name,
+            connector: healthName,
             error: writeErr instanceof Error ? writeErr.message : String(writeErr),
           });
         }
         // Force-open circuit immediately — no point retrying a revoked token.
         recordPermanentOAuthFailure(breaker);
-        return;
+        continue;
       }
 
       log.error(`Error polling ${connector.name} for user ${userConnectors.userId}`, {
         error: error instanceof Error ? error.message : String(error),
       });
+      breaker.recordFailure();
     }
 
-    // Per-connector success heals the row (#377). Keyed on
-    // thisConnectorFailed (not the loop-wide hadFailure) so a working
-    // Calendar isn't stuck in 'needs_reauth' because Gmail failed in
-    // the same cycle.
-    if (!thisConnectorFailed) {
+    // Per-connector success heals only this account's row (#377), so a
+    // working mailbox cannot close a sibling account's reauth warning.
+    if (!thisConnectorFailed && generationAdmission.isActive()) {
       try {
         await connectorHealthRepository.upsert({
           userId: userConnectors.userId,
-          connectorName: connector.name,
+          connectorName: healthName,
           status: 'connected',
           errorCode: null,
           lastSuccessAt: new Date(),
@@ -328,26 +347,25 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
       } catch (writeErr) {
         log.warn('connector_health upsert failed (connected) — continuing', {
           userId: userConnectors.userId,
-          connector: connector.name,
+          connector: healthName,
           error: writeErr instanceof Error ? writeErr.message : String(writeErr),
         });
       }
+      breaker.recordSuccess();
     }
-  }
-
-  if (hadFailure) {
-    breaker.recordFailure();
-  } else {
-    breaker.recordSuccess();
   }
 
   // Opportunistic email_label_signals prune. Throttled internally to once
   // per 24h per user. Runs after the poll so it doesn't delay signal
   // forwarding; errors can't propagate (the throttle swallows them).
-  await pruneLabelSignalsForUser(userConnectors.userId);
+  if (generationAdmission.isActive()) {
+    await pruneLabelSignalsForUser(userConnectors.userId);
+  }
 }
 
 async function resolveGoogleConfig(): Promise<GoogleOAuthConfig | null> {
+  if (config.googleConnectionMode !== 'experimental') return null;
+
   let clientId = config.googleClientId;
   let clientSecret = config.googleClientSecret;
   let redirectUri = config.googleRedirectUri;
@@ -370,24 +388,21 @@ async function resolveGoogleConfig(): Promise<GoogleOAuthConfig | null> {
     }
   }
 
-  // Layer 2: bundled PKCE-only fallback (desktop installer default). Mirrors
-  // apps/api/src/routes/oauth.ts:resolveGoogleConfig() so the worker can
-  // refresh tokens minted by the bundled-client OAuth flow. PKCE refresh
-  // omits client_secret entirely (verified in packages/connectors/src/oauth/
-  // google-oauth.ts:refreshAccessToken — empty clientSecret is the PKCE
-  // signal). Without this fallback, the grandma-grade default install
-  // signs the user in (API has the bundled id) but the worker can't read
-  // their inbox/calendar — tokens exist, nothing processes them.
+  // Layer 2: optional PKCE-only client ID for explicitly experimental source
+  // deployments. PKCE refresh omits client_secret entirely (verified in
+  // packages/connectors/src/oauth/google-oauth.ts:refreshAccessToken).
   if (!clientId) {
-    const bundled = process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'] ?? '';
-    if (bundled) {
-      clientId = bundled;
+    const experimentalDefault = process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'] ?? '';
+    if (experimentalDefault) {
+      clientId = experimentalDefault;
       clientSecret = '';
     }
   }
 
   if (!clientId) {
-    log.warn('Google OAuth tokens exist, but no Google client ID is configured (env/DB/bundle all empty); skipping Google connectors');
+    log.warn(
+      'Google OAuth tokens exist, but no Google client ID is configured (env/DB/default all empty); skipping Google connectors',
+    );
     return null;
   }
 
@@ -402,6 +417,8 @@ async function resolveGoogleConfig(): Promise<GoogleOAuthConfig | null> {
  * the bundled PKCE-only default. Returns null when no client is configured.
  */
 async function resolveMicrosoftConfig(): Promise<MicrosoftOAuthConfig | null> {
+  if (config.googleConnectionMode !== 'experimental') return null;
+
   const DEFAULT_REDIRECT = 'http://localhost:3100/api/oauth/microsoft/callback';
   let clientId = process.env['MICROSOFT_CLIENT_ID'] ?? '';
   let clientSecret = process.env['MICROSOFT_CLIENT_SECRET'] ?? '';
@@ -434,7 +451,9 @@ async function resolveMicrosoftConfig(): Promise<MicrosoftOAuthConfig | null> {
   }
 
   if (!clientId) {
-    log.warn('Microsoft OAuth tokens exist, but no Microsoft client ID is configured (env/DB/bundle all empty); skipping Outlook connectors');
+    log.warn(
+      'Microsoft OAuth tokens exist, but no Microsoft client ID is configured (env/DB/bundle all empty); skipping Outlook connectors',
+    );
     return null;
   }
 
@@ -445,23 +464,28 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
   const connectedUsers: UserConnectors[] = [];
 
   for (const uc of discovered) {
-    const breaker = getCircuitBreaker(uc.userId);
-    if (!breaker.canExecute()) {
-      log.warn(`Skipping connector startup for user ${uc.userId} — circuit open, retry in ${Math.round(breaker.getTimeUntilRetryMs() / 1000)}s`, {
-        retryInMs: breaker.getTimeUntilRetryMs(),
-      });
-      continue;
-    }
-
+    if (!generationAdmission.isActive()) break;
     const connected: SignalConnector[] = [];
-    let permanentOAuthFailure = false;
     for (const connector of uc.connectors) {
+      if (!generationAdmission.isActive()) break;
+      const runtimeKey = connectorRuntimeKey(uc.userId, connector);
+      const healthName = connectorHealthName(connector);
+      const breaker = getCircuitBreaker(runtimeKey);
+      if (!breaker.canExecute()) {
+        log.warn(`Skipping connector startup for ${healthName} user ${uc.userId} — circuit open`, {
+          retryInMs: breaker.getTimeUntilRetryMs(),
+        });
+        continue;
+      }
       try {
-        await connector.connect();
+        await connector.connect(generationAdmission.signal);
+        generationAdmission.requireActive();
         connected.push(connector);
         log.info(`Connected: ${connector.name} for user ${uc.userId}`);
+        breaker.recordSuccess();
       } catch (error) {
-        if (error instanceof OAuthRefreshError && error.permanent) {
+        if (isWorkerGenerationRevoked(error) || !generationAdmission.isActive()) break;
+        if (isPermanentOAuthRefreshError(error)) {
           log.error(`Permanent OAuth failure for user ${uc.userId} on ${connector.name} — user must re-authorize`, {
             error: error.message,
             statusCode: error.statusCode,
@@ -469,7 +493,7 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
           try {
             await connectorHealthRepository.upsert({
               userId: uc.userId,
-              connectorName: connector.name,
+              connectorName: healthName,
               status: 'needs_reauth',
               errorCode: extractErrorCode(error.message) ?? 'invalid_grant',
               lastFailureAt: new Date(),
@@ -477,13 +501,12 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
           } catch (writeErr) {
             log.warn('connector_health upsert failed (needs_reauth) — continuing', {
               userId: uc.userId,
-              connector: connector.name,
+              connector: healthName,
               error: writeErr instanceof Error ? writeErr.message : String(writeErr),
             });
           }
           recordPermanentOAuthFailure(breaker);
-          permanentOAuthFailure = true;
-          break;
+          continue;
         }
 
         log.error(`Error connecting ${connector.name} for user ${uc.userId}`, {
@@ -495,13 +518,6 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
 
     if (connected.length > 0) {
       connectedUsers.push({ userId: uc.userId, connectors: connected });
-      // Do NOT credit success when a connector hit a permanent OAuth failure:
-      // recordSuccess() would close the circuit forceOpen() just opened, undoing
-      // the permanent-failure protection (#595 review). The open circuit still
-      // gates polling for the successfully-connected connectors until re-auth.
-      if (!permanentOAuthFailure) {
-        breaker.recordSuccess();
-      }
     }
   }
 
@@ -514,7 +530,9 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
  */
 async function discoverUsers(): Promise<UserConnectors[]> {
   try {
-    const tokens = await oauthRepository.getUsersWithActiveTokens();
+    const tokens = await loadUserOAuthConnections(config.googleConnectionMode, () =>
+      oauthRepository.getUsersWithActiveTokens(),
+    );
     if (tokens.length === 0) {
       return [];
     }
@@ -533,8 +551,10 @@ async function discoverUsers(): Promise<UserConnectors[]> {
     const result: UserConnectors[] = [];
     for (const [userId, userTokenList] of userTokens) {
       const connectors: SignalConnector[] = [];
-      const hasGoogle = userTokenList.some((t) => t.provider === 'google');
-      const hasMicrosoft = userTokenList.some((t) => t.provider === 'microsoft');
+      const googleTokens = userTokenList.filter((t) => t.provider === 'google');
+      const microsoftTokens = userTokenList.filter((t) => t.provider === 'microsoft');
+      const hasGoogle = googleTokens.length > 0;
+      const hasMicrosoft = microsoftTokens.length > 0;
 
       if (hasGoogle && googleConfig === undefined) googleConfig = await resolveGoogleConfig();
       if (hasMicrosoft && microsoftConfig === undefined) microsoftConfig = await resolveMicrosoftConfig();
@@ -546,29 +566,54 @@ async function discoverUsers(): Promise<UserConnectors[]> {
       const usableGoogle = hasGoogle && !!googleConfig;
       const usableMicrosoft = hasMicrosoft && !!microsoftConfig;
 
-      if (usableGoogle || usableMicrosoft) {
+      const createBoundTokenStore = (connectorAccountId: string) => {
         const tokenStore = new DbTokenStore(
           oauthRepository,
           googleConfig ?? undefined,
           microsoftConfig ?? undefined,
+          connectorAccountId,
         );
         tokenStore.setKeyCache(workerKeyCache);
         // Audit-log every credential-vault decryption (#393). The sink writes
         // to access_log with actor='worker'; failures are swallowed and logged
         // at the call site so a CRDB blip doesn't block legitimate refreshes.
-        tokenStore.setAuditLog(
-          { recordAccess: (input) => accessLogRepository.record(input) },
-          'worker',
-        );
-        if (usableGoogle) {
-          connectors.push(new GmailConnector(userId, tokenStore, gmailCursorStore, gmailLabelObserver));
-          connectors.push(new GoogleCalendarConnector(userId, tokenStore, gmailCursorStore));
-        }
-        if (usableMicrosoft) {
-          connectors.push(new OutlookMailConnector(userId, tokenStore, gmailCursorStore));
-          connectors.push(new OutlookCalendarConnector(userId, tokenStore, gmailCursorStore));
-        }
-      }
+        tokenStore.setAuditLog({ recordAccess: (input) => accessLogRepository.record(input) }, 'worker');
+        return tokenStore;
+      };
+
+      connectors.push(...buildAccountConnectorTopology<
+        (typeof googleTokens)[number],
+        (typeof microsoftTokens)[number],
+        SignalConnector
+      >({
+        googleAccounts: usableGoogle ? googleTokens : [],
+        microsoftAccounts: usableMicrosoft ? microsoftTokens : [],
+        createGmail: (token) => {
+          const tokenStore = createBoundTokenStore(token.connector_account_id);
+          return new GmailConnector(userId, tokenStore, gmailCursorStore, gmailLabelObserver, {
+            connectorAccountId: token.connector_account_id,
+          });
+        },
+        createGoogleCalendar: (token) => new GoogleCalendarConnector(
+          userId,
+          createBoundTokenStore(token.connector_account_id),
+          gmailCursorStore,
+          'primary',
+          token.connector_account_id,
+        ),
+        createOutlookMail: (token) => new OutlookMailConnector(
+          userId,
+          createBoundTokenStore(token.connector_account_id),
+          gmailCursorStore,
+          token.connector_account_id,
+        ),
+        createOutlookCalendar: (token) => new OutlookCalendarConnector(
+          userId,
+          createBoundTokenStore(token.connector_account_id),
+          gmailCursorStore,
+          token.connector_account_id,
+        ),
+      }));
 
       if (connectors.length > 0) {
         result.push({ userId, connectors });
@@ -613,12 +658,14 @@ async function refreshIronClawToolsIfDue(force = false): Promise<void> {
     const tools = await adapter.discoverTools();
     if (tools.length === 0) return;
 
-    await ironClawToolRepository.upsertMany(tools.map((tool) => ({
-      toolName: tool.name,
-      description: tool.description,
-      actionTypes: tool.actionTypes,
-      requiresCredentials: tool.requiresCredentials,
-    })));
+    await ironClawToolRepository.upsertMany(
+      tools.map((tool) => ({
+        toolName: tool.name,
+        description: tool.description,
+        actionTypes: tool.actionTypes,
+        requiresCredentials: tool.requiresCredentials,
+      })),
+    );
     log.info(`Refreshed ${tools.length} IronClaw tool manifest(s)`);
   } catch (error) {
     log.warn('IronClaw tool refresh failed', {
@@ -668,12 +715,14 @@ async function main(): Promise<void> {
 
   // Discover users and set up connectors
   let userConnectors = await connectUserConnectors(await discoverUsers());
+  generationAdmission.requireActive();
   if (userConnectors.length === 0) {
     log.info('No users with connected accounts yet — waiting for first connection');
   } else {
     log.info(`Tracking ${userConnectors.length} user(s)`);
   }
   await refreshIronClawToolsIfDue(true);
+  generationAdmission.requireActive();
 
   clearTimeout(startupTimer);
   let pollCount = 0;
@@ -763,10 +812,12 @@ async function main(): Promise<void> {
   let lastWatchSchedulerAt = 0;
 
   // Poll loop
-  while (running) {
+  while (workerLifecycle.isRunning()) {
     for (const uc of userConnectors) {
+      if (!generationAdmission.isActive()) break;
       await pollUser(uc);
     }
+    if (!generationAdmission.isActive()) break;
 
     pollCount++;
 
@@ -775,25 +826,35 @@ async function main(): Promise<void> {
     // on every cycle (e.g. CRDB unreachable) is now routed to the DLQ after
     // the retry budget instead of crashing the loop on an unhandled throw.
     const nowMs = Date.now();
-    if (nowMs - lastMetricsRollupAt >= METRICS_ROLLUP_INTERVAL_MS) {
-      await deadLetterTracker.run('metrics-rollup', () => runMetricsRollupJob());
+    if (generationAdmission.isActive() && nowMs - lastMetricsRollupAt >= METRICS_ROLLUP_INTERVAL_MS) {
+      await deadLetterTracker.run('metrics-rollup', () => runMetricsRollupJob({ signal: generationAdmission.signal }));
       lastMetricsRollupAt = nowMs;
     }
+    if (!generationAdmission.isActive()) break;
 
     // Sweep MCP server changelogs weekly (#184 AC#2).
     // Individual server errors are caught inside the job — never propagate here.
-    if (nowMs - lastChangelogPollAt >= CHANGELOG_POLL_INTERVAL_MS) {
-      await deadLetterTracker.run('changelog-poll', () => runChangelogPollJob());
+    if (generationAdmission.isActive() && nowMs - lastChangelogPollAt >= CHANGELOG_POLL_INTERVAL_MS) {
+      await deadLetterTracker.run('changelog-poll', () =>
+        runChangelogPollJob({
+          googleConnectionMode: config.googleConnectionMode,
+          signal: generationAdmission.signal,
+        }),
+      );
       lastChangelogPollAt = nowMs;
     }
+    if (!generationAdmission.isActive()) break;
 
     // Re-extract life domains weekly (#193 Child 1). The job no-ops when no
     // LlmClient is available — extraction is LLM-dependent. Per-user errors
     // are absorbed inside the job.
-    if (nowMs - lastDomainExtractionAt >= DOMAIN_EXTRACTION_INTERVAL_MS) {
-      await deadLetterTracker.run('domain-extraction', () => runDomainExtractionJob());
+    if (generationAdmission.isActive() && nowMs - lastDomainExtractionAt >= DOMAIN_EXTRACTION_INTERVAL_MS) {
+      await deadLetterTracker.run('domain-extraction', () =>
+        runDomainExtractionJob({ signal: generationAdmission.signal }),
+      );
       lastDomainExtractionAt = nowMs;
     }
+    if (!generationAdmission.isActive()) break;
 
     // Infer which apps the twin should learn to support (#201/#202). Opt-in,
     // default off; advisory app_suggestions only. The pure gate is unit-tested
@@ -801,14 +862,17 @@ async function main(): Promise<void> {
     // verified without driving this loop.
     if (
       shouldRunCapabilityInference({
-        enabled: capabilityInferenceEnabled(),
+        enabled: generationAdmission.isActive() && capabilityInferenceEnabled(),
         nowMs,
         lastRunAt: lastCapabilityInferenceAt,
       })
     ) {
-      await deadLetterTracker.run('capability-inference', () => runCapabilityInferenceJob());
+      await deadLetterTracker.run('capability-inference', () =>
+        runCapabilityInferenceJob({ signal: generationAdmission.signal }),
+      );
       lastCapabilityInferenceAt = nowMs;
     }
+    if (!generationAdmission.isActive()) break;
 
     // Fire due no-code routines ("watches", #519). Opt-in, default off; each
     // firing is READ-ONLY (digest/notify) and writes a watch_run. The pure gate
@@ -816,36 +880,46 @@ async function main(): Promise<void> {
     // verified without driving this loop.
     if (
       shouldRunWatchScheduler({
-        enabled: watchSchedulerEnabled(),
+        enabled: generationAdmission.isActive() && watchSchedulerEnabled(),
         nowMs,
         lastRunAt: lastWatchSchedulerAt,
       })
     ) {
-      await deadLetterTracker.run('watch-scheduler', () => runWatchSchedulerJob());
+      await deadLetterTracker.run('watch-scheduler', () =>
+        runWatchSchedulerJob({ signal: generationAdmission.signal }),
+      );
       lastWatchSchedulerAt = nowMs;
     }
+    if (!generationAdmission.isActive()) break;
 
     // Push federation deltas to active peers hourly (#194 Child 1).
-    if (nowMs - lastFederationSyncAt >= FEDERATION_SYNC_INTERVAL_MS) {
-      await deadLetterTracker.run('federation-sync', () => runFederationSyncJob());
+    if (generationAdmission.isActive() && nowMs - lastFederationSyncAt >= FEDERATION_SYNC_INTERVAL_MS) {
+      await deadLetterTracker.run('federation-sync', () =>
+        runFederationSyncJob({ signal: generationAdmission.signal }),
+      );
       lastFederationSyncAt = nowMs;
     }
+    if (!generationAdmission.isActive()) break;
 
     // Drain the brain_embedding_jobs queue every 30s (#197). The write path
     // queues jobs when synchronous embedding fails (rate limit, network);
     // this catches them up. SELECT FOR UPDATE SKIP LOCKED makes it safe
     // under multiple worker instances.
-    if (nowMs - lastEmbeddingBackfillAt >= EMBEDDING_BACKFILL_INTERVAL_MS) {
-      await deadLetterTracker.run('embedding-backfill', () => runEmbeddingBackfillJob());
+    if (generationAdmission.isActive() && nowMs - lastEmbeddingBackfillAt >= EMBEDDING_BACKFILL_INTERVAL_MS) {
+      await deadLetterTracker.run('embedding-backfill', () =>
+        runEmbeddingBackfillJob({ signal: generationAdmission.signal }),
+      );
       lastEmbeddingBackfillAt = nowMs;
     }
+    if (!generationAdmission.isActive()) break;
 
     // Backfill authoringTier on pre-Layer-1 pages (#251 follow-up).
     // Hourly; converges to no-op once the corpus is fully tagged.
-    if (nowMs - lastTierBackfillAt >= TIER_BACKFILL_INTERVAL_MS) {
-      await deadLetterTracker.run('tier-backfill', () => runTierBackfillJob());
+    if (generationAdmission.isActive() && nowMs - lastTierBackfillAt >= TIER_BACKFILL_INTERVAL_MS) {
+      await deadLetterTracker.run('tier-backfill', () => runTierBackfillJob({ signal: generationAdmission.signal }));
       lastTierBackfillAt = nowMs;
     }
+    if (!generationAdmission.isActive()) break;
 
     // #282: kick off a daily relationship-tier backfill batch when one
     // is not already running and 24h has elapsed since the last START
@@ -862,6 +936,7 @@ async function main(): Promise<void> {
     // (even with per-user failures inside it) keeps the timestamp so
     // the cadence stays at one batch / 24h.
     if (
+      generationAdmission.isActive() &&
       !relationshipTierBackfillInFlight &&
       nowMs - lastRelationshipTierBackfillAt >= RELATIONSHIP_TIER_BACKFILL_INTERVAL_MS
     ) {
@@ -869,7 +944,9 @@ async function main(): Promise<void> {
       const previousLastAt = lastRelationshipTierBackfillAt;
       lastRelationshipTierBackfillAt = nowMs;
       const userIds = userConnectors.map((uc) => uc.userId);
-      void runRelationshipTierBackfillBatch(userIds)
+      void runRelationshipTierBackfillBatch(userIds, {
+        signal: generationAdmission.signal,
+      })
         .then((batchSummary) => {
           log.info('Relationship-tier backfill batch complete', {
             users: userIds.length,
@@ -883,7 +960,8 @@ async function main(): Promise<void> {
           // the batch helper). Revert the timestamp so the next cycle
           // retries immediately rather than waiting another 24h.
           log.warn('Relationship-tier backfill batch failed', {
-            error: err instanceof Error ? err.message : String(err),
+            jobCode: 'relationship-tier-backfill',
+            errorCode: 'job-failed',
           });
           lastRelationshipTierBackfillAt = previousLastAt;
           // #407: feed the failure streak so a persistently broken batch
@@ -894,28 +972,34 @@ async function main(): Promise<void> {
           relationshipTierBackfillInFlight = false;
         });
     }
+    if (!generationAdmission.isActive()) break;
 
     // Memory action loop: persist daily opportunities, then try to advance
     // them through policy + routing. Its 6h cadence gives the briefing
     // generator recent "queued approval / needs skill / executed" outcomes
     // to report instead of only raw suggestions.
     if (
+      generationAdmission.isActive() &&
       !memoryActionLoopInFlight &&
       nowMs - lastMemoryActionLoopAt >= MEMORY_ACTION_LOOP_INTERVAL_MS
     ) {
       memoryActionLoopInFlight = true;
       const previousLastAt = lastMemoryActionLoopAt;
       lastMemoryActionLoopAt = nowMs;
-      void runMemoryActionLoopJob()
+      void runMemoryActionLoopJob({ signal: generationAdmission.signal })
         .then((summary) => {
           if (summary.attempted > 0 || summary.opportunitiesUpserted > 0) {
-            log.info('Memory action loop tick complete', { ...summary, reports: summary.reports.length });
+            log.info('Memory action loop tick complete', {
+              ...summary,
+              reports: summary.reports.length,
+            });
           }
           void deadLetterTracker.recordOutcome('memory-action-loop', null);
         })
         .catch((err) => {
           log.warn('Memory action loop failed', {
-            error: err instanceof Error ? err.message : String(err),
+            jobCode: 'memory-action-loop',
+            errorCode: 'job-failed',
           });
           lastMemoryActionLoopAt = previousLastAt;
           void deadLetterTracker.recordOutcome('memory-action-loop', err);
@@ -924,6 +1008,7 @@ async function main(): Promise<void> {
           memoryActionLoopInFlight = false;
         });
     }
+    if (!generationAdmission.isActive()) break;
 
     // #304: briefing generation, daily and weekly. Two independent
     // single-flight guards because the cadences are different and a
@@ -935,54 +1020,62 @@ async function main(): Promise<void> {
     // adaptive-prose path can be wired once a worker-side LLM-per-user
     // path lands (separate follow-up).
     if (
+      generationAdmission.isActive() &&
       !briefingDailyInFlight &&
       nowMs - lastBriefingDailyAt >= BRIEFING_DAILY_INTERVAL_MS
     ) {
       briefingDailyInFlight = true;
       const previousLastAt = lastBriefingDailyAt;
       lastBriefingDailyAt = nowMs;
-      void runBriefingGeneratorJob({ cadence: 'daily' })
+      void runBriefingGeneratorJob({
+        cadence: 'daily',
+        signal: generationAdmission.signal,
+      })
         .then(() => {
           void deadLetterTracker.recordOutcome('briefing-generator-daily', null);
         })
         .catch((err) => {
           log.warn('Daily briefing generator failed', {
-            error: err instanceof Error ? err.message : String(err),
+            jobCode: 'briefing-generator-daily',
+            errorCode: 'job-failed',
           });
           lastBriefingDailyAt = previousLastAt;
-          void deadLetterTracker.recordOutcome('briefing-generator-daily', err, {
-            cadence: 'daily',
-          });
+          void deadLetterTracker.recordOutcome('briefing-generator-daily', err);
         })
         .finally(() => {
           briefingDailyInFlight = false;
         });
     }
+    if (!generationAdmission.isActive()) break;
 
     if (
+      generationAdmission.isActive() &&
       !briefingWeeklyInFlight &&
       nowMs - lastBriefingWeeklyAt >= BRIEFING_WEEKLY_INTERVAL_MS
     ) {
       briefingWeeklyInFlight = true;
       const previousLastAt = lastBriefingWeeklyAt;
       lastBriefingWeeklyAt = nowMs;
-      void runBriefingGeneratorJob({ cadence: 'weekly' })
+      void runBriefingGeneratorJob({
+        cadence: 'weekly',
+        signal: generationAdmission.signal,
+      })
         .then(() => {
           void deadLetterTracker.recordOutcome('briefing-generator-weekly', null);
         })
         .catch((err) => {
           log.warn('Weekly briefing generator failed', {
-            error: err instanceof Error ? err.message : String(err),
+            jobCode: 'briefing-generator-weekly',
+            errorCode: 'job-failed',
           });
           lastBriefingWeeklyAt = previousLastAt;
-          void deadLetterTracker.recordOutcome('briefing-generator-weekly', err, {
-            cadence: 'weekly',
-          });
+          void deadLetterTracker.recordOutcome('briefing-generator-weekly', err);
         })
         .finally(() => {
           briefingWeeklyInFlight = false;
         });
     }
+    if (!generationAdmission.isActive()) break;
 
     // #310: promotion-eligibility check, daily. Idempotent — writes
     // are dedup'd by the partial unique index on (server_id,
@@ -990,13 +1083,16 @@ async function main(): Promise<void> {
     // the same window adds no new rows. Revert-on-failure keeps the
     // cadence tight when a transient DB error stops a tick.
     if (
+      generationAdmission.isActive() &&
       !promotionEligibilityInFlight &&
       nowMs - lastPromotionEligibilityAt >= PROMOTION_ELIGIBILITY_INTERVAL_MS
     ) {
       promotionEligibilityInFlight = true;
       const previousLastAt = lastPromotionEligibilityAt;
       lastPromotionEligibilityAt = nowMs;
-      void runPromotionEligibilityCheckJob()
+      void runPromotionEligibilityCheckJob({
+        signal: generationAdmission.signal,
+      })
         .then((summary) => {
           if (summary.offered > 0 || summary.alreadyPending > 0) {
             log.info('Promotion eligibility tick complete', { ...summary });
@@ -1005,7 +1101,8 @@ async function main(): Promise<void> {
         })
         .catch((err) => {
           log.warn('Promotion eligibility check failed', {
-            error: err instanceof Error ? err.message : String(err),
+            jobCode: 'promotion-eligibility-check',
+            errorCode: 'job-failed',
           });
           lastPromotionEligibilityAt = previousLastAt;
           void deadLetterTracker.recordOutcome('promotion-eligibility-check', err);
@@ -1014,23 +1111,22 @@ async function main(): Promise<void> {
           promotionEligibilityInFlight = false;
         });
     }
+    if (!generationAdmission.isActive()) break;
 
     // Expire stale approval requests every 10 poll cycles
-    if (pollCount % 10 === 0) {
+    if (generationAdmission.isActive() && pollCount % 10 === 0) {
       try {
         const expired = await approvalRepository.expirePending();
         if (expired > 0) {
           console.info(`[worker] Expired ${expired} stale approval request(s)`);
         }
       } catch (error) {
-        console.error(
-          '[worker] Error expiring approvals:',
-          error instanceof Error ? error.message : error,
-        );
+        console.error('[worker] Error expiring approvals:', error instanceof Error ? error.message : error);
       }
       // Clean up expired escalations — separate try/catch so expiry failures
       // don't block cleanup and vice versa
       for (const uc of userConnectors) {
+        if (!generationAdmission.isActive()) break;
         try {
           const cleaned = await approvalRepository.deleteStaleEscalations(uc.userId);
           if (cleaned > 0) {
@@ -1049,30 +1145,28 @@ async function main(): Promise<void> {
       // never purged — they're the operator's actionable queue. Best-effort:
       // a failure here must not block the poll loop.
       try {
-        const purged = await workerDeadLetterRepository.purgeResolvedOlderThan(
-          DEAD_LETTER_RETENTION_MS,
-        );
+        const purged = await workerDeadLetterRepository.purgeResolvedOlderThan(DEAD_LETTER_RETENTION_MS);
         if (purged > 0) {
           log.info(`Purged ${purged} resolved worker_dead_letter row(s)`);
         }
       } catch (error) {
-        log.warn('worker_dead_letter purge failed — continuing', {
-          error: error instanceof Error ? error.message : String(error),
-        });
+        reportDeadLetterRetentionFailure(error);
       }
     }
+    if (!generationAdmission.isActive()) break;
 
     // Re-discover users every 10 poll cycles to pick up new connections.
     // When no users are tracked yet, check every cycle so first-time
     // connections are picked up within one poll interval (~10s).
-    if (userConnectors.length === 0 || pollCount % 10 === 0) {
-      const newUserConnectors = await connectUserConnectors(await discoverUsers());
+    if (generationAdmission.isActive() && (userConnectors.length === 0 || pollCount % 10 === 0)) {
+      const discoveredUserConnectors = await discoverUsers();
+      if (!generationAdmission.isActive()) break;
       const oldUserIds = new Set(userConnectors.map((uc) => uc.userId));
-      const newUserIds = new Set(newUserConnectors.map((uc) => uc.userId));
-      const usersChanged = oldUserIds.size !== newUserIds.size
-        || [...oldUserIds].some((id) => !newUserIds.has(id));
-      if (usersChanged) {
-        log.info(`User set changed: ${[...oldUserIds].join(',')} → ${[...newUserIds].join(',')}`);
+      const newUserIds = new Set(discoveredUserConnectors.map((uc) => uc.userId));
+      if (!sameConnectorTopology(userConnectors, discoveredUserConnectors)) {
+        log.info(`Connector topology changed for users: ${[...oldUserIds].join(',')} → ${[...newUserIds].join(',')}`);
+        const newUserConnectors = await connectUserConnectors(discoveredUserConnectors);
+        if (!generationAdmission.isActive()) break;
         // Disconnect old connectors
         for (const uc of userConnectors) {
           for (const connector of uc.connectors) {
@@ -1081,19 +1175,25 @@ async function main(): Promise<void> {
         }
         userConnectors = newUserConnectors;
 
-        // Prune circuit breakers and signal dedupe maps for users no longer tracked
-        for (const userId of userCircuitBreakers.keys()) {
-          if (!newUserIds.has(userId)) {
-            userCircuitBreakers.delete(userId);
+        // Prune account-scoped breakers and per-user signal dedupe state.
+        const activeRuntimeKeys = new Set(
+          newUserConnectors.flatMap((uc) =>
+            uc.connectors.map((connector) => connectorRuntimeKey(uc.userId, connector)),
+          ),
+        );
+        for (const runtimeKey of userCircuitBreakers.keys()) {
+          if (!activeRuntimeKeys.has(runtimeKey)) {
+            userCircuitBreakers.delete(runtimeKey);
           }
         }
         signalDeduper.pruneUsers(newUserIds);
       }
     }
 
+    if (!generationAdmission.isActive()) break;
     await refreshIronClawToolsIfDue();
 
-    await new Promise((resolve) => setTimeout(resolve, config.workerPollIntervalMs));
+    await waitForNextPoll(config.workerPollIntervalMs);
   }
 
   // Graceful shutdown
@@ -1110,16 +1210,19 @@ async function main(): Promise<void> {
 // Graceful shutdown handlers
 process.on('SIGINT', () => {
   log.info('Received SIGINT, shutting down gracefully...');
-  running = false;
+  beginWorkerShutdown('Worker received SIGINT');
 });
 
 process.on('SIGTERM', () => {
   log.info('Received SIGTERM, shutting down gracefully...');
-  running = false;
+  beginWorkerShutdown('Worker received SIGTERM');
 });
 
 // Start the worker
 void main().catch((error) => {
-  log.error('Fatal error', { error: error instanceof Error ? error.message : String(error) });
+  if (isWorkerGenerationRevoked(error)) return;
+  log.error('Fatal error', {
+    error: error instanceof Error ? error.message : String(error),
+  });
   process.exit(1);
 });

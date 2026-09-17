@@ -12,6 +12,23 @@ import {
 } from './fixtures.js';
 
 describe('ExplanationGenerator.generate', () => {
+  it('returns the durable record supplied by the persistence adapter', async () => {
+    const repo = new InMemoryExplanationRepo();
+    repo.save = async (record) => ({
+      ...record,
+      id: '11111111-1111-4111-8111-111111111111',
+      createdAt: new Date('2026-09-12T00:00:00.000Z'),
+    });
+    const record = await new ExplanationGenerator(repo).generate(
+      makeDecision(),
+      makeOutcome(),
+      makeContext(),
+    );
+
+    expect(record.id).toBe('11111111-1111-4111-8111-111111111111');
+    expect(record.createdAt).toEqual(new Date('2026-09-12T00:00:00.000Z'));
+  });
+
   it('builds a record for an auto-executed outcome with no escalation rationale', async () => {
     const repo = new InMemoryExplanationRepo();
     const gen = new ExplanationGenerator(repo);

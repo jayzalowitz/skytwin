@@ -10,8 +10,9 @@
  * Today:
  *  - "pause when idle" toggle (#382, default ON).
  *  - "send anonymous crash reports" toggle (#399, default OFF — opt-in,
- *    to honor the privacy promise; nothing leaves the machine unless the
- *    user explicitly turns this on).
+ *    so crash diagnostics are not transmitted unless the user explicitly
+ *    enables them; connectors and configured providers have separate network
+ *    behavior and disclosures).
  *
  * New desktop-only prefs land here as the platform grows.
  */

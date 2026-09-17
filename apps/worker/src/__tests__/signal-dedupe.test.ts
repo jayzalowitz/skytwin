@@ -2,13 +2,25 @@ import { describe, it, expect } from 'vitest';
 import type { RawSignal } from '@skytwin/connectors';
 import { SignalDeduper, DEFAULT_TTL_MS, DEFAULT_MAX_PER_USER } from '../signal-dedupe.js';
 
-function makeSignal(id: string, source = 'gmail'): RawSignal {
+function makeSignal(id: string, source = 'gmail', connectorAccountId?: string): RawSignal {
   return {
     id,
     source,
     type: 'email_received',
     data: {},
     timestamp: new Date(),
+    ...(connectorAccountId
+      ? {
+          connectorEvidence: {
+            kind: 'account_signal' as const,
+            connectorAccountId,
+            provider: 'microsoft' as const,
+            source: 'outlook' as const,
+            authoringTier: 'inbox_personal' as const,
+            observedAt: new Date().toISOString(),
+          },
+        }
+      : {}),
   };
 }
 
@@ -40,6 +52,15 @@ describe('SignalDeduper', () => {
     dedup.mark(gmailSig, 'user1');
     expect(dedup.has(gmailSig, 'user1')).toBe(true);
     expect(dedup.has(slackSig, 'user1')).toBe(false);
+  });
+
+  it('isolates equal provider ids by connected account', () => {
+    const dedup = new SignalDeduper();
+    const accountA = makeSignal('same', 'outlook', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    const accountB = makeSignal('same', 'outlook', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+    dedup.mark(accountA, 'user1');
+    expect(dedup.has(accountA, 'user1')).toBe(true);
+    expect(dedup.has(accountB, 'user1')).toBe(false);
   });
 
   it('expires entries past the TTL window', () => {

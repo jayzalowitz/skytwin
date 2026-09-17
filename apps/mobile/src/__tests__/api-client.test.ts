@@ -1,4 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import {
+  createClientRequestId,
+  resolveAssistantRequestIdentity,
+  shouldRetireAssistantRequestIdentity,
+  SkyTwinApiClient,
+} from '../services/api-client';
 
 /**
  * Deep tests for mobile app services.
@@ -18,6 +24,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
+const ASSISTANT_REQUEST_ID = '11111111-2222-4333-8444-555555555555';
 
 interface TestRequestInit extends RequestInit {
   headers: Record<string, string>;
@@ -100,11 +107,30 @@ class TestApiClient {
     return this.get(`/api/twin/${encodeURIComponent(userId)}`);
   }
 
-  async sendAssistantMessage(userId: string, content: string, threadId?: string) {
-    const body: Record<string, unknown> = { userId, content };
+  async sendAssistantMessage(
+    userId: string,
+    content: string,
+    threadId?: string,
+    requestId = createClientRequestId(),
+  ) {
+    const body: Record<string, unknown> = { userId, content, requestId };
     if (threadId) body['threadId'] = threadId;
     // 60s override — LLM replies routinely exceed the 10s default.
-    return this.request('POST', '/api/assistant/messages', body, 60_000);
+    const result = await this.request('POST', '/api/assistant/messages', body, 60_000);
+    if (
+      result.success &&
+      typeof result.data === 'object' &&
+      result.data !== null &&
+      'status' in result.data &&
+      result.data.status === 'unresolved'
+    ) {
+      return {
+        success: false as const,
+        error: 'That request could not be reconciled safely. If no reply appears, start a new chat or edit the message before sending again.',
+        statusCode: 202,
+      };
+    }
+    return result;
   }
 
   private headers(): Record<string, string> {
@@ -217,26 +243,181 @@ describe('API client request construction', () => {
     expect(opts.signal).toBeInstanceOf(AbortSignal);
   });
 
-  it('posts an assistant message to /api/assistant/messages with userId + content', async () => {
+  it('posts an assistant message with a generated requestId', async () => {
     mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
     await client.sendAssistantMessage('user-1', 'hello twin');
     const [url, opts] = firstFetchCall();
     expect(url).toBe('http://192.168.1.50:3100/api/assistant/messages');
     expect(opts.method).toBe('POST');
-    expect(firstFetchJsonBody()).toEqual({ userId: 'user-1', content: 'hello twin' });
+    const body = firstFetchJsonBody();
+    expect(body).toEqual({
+      userId: 'user-1', content: 'hello twin', requestId: expect.any(String),
+    });
+    expect(body.requestId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
   });
 
   it('includes threadId only when continuing an existing conversation', async () => {
     mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
     await client.sendAssistantMessage('user-1', 'next', 'thread-9');
-    expect(firstFetchJsonBody()).toEqual({ userId: 'user-1', content: 'next', threadId: 'thread-9' });
+    expect(firstFetchJsonBody()).toEqual({
+      userId: 'user-1', content: 'next', threadId: 'thread-9', requestId: expect.any(String),
+    });
+  });
+
+  it('preserves a caller-supplied requestId across a logical retry', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+    const actualClient = new SkyTwinApiClient('http://192.168.1.50:3100', 'test-token');
+
+    await actualClient.sendAssistantMessage(
+      'user-1', 'retry me', undefined, ASSISTANT_REQUEST_ID,
+    );
+    await actualClient.sendAssistantMessage(
+      'user-1', 'retry me', undefined, ASSISTANT_REQUEST_ID,
+    );
+
+    const bodies = mockFetch.mock.calls.map((call) => {
+      const opts = call[1] as TestRequestInit;
+      return JSON.parse(opts.body ?? '{}') as Record<string, unknown>;
+    });
+    expect(bodies.map((body) => body.requestId)).toEqual([
+      ASSISTANT_REQUEST_ID,
+      ASSISTANT_REQUEST_ID,
+    ]);
+  });
+
+  it('reuses an identity only while content and thread are unchanged', () => {
+    const first = resolveAssistantRequestIdentity(null, 'hello', 'thread-1');
+    const retry = resolveAssistantRequestIdentity(first, 'hello', 'thread-1');
+    const edited = resolveAssistantRequestIdentity(first, 'hello again', 'thread-1');
+    const moved = resolveAssistantRequestIdentity(first, 'hello', 'thread-2');
+
+    expect(retry).toBe(first);
+    expect(edited.requestId).not.toBe(first.requestId);
+    expect(moved.requestId).not.toBe(first.requestId);
+  });
+
+  it('maps an unresolved duplicate to a typed recovery-required result', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 202,
+      json: async () => ({
+        status: 'unresolved',
+        code: 'assistant_request_recovery_required',
+      }),
+    });
+
+    const actualClient = new SkyTwinApiClient('http://192.168.1.50:3100', 'test-token');
+    const result = await actualClient.sendAssistantMessage(
+      'user-1', 'retry me', undefined, ASSISTANT_REQUEST_ID,
+    );
+
+    expect(result).toEqual({
+      success: false,
+      error: 'That request could not be reconciled safely. If no reply appears, start a new chat or edit the message before sending again.',
+      statusCode: 202,
+      code: 'assistant_request_recovery_required',
+    });
+  });
+
+  it('treats a malformed successful assistant response as ambiguous', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    });
+    const actualClient = new SkyTwinApiClient('http://192.168.1.50:3100', 'test-token');
+
+    const result = await actualClient.sendAssistantMessage(
+      'user-1', 'retry me', 'thread-1', ASSISTANT_REQUEST_ID,
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      code: 'assistant_response_reconciliation_required',
+    });
+  });
+
+  it('rejects assistant success data bound to another request or thread', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        thread: { id: 'thread-other', isNew: false },
+        userMessage: {
+          id: 'user-message-1',
+          threadId: 'thread-other',
+          role: 'user',
+          content: 'retry me',
+          clientRequestId: ASSISTANT_REQUEST_ID,
+        },
+        assistantMessage: {
+          id: 'assistant-message-1',
+          threadId: 'thread-other',
+          role: 'assistant',
+          content: 'done',
+          clientRequestId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        },
+      }),
+    });
+    const actualClient = new SkyTwinApiClient('http://192.168.1.50:3100', 'test-token');
+
+    const result = await actualClient.sendAssistantMessage(
+      'user-1', 'retry me', 'thread-1', ASSISTANT_REQUEST_ID,
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      code: 'assistant_response_reconciliation_required',
+    });
+  });
+
+  it('retains assistant request identity across ambiguous failures', () => {
+    expect(shouldRetireAssistantRequestIdentity(400)).toBe(false);
+    expect(shouldRetireAssistantRequestIdentity(409, 'assistant_request_id_conflict')).toBe(true);
+    expect(shouldRetireAssistantRequestIdentity(401)).toBe(false);
+    expect(shouldRetireAssistantRequestIdentity(403)).toBe(false);
+    expect(shouldRetireAssistantRequestIdentity(429)).toBe(false);
+    expect(shouldRetireAssistantRequestIdentity(502, 'assistant_providers_failed')).toBe(true);
+    expect(shouldRetireAssistantRequestIdentity(502, 'assistant_generation_failed')).toBe(true);
+    expect(shouldRetireAssistantRequestIdentity(503)).toBe(false);
+    expect(
+      shouldRetireAssistantRequestIdentity(503, 'assistant_response_reconciliation_required'),
+    ).toBe(false);
+    expect(shouldRetireAssistantRequestIdentity()).toBe(false);
+  });
+
+  it('preserves structured error codes from assistant failures', async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({
+        error: 'Approval response needs reconciliation',
+        code: 'assistant_response_reconciliation_required',
+      }),
+    });
+
+    const actualClient = new SkyTwinApiClient('http://192.168.1.50:3100', 'test-token');
+    const result = await actualClient.sendAssistantMessage(
+      'user-1', 'retry me', undefined, ASSISTANT_REQUEST_ID,
+    );
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Approval response needs reconciliation',
+      statusCode: 503,
+      code: 'assistant_response_reconciliation_required',
+    });
   });
 
   it('uses a 60s timeout for assistant messages (LLM replies exceed the 10s default)', async () => {
     mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
-    const spy = vi.spyOn(global, 'setTimeout');
+    // `globalThis`, not `global`: expo/tsconfig.base sets lib to DOM+ESNext with
+    // no node types, so the node-only `global` does not typecheck. Same object.
+    const spy = vi.spyOn(globalThis, 'setTimeout');
     await client.sendAssistantMessage('user-1', 'hi');
-    expect(spy.mock.calls.some((c) => c[1] === 60_000)).toBe(true);
+    expect(spy.mock.calls.some((c: unknown[]) => c[1] === 60_000)).toBe(true);
     spy.mockRestore();
   });
 });

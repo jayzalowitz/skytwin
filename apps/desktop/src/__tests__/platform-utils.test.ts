@@ -502,15 +502,25 @@ describe('electron-builder config', () => {
   const pkgPath = join(__dirname, '..', '..', 'package.json');
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   let buildConfig: Record<string, unknown>;
+  let packageConfig: Record<string, unknown>;
 
   try {
     // dynamic import would be async; use require for sync test setup
     const fs = require('fs');
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+    packageConfig = pkg;
     buildConfig = pkg.build;
   } catch {
+    packageConfig = {};
     buildConfig = {};
   }
+
+  it('does not duplicate the embedded API database dependency closure', () => {
+    const dependencies = packageConfig.dependencies as Record<string, string>;
+    const devDependencies = packageConfig.devDependencies as Record<string, string>;
+    expect(dependencies['@skytwin/db']).toBeUndefined();
+    expect(devDependencies['@skytwin/db']).toBe('workspace:*');
+  });
 
   it('has appId set', () => {
     expect(buildConfig.appId).toBe('com.skytwin.desktop');

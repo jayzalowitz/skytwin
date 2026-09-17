@@ -55,7 +55,9 @@ The system exposes private information or accesses data it shouldn't.
 
 **Why it matters:** Privacy violations can't be undone. Once information is exposed, it's exposed.
 
-**Mitigation — LLM prompt redaction (#375):** the decision pipeline reasons over inbound signals (email, calendar) using an LLM that may be a cloud provider. Before a prompt is assembled, the user-derived parts — the raw signal dump and episodic-memory summaries — pass through `redactPromptPii` (`packages/llm-client/src/redact.ts`), which masks email addresses to `[redacted:email]`. This is on by default in `PromptBuilder` (`buildCandidatePrompt` / `buildSituationPrompt`), so a contact's address never leaves the machine to a third-party model just because the twin reasoned about their message. It's safe because an action's recipient is resolved from the structured signal record, not parsed from the prompt. (Scope today: email addresses only; number/name masking and the interactive assistant's memory block are tracked follow-ups on #375.)
+**Mitigation — LLM prompt redaction (#375):** the decision pipeline reasons over inbound signals (email, calendar) using an LLM that may be a cloud provider. The raw signal dump and episodic-memory summaries pass through `redactPromptPii` (`packages/llm-client/src/redact.ts`), which masks email addresses to `[redacted:email]`. This is on by default in `PromptBuilder` (`buildCandidatePrompt` / `buildSituationPrompt`). It does not scan the situation summary, preferences, behavioral patterns, traits, chat, briefing prose, draft-email generation, or capability inference. Masking these two fragments is safe because an action's recipient is resolved from the structured signal record, not parsed from the prompt. (Scope today: email addresses only; broader prompt coverage, number/name masking, and the interactive assistant's memory block are tracked follow-ups on #375.)
+
+**Mitigation — explicit reasoning boundaries (#639):** provider routing reads a persisted `ReasoningMode` before constructing a chain. `on_device` accepts only the embedded adapter and loopback Ollama; it cannot fall through to a remote service. A loopback socket alone does not prove local inference because Ollama supports daemon-side cloud relay, so every on-device Ollama call uses its request-scoped `:local` source selector (Ollama 0.18+) and never retries the unqualified model. Explicit cloud selectors are rejected before transport; other aliases are sent as `:local`, which makes supported Ollama runtimes reject remote-backed manifests before dispatch, and response metadata is checked as a backstop. `bring_your_own_provider` is an explicit selection and discloses the external-network and retention boundary; Ollama in that mode is conservatively remote and unknown-priced. `verified_private_cloud` admits only TrustedRouter through its pinned verifier-owned transport. NEAR AI remains represented but rejected because its base-CVM evidence does not pin the dynamically selected inference workload. Unattended calls skip providers whose price is unknown, stale, invalid, or unbounded. The source of truth is [`packages/shared-types/src/reasoning-mode.ts`](../packages/shared-types/src/reasoning-mode.ts), with enforcement in [`packages/llm-client/src/provider-privacy.ts`](../packages/llm-client/src/provider-privacy.ts), [`packages/llm-client/src/providers/ollama.ts`](../packages/llm-client/src/providers/ollama.ts), and [`packages/llm-client/src/llm-client.ts`](../packages/llm-client/src/llm-client.ts).
 
 ### 4. Social Damage
 
@@ -84,6 +86,14 @@ The system takes an action with legal consequences the user didn't anticipate.
 ## Defense Layers
 
 Safety is not a single check. It is a series of overlapping defenses, each of which can independently prevent a bad outcome. If one layer fails, the others still protect the user.
+
+### Packaged Sample Boundary
+
+The account-free packaged sample is a separate read-only principal, not a user session and not a relaxation of the normal policy pipeline. [`apps/api/src/auth/demo-session.ts`](../apps/api/src/auth/demo-session.ts) signs a four-hour credential fixed to one reserved synthetic identity and accepts only `GET`/`HEAD` requests on an explicit allowlist; settings, credentials, inference, search, long-lived streams, cross-user access, mutations, and execution remain outside that authority. The API revalidates the user's `is_demo` database marker and fixture revision on every request.
+
+Interactive sample commands use a second, narrower boundary. [`apps/api/src/services/sample-simulation.ts`](../apps/api/src/services/sample-simulation.ts) accepts only a closed catalog of actions over fixed fictional proposals, invokes the policy and explanation logic, and stores bounded state in memory. It has no connector, provider, credential, execution-adapter, or database-write dependency. Expiry and generation checks fence asynchronous work, and reset or exit disposes the state. In the browser, [`sample-session.js`](../apps/web/public/js/sample-session.js) keeps the credential and identity in tab-scoped `sessionStorage`, gives real sign-in authority precedence, and fences renewal/exit races. [`sw-policy.js`](../apps/web/public/js/pwa/sw-policy.js) applies the API's case-insensitive route semantics and bypasses every `/api/v1/demo` request. It also recognizes the sample bearer credential and EventSource query token on normal product routes and bypasses those requests, so a service worker cannot cache or queue sample credentials or responses. Before replay, [`sw.js`](../apps/web/public/sw.js) reapplies the current policy to every stored write and deletes any entry that is no longer eligible.
+
+The desktop provisions that identity only after proving the bundled CockroachDB child belongs to its canonical data directory. Each API spawn gets a fresh in-memory instance proof, and web/worker startup waits for authenticated readiness from that exact child. Before spawning the worker, the desktop manager stores the hash of a separate per-generation secret in `worker_generation_authority`; protected transactions lock and validate the presented capability against the active row, so durable revocation rejects late writes. API or database authority loss contains dependent services. Normal tray pause stops the worker and suppresses delayed replacement while exact ready API/web may remain; a concurrent pause cancels recovery and contains partial state. Resume reuses safe exact services or reconstructs them in order before starting the worker. Source of truth: `packages/db/src/seeds/packaged-sample.ts`, `apps/desktop/src/service-manager.ts`, and `packages/db/src/worker-generation-authority.ts`.
 
 ### Layer 1: Trust Tiers
 
@@ -129,7 +139,7 @@ Domain controls are additive to trust tier -- a domain must be both allowed AND 
 
 ### Layer 6: Approval Routing
 
-When the system determines it cannot auto-execute (due to risk, confidence, policy, or trust tier), it creates an approval request. Approval requests include:
+When a supported approval-routed action cannot auto-execute (due to risk, confidence, policy, or trust tier), it creates an approval request. Approval requests include:
 - What the system wants to do
 - Why it thinks this is the right action
 - What evidence supports this choice
@@ -139,9 +149,51 @@ When the system determines it cannot auto-execute (due to risk, confidence, poli
 
 The user can approve, reject, edit, or let the request expire.
 
+**Assistant action-intent admission.**
+[`POST /api/assistant/messages`](../apps/api/src/routes/assistant.ts) requires a
+UUID request identity for each logical turn. [Migration
+080](../packages/db/src/migrations/080-assistant-message-idempotency.sql)
+enforces owner-scoped uniqueness for new user and assistant message rows. A
+completed retry replays the durable result; a request with only its user
+message recorded returns `202 assistant_request_recovery_required` and is not
+taken over based on elapsed time. The client explains that a fresh or edited
+request is required if no reply appears elsewhere. A
+recognized action intent never executes directly from chat: a selected action
+is stored as requiring approval, and its explanation must persist before an
+approval request can be created. If that safety path fails before approval,
+the assistant surfaces a visible non-action instead of falling through to an
+ordinary model reply. This is assistant-entry-path coverage, not release-wide
+explanation coverage.
+
+**Legacy action-taking routine admission.** The
+[`/api/routines` write routes](../apps/api/src/routes/routines.ts) do not
+register or delete remote routines in this release. The first admitted request is
+normalized into a typed candidate and risk assessment, evaluated by policy,
+and recorded before a terminal policy or unavailable response by
+[`routineNonActionRepository`](../packages/db/src/repositories/routine-non-action-repository.ts)
+in one transaction with its decision, non-action outcome, and explanation.
+The outcome keeps the evaluated candidate and risk for audit but has
+`selectedAction: null` and `autoExecute: false`; no approval request or remote
+adapter call is made. `GET /api/routines/:userId` remains a separate read-only
+listing path. This is distinct from read-only Watches.
+
 **`escalate_to_user` is a non-executing terminal.** Some candidates are *not* actions to run but a deliberate hand-off to the human: the inbound `SECURITY_ALERT` escalation (Safety Invariant 8), the scope gate's "connect write access" downgrade (#485), and a recognized-but-not-yet-autonomous chat intent (e.g. "decline that meeting" — the intent is understood but the specific event isn't resolved). `PolicyEvaluator.evaluate()` forces `requiresApproval` for **every** `escalate_to_user` regardless of trust tier, risk, autonomy, or provenance, so `autoExecute` (`= !requiresApproval && shouldAutoExecute(...)`) is always false. This is enforced server-side rather than relying on the action happening to be high-risk or untrusted-origin: a HIGH-confidence, reversible, zero-cost escalation on a *trusted* path (a user's own chat message, `user_originated`) would otherwise clear `shouldAutoExecute` and be routed to the execution router, where `escalate_to_user` has no real handler and dead-ends. The Approvals queue renders an escalation as a "tell me what to do" card alongside the alternative candidates the decision considered (`apps/api/src/routes/approvals.ts`).
 
-**Awareness disposition gate (opt-in, `AWARENESS_DISPOSITION_GATE=on`, default off).** At `observer`/`suggest` tier the trust-tier gate forces approval on *every* selected action, so routine awareness -- newsletters, automated notices, the user's own re-ingested sent mail, "no action required" calendar updates -- floods the Approvals queue with cards that aren't decisions. When enabled, the gate records such an outcome as `requiresApproval: false` at write time, so it surfaces as **FYI in the digest** (still visible, still explained) rather than an approval card. It runs on both write paths: the ingest route (`apps/api/src/services/awareness-disposition.ts`) and the memory action loop (`isAwarenessOnlyMemoryAction` in `apps/worker/src/jobs/memory-action-loop.ts`, which additionally skips execution). Both share one predicate (`isPassiveAwarenessShape` in `packages/shared-types/src/awareness-disposition.ts`) so they cannot drift. It is deliberately narrow and never weakens a real gate: it only disposes a **passive, reversible, verified-zero-cost** action (note / acknowledge / label / archive) from awareness-tier or untrusted-external content, and it **never** gates an injection-guard escalation (a set `confirmationLevel`), a non-passive / irreversible / costed action, or human inbound mail. The injection guard (Safety Invariant 8) stays the security boundary; this gate only removes queue noise below it.
+**Awareness disposition gate (opt-in, `AWARENESS_DISPOSITION_GATE=on`, default off).** At `observer`/`suggest` tier the trust-tier gate forces approval on *every* selected action, so routine awareness -- newsletters, automated notices, the user's own re-ingested sent mail, "no action required" calendar updates -- floods the Approvals queue with cards that aren't decisions. When enabled, the gate records such an outcome as `requiresApproval: false` at write time, so it surfaces as **FYI in the digest** (still visible, still explained) rather than an approval card. It runs on both write paths: the ingest route (`apps/api/src/services/awareness-disposition.ts`) and the memory action loop (`isAwarenessOnlyMemoryAction` in `apps/worker/src/jobs/memory-action-loop.ts`, which additionally skips execution). Both share one predicate (`isPassiveAwarenessShape` in `packages/shared-types/src/awareness-disposition.ts`) so they cannot drift. It is deliberately narrow and never weakens a real gate: it only disposes a **passive, reversible, verified-zero-cost** note, acknowledgement, dismissal, or label from awareness-tier or untrusted-external content, and it **never** gates an injection-guard escalation (a set `confirmationLevel`), a non-passive / irreversible / costed action, or human inbound mail. The legacy shape allowlist still names `archive_email`, but the destructive-action guard always adds confirmation, so archive cannot satisfy the complete disposition gate. The injection guard (Safety Invariant 8) stays the security boundary; this gate only removes queue noise below it.
+
+**Gmail archive is proposal/consent-only in current source.** The default-off
+`SKYTWIN_GMAIL_ARCHIVE_ENABLED=true` experiment builds one canonical,
+owner-bound proposal with overall `MODERATE` risk. `archive_email` is a
+destructive marker and always requires one explicit confirmation. The
+dedicated approval response records consent and feedback intent, reserves the
+effect boundary, and returns `execution: null`; it never falls through to the
+generic IronClaw, OpenClaw, or Direct adapters. The caller kernel, recovery
+worker, and twin-feedback projection remain intentionally unwired. Approval
+responses are also excluded from the PWA offline mutation queue, and any stale
+queued response is discarded rather than replayed. Sources:
+[`gmail-archive-proposal.ts`](../packages/decision-engine/src/gmail-archive-proposal.ts),
+[`approvals.ts`](../apps/api/src/routes/approvals.ts), and
+[`sw-policy.js`](../apps/web/public/js/pwa/sw-policy.js).
 
 ### Layer 7: Global pause + per-user pause (#379)
 
@@ -159,7 +211,7 @@ The per-user pause complements but does NOT replace the "demote to observer" tie
 Every user can wipe their entire footprint from Settings → "Delete everything about me." Two-stage confirm (window.confirm → window.prompt "type DELETE"), then `DELETE /api/users/:userId?confirm=delete-my-data` runs the full purge inside a single CRDB serializable transaction via `userPurgeRepository.purgeUser`:
 
 - Leaves of the dependency graph go first (execution_results, execution_events, execution_plans, explanation_records, decision_outcomes, candidate_actions, twin_profile_versions, knowledge_triples)
-- Then the final `DELETE FROM users` cascades through the 32 user_id FKs from migration 061 (#413) and collapses the rest of the footprint — twin profile, decisions, memory pages, knowledge entities, episodic memories, preferences, OAuth tokens, sessions, spend records, etc. — in one statement
+- Then the final `DELETE FROM users` cascades through the owner-bound foreign-key graph and collapses the rest of the footprint — twin profile, decisions, receipts, effect barriers, memory pages, knowledge entities, episodic memories, preferences, OAuth tokens, sessions, spend records, etc. — in one statement
 
 Either the whole delete completes or the transaction rolls back; there is no partial-delete state. Cascade behaviour is exercised end-to-end by `cascade-cleanup.e2e.test.ts`. The endpoint is gated by `sessionAuth + requireUserParamOwnership` in `apps/api/src/routes/users.ts`, so user A cannot delete user B whether `:userId` is passed as a UUID or the authenticated user's own email.
 
@@ -245,7 +297,7 @@ How much money is at stake?
 
 | Rating | Meaning | Examples |
 |--------|---------|---------|
-| Negligible | $0 | Archive, reschedule |
+| Negligible | $0 | Add a local label, create a note |
 | Low | < $10 | Small subscription renewal |
 | Moderate | $10-$100 | Grocery order, service renewal |
 | High | $100-$1000 | Flight booking, major purchase |
@@ -269,7 +321,7 @@ Does this action involve private or sensitive information?
 
 | Rating | Meaning | Examples |
 |--------|---------|---------|
-| Negligible | No private data involved | Archive newsletter |
+| Negligible | No private data involved | Create a content-free local reminder |
 | Low | Routine personal data | Calendar management |
 | Moderate | Sensitive personal data | Email with personal content |
 | High | Highly sensitive data | Financial records, health info |
@@ -281,7 +333,7 @@ Could this action affect a relationship if done wrong?
 
 | Rating | Meaning | Examples |
 |--------|---------|---------|
-| Negligible | No interpersonal impact | Archive, organize |
+| Negligible | No interpersonal impact | Add a local label, organize a private note |
 | Low | Routine professional interaction | Accept meeting, send receipt |
 | Moderate | Interaction with known contacts | Reply to colleague email |
 | High | Sensitive interpersonal context | Decline invitation, respond to complaint |
@@ -363,7 +415,7 @@ When an action requires approval:
    - Reversible actions: May auto-execute if confidence is high and urgency is pressing
    - Irreversible actions: Never auto-execute on expiry. Notify user of missed window.
 
-4. **On approval:** Execute the action via IronClaw. Record approval as positive feedback.
+4. **On approval:** Ordinary supported actions may proceed through their admitted execution path and record positive feedback. Gmail archive is a deliberate exception in current source: its dedicated path records consent and returns `execution: null`, with no generic IronClaw/OpenClaw fallback.
 
 5. **On rejection:** Cancel the action. Record rejection as negative feedback. Include user's reason if provided.
 
@@ -373,7 +425,7 @@ When an action requires approval:
 
 ### What Must Be Logged
 
-Every decision in the pipeline produces an audit trail:
+The supported-path contract requires an audit trail with the following fields. Release-wide entry-path coverage remains under audit:
 
 1. **Raw event:** The original signal that triggered the decision
 2. **Interpreted situation:** How the system classified the event
@@ -386,11 +438,40 @@ Every decision in the pipeline produces an audit trail:
 9. **User response:** If escalated, what the user decided
 10. **Feedback effect:** How the outcome affected the twin model
 
+### Inference Receipt Coverage
+
+The versioned [inference receipt contract](inference-receipts.md) is a separate,
+structured record for reasoning-path integrity with no dedicated prompt or
+response fields. Its free-form strings must not carry source content or secrets,
+and the local encryption inventory conservatively treats the JSON as potentially
+source-bearing because that caller obligation cannot be mechanically inferred.
+Its repository boundary can
+persist only a receipt that verifies against caller-supplied recorder trust
+roots; a confidential `verified` status additionally requires a pinned provider
+key and provider-specific attestation policy. Verification never authorizes an
+action or replaces the policy, provenance, trust-tier, spend, reversibility, or
+explanation gates above.
+
+This is decision-event coverage, not universal workflow coverage. Within a
+successfully finalized attempt, decision-event ingestion captures each completed
+call made through its receipt-aware client and atomically persists the batch
+before approval creation or external execution. It uses either the configured
+three-part recorder identity or an ephemeral process-local identity. If the
+attempt stops after its decision row is durable but before finalization, a retry
+returns recovery-required before client construction, inference, memory writes,
+approval, or execution. It does not claim a new batch is complete; preserving
+availability here requires a future durable provisional trace journal or
+atomic-restart design. Other application clients are not covered, and the
+product does not export the canonical verification bundle or show a receipt
+detail UI. The authenticated decision route can read or delete receipt metadata.
+A missing receipt therefore means “unavailable,” not “local,” “private,” or
+“verified.”
+
 ### What the User Can See
 
 The user can inspect:
 - Current twin profile (all preferences and inferences, with evidence)
-- Decision history (every decision, its outcome, and explanation)
+- Recorded decision history, including available outcome and explanation details for supported paths
 - Policy configuration (all active policies and their effects)
 - Approval history (past approval requests and responses)
 - Trust tier status (current tier, progression metrics, demotion history)
@@ -400,9 +481,13 @@ The user can inspect:
 
 - Decision history: Retained indefinitely (needed for evals and audit)
 - Twin profile versions: Retained indefinitely (needed for historical reconstruction)
-- Raw events: Retained for 90 days, then summarized (configurable)
+- Raw events: Retained until explicit user deletion; no automatic 90-day summarization job exists today
 - Explanation records: Retained indefinitely
 - Feedback events: Retained indefinitely
+- Inference receipts: completed calls from successfully finalized decision-event
+  attempts are captured; metadata rows are retained with their decision,
+  included in user backups, and deleted with that decision or user. Interrupted
+  pre-finalization decisions remain recovery-required and do not proceed.
 
 ## Rollback Capabilities
 
@@ -411,7 +496,8 @@ The user can inspect:
 1. **Twin model changes:** Revert to any previous twin profile version
 2. **Policy changes:** Revert policy configurations
 3. **Trust tier changes:** Manual trust tier adjustment (user-initiated)
-4. **Executed actions (where possible):** Request rollback via IronClaw for reversible actions
+4. **Executed actions:** Generic capability rollback currently reports eligible
+   targets but does not dispatch; durable provider rollback is tracked in #695
 
 ### What Cannot Be Rolled Back
 
@@ -422,11 +508,13 @@ The user can inspect:
 
 ### Rollback Process
 
-1. User requests undo for a specific decision
-2. System checks reversibility classification
-3. If reversible: send rollback request to IronClaw, record undo as feedback
-4. If partially reversible: present user with what can and cannot be undone
-5. If irreversible: notify user that rollback is not possible, record as feedback for future avoidance
+1. User requests a rollback report for a capability and time window.
+2. The system checks owner-scoped target linkage and reversibility metadata.
+3. Reversible targets are reported as `rollback_unavailable`; no router or
+   adapter is resolved.
+4. Irreversible targets are listed with the reason recorded at execution time.
+5. Generic dispatch stays disabled until #695 proves durable one-winner
+   admission, terminal ambiguity handling, and complete explanations.
 
 ## What the System Must NEVER Do Without Explicit Approval
 

@@ -7,8 +7,7 @@
  * the adaptive layer must handle null by falling back to its deterministic
  * path.
  *
- * Provider priority (#375 — applies to the SINGLETON FACTORY ONLY;
- * see scope note below):
+ * Provider priority (#375 — applies within the environment-driven chain):
  *
  *   Default — LOCAL-FIRST: EMBEDDED → OLLAMA → ANTHROPIC → OPENAI → GOOGLE.
  *     This matches the "your data stays local" promise from the privacy
@@ -28,27 +27,28 @@
  * Hosted providers are included when their API key is set. Ollama is
  * included when OLLAMA_BASE_URL is non-empty. The `embedded` provider
  * (llama.cpp via subprocess) is included when SKYTWIN_LLAMACPP_BIN
- * points at a real binary OR `llama-cli` is on PATH AND a *.gguf
+ * points at a real generation binary OR `llama-completion` is on PATH AND a *.gguf
  * model is discoverable — that's the path grandma uses without ever
  * signing up for an API key.
  *
- * SCOPE OF THIS REORDER (#375 partial):
- *   - `getLlmClientFromConfig()` (this module): YES, affected.
- *   - Callers that read `aiProviderRepository.getEnabledForUser` and
- *     construct their own LlmClient instance (events.ts decision
- *     pipeline, assistant.ts, lifebooks.ts, draft-email-setup.ts): NOT
- *     affected. Those paths order providers by the per-user
- *     `ai_provider_settings.priority` column.
- *   - The user-facing per-user toggle UI that would unify both
- *     ordering paths is tracked as a #375 follow-up. This PR fixes
- *     the env-driven singleton, which is what `capabilities.ts`
- *     and similar callers use.
+ * SKYTWIN_REASONING_MODE scopes the result. A mixed local/remote chain
+ * without that explicit setting is rejected. User-scoped request paths
+ * do not use this singleton; they share `resolveUserLlmClient`, which
+ * reads the persisted per-user mode and provider priority atomically.
  */
 
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, dirname, join } from 'node:path';
 import { execSync } from 'node:child_process';
-import { LlmClient } from '@skytwin/llm-client';
+import { clearEmbeddedPortCache, LlmClient } from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
+import { ACTIVE_MODEL_MANIFEST } from '@skytwin/embedded-llm';
+import {
+  canonicalizeProviderBaseUrl,
+  parseReasoningMode,
+  type ReasoningMode,
+} from '@skytwin/shared-types';
 
 /** Module-level singleton so we construct the client once per process */
 let _cached: LlmClient | null | undefined;
@@ -59,100 +59,133 @@ let _cached: LlmClient | null | undefined;
  * chain private, and the priority order is the whole load-bearing
  * piece of this module.
  */
-export function buildProviderChain(env: Record<string, string | undefined>): ProviderEntry[] {
+export function buildProviderChain(
+  env: Record<string, string | undefined>,
+): ProviderEntry[] {
   const local: ProviderEntry[] = [];
   const cloud: ProviderEntry[] = [];
 
   if (isEmbeddedRuntimeAvailable(env)) {
     local.push({
-      name: 'embedded',
-      apiKey: '',
-      // 'auto' lets `@skytwin/embedded-llm` pick the first GGUF it finds in
-      // the configured model directory. Power users override via
-      // SKYTWIN_LLAMA_MODEL to a specific path.
-      model: env['SKYTWIN_LLAMA_MODEL'] ?? 'auto',
+      name: "embedded",
+      apiKey: "",
+      // 'auto' lets `@skytwin/embedded-llm` resolve the verified managed
+      // artifact. Power users opt into a separately user-managed path with
+      // SKYTWIN_LLAMA_MODEL.
+      model: env["SKYTWIN_LLAMA_MODEL"] ?? "auto",
     });
   }
 
-  const ollamaUrl = env['OLLAMA_BASE_URL'] ?? '';
+  const ollamaUrl = env["OLLAMA_BASE_URL"] ?? "";
   if (ollamaUrl) {
     local.push({
-      name: 'ollama',
-      apiKey: '',
-      model: env['OLLAMA_MODEL'] ?? 'llama3.2',
-      baseUrl: ollamaUrl,
+      name: "ollama",
+      apiKey: "",
+      model: env["OLLAMA_MODEL"] ?? "llama3.2",
+      baseUrl: canonicalizeProviderBaseUrl(ollamaUrl),
     });
   }
 
-  const anthropicKey = env['ANTHROPIC_API_KEY'] ?? '';
+  const anthropicKey = env["ANTHROPIC_API_KEY"] ?? "";
   if (anthropicKey) {
     cloud.push({
-      name: 'anthropic',
+      name: "anthropic",
       apiKey: anthropicKey,
-      model: env['ANTHROPIC_MODEL'] ?? 'claude-3-5-haiku-20241022',
+      model: env["ANTHROPIC_MODEL"] ?? "claude-3-5-haiku-20241022",
     });
   }
 
-  const openaiKey = env['OPENAI_API_KEY'] ?? '';
+  const openaiKey = env["OPENAI_API_KEY"] ?? "";
   if (openaiKey) {
     cloud.push({
-      name: 'openai',
+      name: "openai",
       apiKey: openaiKey,
-      model: env['OPENAI_MODEL'] ?? 'gpt-4o-mini',
+      model: env["OPENAI_MODEL"] ?? "gpt-4o-mini",
     });
   }
 
-  const googleKey = env['GOOGLE_API_KEY'] ?? '';
+  const googleKey = env["GOOGLE_API_KEY"] ?? "";
   if (googleKey) {
     cloud.push({
-      name: 'google',
+      name: "google",
       apiKey: googleKey,
-      model: env['GOOGLE_MODEL'] ?? 'gemini-1.5-flash',
+      model: env["GOOGLE_MODEL"] ?? "gemini-1.5-flash",
     });
   }
 
-  // Order (#375). Default is local-first so the "your data stays
-  // local" promise holds for users who configured a cloud key for
-  // fallback-quality but didn't intend cloud as the primary path.
-  // Set SKYTWIN_LLM_PRIORITY=cloud-first to restore the legacy
-  // hosted-providers-first ordering — required for users on
-  // hardware that can't run a local model and depend on cloud
-  // for everything.
-  const priority = (env['SKYTWIN_LLM_PRIORITY'] ?? 'local-first').toLowerCase();
-  if (priority === 'cloud-first') {
+  // Order providers only after the separate reasoning-mode gate authorizes
+  // the chain. A mixed local/remote chain requires SKYTWIN_REASONING_MODE;
+  // priority alone never grants permission to cross an execution boundary.
+  // Within an explicitly admitted chain, cloud-first restores the legacy
+  // hosted-provider preference for users who deliberately chose it.
+  const priority = (env["SKYTWIN_LLM_PRIORITY"] ?? "local-first").toLowerCase();
+  if (priority === "cloud-first") {
     return [...cloud, ...local];
   }
-  // Default: local-first. Unknown values fall back to local-first
-  // (privacy-preserving default — a typo must not turn into a
-  // silent escalation to cloud).
+  // Default: local-first. Unknown values preserve that ordering, while the
+  // mode resolver below independently rejects an ambiguous mixed chain.
   return [...local, ...cloud];
 }
 
+export function resolveEnvironmentReasoningMode(
+  env: Record<string, string | undefined>,
+  providers: readonly ProviderEntry[],
+): ReasoningMode | null {
+  const configured = env['SKYTWIN_REASONING_MODE'];
+  if (configured !== undefined) return parseReasoningMode(configured);
+  const hasLocal = providers.some((provider) => provider.name === 'embedded' || provider.name === 'ollama');
+  const hasRemote = providers.some((provider) => provider.name !== 'embedded' && provider.name !== 'ollama');
+  if (hasLocal && !hasRemote) return 'on_device';
+  if (hasRemote && !hasLocal) return 'bring_your_own_provider';
+  // A legacy mixed chain crossed the network when local inference failed.
+  // Require an explicit mode before preserving that behavior.
+  return null;
+}
+
+function buildModeScopedClient(
+  env: Record<string, string | undefined>,
+): LlmClient | null {
+  try {
+    const providers = buildProviderChain(env);
+    if (providers.length === 0) return null;
+    const mode = resolveEnvironmentReasoningMode(env, providers);
+    if (!mode) return null;
+    return LlmClient.forReasoningMode(mode, providers, 'system');
+  } catch {
+    return null;
+  }
+}
+
 /**
- * The `embedded` provider spawns `llama-cli` per request against a local
+ * The `embedded` provider spawns `llama-completion` per request against a local
  * GGUF model. We only add it to the chain when BOTH the binary and a
  * model are present — having only one or the other guarantees every
  * call throws (binary missing → spawn ENOENT; model missing →
  * NullEmbeddedTextPort throws NotAvailableError).
  *
- * Most developers have `llama-cli` on PATH via Homebrew or similar but
+ * Most developers have llama.cpp tools on PATH via Homebrew or similar but
  * no SkyTwin model installed, so the old "binary present = available"
  * gate was wrong for them.
  *
  * Detection mirrors `@skytwin/embedded-llm`'s runtime-detector:
  *   Binary:
  *     - Prefer SKYTWIN_LLAMACPP_BIN if it points at an existing file.
- *     - Otherwise probe PATH for `llama-cli` (Unix) / `llama-cli.exe` (Win).
+ *     - Otherwise probe PATH for `llama-completion`.
  *   Model:
  *     - Prefer SKYTWIN_LLAMA_MODEL if it points at an existing file.
- *     - Otherwise scan SKYTWIN_LLAMA_MODELS for a *.gguf file.
+ *     - Otherwise require the verified managed manifest and artifact.
  *
  * Explicitly disabling: set SKYTWIN_DISABLE_EMBEDDED=1 to skip even when
  * both are present (useful when running an evaluation against only
  * hosted providers).
  */
-function isEmbeddedRuntimeAvailable(env: Record<string, string | undefined>): boolean {
-  if (env['SKYTWIN_DISABLE_EMBEDDED'] === '1' || env['SKYTWIN_DISABLE_EMBEDDED'] === 'true') {
+function isEmbeddedRuntimeAvailable(
+  env: Record<string, string | undefined>,
+): boolean {
+  if (
+    env["SKYTWIN_DISABLE_EMBEDDED"] === "1" ||
+    env["SKYTWIN_DISABLE_EMBEDDED"] === "true"
+  ) {
     return false;
   }
   if (!hasLlamaBinary(env)) return false;
@@ -161,12 +194,17 @@ function isEmbeddedRuntimeAvailable(env: Record<string, string | undefined>): bo
 }
 
 function hasLlamaBinary(env: Record<string, string | undefined>): boolean {
-  const explicit = env['SKYTWIN_LLAMACPP_BIN'];
-  if (explicit && existsSync(explicit)) return true;
+  const explicit = env["SKYTWIN_LLAMACPP_BIN"];
+  if (explicit && existsSync(explicit)) {
+    if (!/^llama-cli(?:\.exe)?$/iu.test(basename(explicit))) return true;
+    const extension = basename(explicit).toLowerCase().endsWith('.exe') ? '.exe' : '';
+    return existsSync(join(dirname(explicit), `llama-completion${extension}`));
+  }
 
-  const probeCmd = process.platform === 'win32' ? 'where llama-cli' : 'which llama-cli';
+  const probeCmd =
+    process.platform === "win32" ? "where llama-completion" : "which llama-completion";
   try {
-    execSync(probeCmd, { stdio: 'ignore', timeout: 3000 });
+    execSync(probeCmd, { stdio: "ignore", timeout: 3000 });
     return true;
   } catch {
     return false;
@@ -174,19 +212,16 @@ function hasLlamaBinary(env: Record<string, string | undefined>): boolean {
 }
 
 function hasLlamaModel(env: Record<string, string | undefined>): boolean {
-  const explicit = env['SKYTWIN_LLAMA_MODEL'];
+  const explicit = env["SKYTWIN_LLAMA_MODEL"];
   if (explicit && existsSync(explicit)) return true;
 
-  const modelDir = env['SKYTWIN_LLAMA_MODELS'];
-  if (modelDir !== undefined && modelDir !== '' && existsSync(modelDir)) {
-    try {
-      const entries = readdirSync(modelDir);
-      return entries.some((e) => e.toLowerCase().endsWith('.gguf'));
-    } catch {
-      return false;
-    }
-  }
-  return false;
+  const modelDir =
+    env["SKYTWIN_LLAMA_MODELS"] ??
+    join(homedir(), ".skytwin", "models", "llama");
+  // This synchronous function only decides whether to include the embedded
+  // provider in a cached chain. The async port factory performs the authoritative
+  // manifest, digest and runtime compatibility verification before use.
+  return existsSync(join(modelDir, ACTIVE_MODEL_MANIFEST));
 }
 
 /**
@@ -202,13 +237,13 @@ export function getLlmClientFromConfig(
 ): LlmClient | null {
   if (_cached !== undefined) return _cached;
 
-  const providers = buildProviderChain(env);
-  if (providers.length === 0) {
+  const client = buildModeScopedClient(env);
+  if (!client) {
     _cached = null;
     return null;
   }
 
-  _cached = new LlmClient(providers, 'system');
+  _cached = client;
   return _cached;
 }
 
@@ -219,14 +254,21 @@ export function getLlmClientFromConfig(
 export function getLlmClientFromConfigFresh(
   env: Record<string, string | undefined> = process.env,
 ): LlmClient | null {
-  const providers = buildProviderChain(env);
-  if (providers.length === 0) return null;
-  return new LlmClient(providers, 'system');
+  return buildModeScopedClient(env);
 }
 
 /**
  * Reset the singleton. Only for tests.
  */
 export function _resetLlmClientCache(): void {
+  _cached = undefined;
+}
+
+/**
+ * Refresh every process-local layer that can retain managed-model discovery.
+ * Activation calls this only after the durable active manifest has switched.
+ */
+export function refreshManagedLlmRuntime(): void {
+  clearEmbeddedPortCache();
   _cached = undefined;
 }

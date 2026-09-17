@@ -193,12 +193,36 @@ async function insertExplanation(client: Db, e: NonNullable<DemoDecision['explan
   );
 }
 
-/** Insert an oauth_tokens row (NULL tokens — represents a connection, nothing callable). */
+/** Insert an account-bound oauth_tokens row (NULL tokens — represents a connection, nothing callable). */
 async function connectAccount(client: Db, rowId: string, userId: string, email: string, scopes: string[]): Promise<void> {
   await client.query(
-    `INSERT INTO oauth_tokens (id, user_id, provider, account_email, scopes, expires_at, encryption_key_version, created_at, updated_at)
-     VALUES ($1, $2, 'google', $3, $4, now() + INTERVAL '30 days', 1, now(), now())
-     ON CONFLICT (user_id, provider, account_email) DO UPDATE SET scopes = EXCLUDED.scopes, expires_at = EXCLUDED.expires_at, updated_at = now()`,
+    `INSERT INTO connected_accounts
+       (id, user_id, provider, account_id, scopes, is_active, connected_at,
+        account_display, identity_verified, updated_at)
+     VALUES ($1, $2, 'google', 'sample:google:' || $1::STRING, $4, true, now(), $3, false, now())
+     ON CONFLICT (id) DO UPDATE SET
+       user_id = EXCLUDED.user_id,
+       provider = EXCLUDED.provider,
+       account_id = EXCLUDED.account_id,
+       scopes = EXCLUDED.scopes,
+       is_active = true,
+       disconnected_at = NULL,
+       account_display = EXCLUDED.account_display,
+       identity_verified = false,
+       provider_subject_digest = NULL,
+       updated_at = now()`,
+    [rowId, userId, email, scopes],
+  );
+  await client.query(
+    `INSERT INTO oauth_tokens
+       (id, user_id, provider, account_email, scopes, expires_at,
+        encryption_key_version, connector_account_id, created_at, updated_at)
+     VALUES ($1, $2, 'google', $3, $4, now() + INTERVAL '30 days', 1, $1, now(), now())
+     ON CONFLICT (user_id, provider, account_email) DO UPDATE SET
+       scopes = EXCLUDED.scopes,
+       expires_at = EXCLUDED.expires_at,
+       connector_account_id = EXCLUDED.connector_account_id,
+       updated_at = now()`,
     [rowId, userId, email, scopes],
   );
 }

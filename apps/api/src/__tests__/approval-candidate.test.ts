@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { ConfidenceLevel } from '@skytwin/shared-types';
 import type { CandidateAction } from '@skytwin/shared-types';
-import { serializeApprovalCandidate } from '../routes/approval-candidate.js';
+import {
+  matchesApprovalActionSnapshot,
+  serializeApprovalCandidate,
+} from '../routes/approval-candidate.js';
 
 const action: CandidateAction = {
   id: 'act-1',
@@ -32,5 +35,17 @@ describe('serializeApprovalCandidate', () => {
   it('passes an explicit verified_zero through unchanged', () => {
     const out = serializeApprovalCandidate({ ...action, costZeroIntent: 'verified_zero' }, {});
     expect(out.costZeroIntent).toBe('verified_zero');
+  });
+
+  it('freezes parameters independently and detects later execution-shape tampering', () => {
+    const snapshot: Record<string, unknown> = {
+      decisionId: action.decisionId,
+      ...serializeApprovalCandidate(action, action.parameters),
+    };
+    action.parameters['secret'] = 'changed-after-snapshot';
+    expect(snapshot['parameters']).toEqual({ secret: 'x' });
+    expect(matchesApprovalActionSnapshot(action, snapshot)).toBe(false);
+    action.parameters['secret'] = 'x';
+    expect(matchesApprovalActionSnapshot(action, snapshot)).toBe(true);
   });
 });

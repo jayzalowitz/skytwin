@@ -32,9 +32,11 @@
 </head>
 <body>
   <!-- Onboarding overlay (shown on first visit) -->
-  <div id="onboarding-overlay" class="onboarding-overlay" style="display: none;">
-    <div class="onboarding-card">
-      <div id="onboarding-content"></div>
+  <div id="onboarding-overlay" class="onboarding-overlay" style="display: none;"
+       role="dialog" aria-modal="true" aria-labelledby="onb-dialog-title">
+    <div class="onboarding-card" tabindex="-1">
+      <div id="onboarding-content" aria-busy="false"></div>
+      <div id="onb-wizard-status" role="status" aria-live="polite" aria-atomic="true" class="sr-only"></div>
     </div>
   </div>
 

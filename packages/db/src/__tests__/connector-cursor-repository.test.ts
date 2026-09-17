@@ -74,4 +74,24 @@ describe('connectorCursorRepository', () => {
     const result = await connectorCursorRepository.delete('u-1', 'gmail', 'history_id');
     expect(result).toBe(false);
   });
+
+  it('gets a cursor through the active owned account boundary', async () => {
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+    await connectorCursorRepository.getForAccount('u-1', 'account-1', 'gmail', 'history_id');
+    const [sql, args] = mockQuery.mock.calls[0]!;
+    expect(sql).toContain('JOIN connected_accounts');
+    expect(sql).toContain('ca.is_active = true');
+    expect(args).toEqual(['u-1', 'account-1', 'gmail', 'history_id']);
+  });
+
+  it('upserts each account cursor on the account-qualified key', async () => {
+    mockQuery.mockResolvedValue({ rows: [{ id: 'cursor-1' }], rowCount: 1 });
+    await connectorCursorRepository.saveForAccount(
+      'u-1', 'account-2', 'gmail', 'history_id', '9876',
+    );
+    const [sql, args] = mockQuery.mock.calls[0]!;
+    expect(sql).toContain('ON CONFLICT (connector_account_id, provider, cursor_kind)');
+    expect(sql).toContain('ca.id = $2 AND ca.user_id = $1 AND ca.is_active = true');
+    expect(args).toEqual(['u-1', 'account-2', 'gmail', 'history_id', '9876']);
+  });
 });

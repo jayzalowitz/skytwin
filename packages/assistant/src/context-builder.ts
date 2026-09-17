@@ -304,11 +304,8 @@ export class ContextBuilder {
   private async fetchTwinSafe(userId: string): Promise<TwinContextSnapshot | null> {
     try {
       return await this.twin.fetch(userId);
-    } catch (err) {
-      console.warn(
-        '[assistant.ContextBuilder] twin fetch failed, falling back to no twin context:',
-        err instanceof Error ? err.message : String(err),
-      );
+    } catch {
+      console.warn('[assistant.ContextBuilder] assistant_twin_context_failed');
       return null;
     }
   }
@@ -317,11 +314,8 @@ export class ContextBuilder {
     if (!this.memory) return [];
     try {
       return await this.memory.search(userId, query, MAX_MEMORIES);
-    } catch (err) {
-      console.warn(
-        '[assistant.ContextBuilder] memory search failed, falling back to no memory context:',
-        err instanceof Error ? err.message : String(err),
-      );
+    } catch {
+      console.warn('[assistant.ContextBuilder] assistant_memory_context_failed');
       return [];
     }
   }

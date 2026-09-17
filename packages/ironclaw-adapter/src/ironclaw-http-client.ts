@@ -104,6 +104,10 @@ interface CircuitBreakerState {
 }
 
 const MAX_CIRCUIT_COOLDOWN_MS = 20 * 60 * 1000;
+const MAX_SSE_RESPONSE_BYTES = 1_048_576;
+const MAX_SSE_CHUNK_BYTES = 262_144;
+const MAX_SSE_RECORD_CHARS = 262_144;
+const MAX_SSE_LINE_CHARS = 262_144;
 
 /**
  * HTTP client for communicating with an IronClaw server.
@@ -139,15 +143,21 @@ export class IronClawHttpClient {
   /**
    * Send a message to IronClaw's webhook endpoint.
    */
-  async sendMessage(message: IronClawMessage): Promise<IronClawResponse> {
-    const response = await this.sendWebhookRequest(message);
+  async sendMessage(
+    message: IronClawMessage,
+    opts: { preflighted?: boolean } = {},
+  ): Promise<IronClawResponse> {
+    const response = await this.sendWebhookRequest(message, opts.preflighted === true);
     return (await response.json()) as IronClawResponse;
   }
 
   /**
    * Send a webhook request and read IronClaw SSE execution progress.
    */
-  async *sendMessageStreaming(message: IronClawMessage): AsyncIterable<ExecutionEvent> {
+  async *sendMessageStreaming(
+    message: IronClawMessage,
+    opts: { preflighted?: boolean } = {},
+  ): AsyncIterable<ExecutionEvent> {
     const streamMessage: IronClawMessage = {
       ...message,
       metadata: {
@@ -155,22 +165,12 @@ export class IronClawHttpClient {
         stream: true,
       },
     };
-    const response = await this.sendWebhookRequest(streamMessage);
+    const response = await this.sendWebhookRequest(streamMessage, opts.preflighted === true);
     const planId = this.readPlanId(streamMessage);
-    let yielded = false;
-
     for await (const record of this.parseSseRecords(response.body, planId)) {
-      yielded = true;
+      // `[DONE]` closes an SSE transport; it is not an execution result.
+      if (record === '[DONE]') continue;
       yield this.normalizeExecutionEvent(planId, record);
-    }
-
-    if (!yielded) {
-      yield {
-        planId,
-        eventType: 'plan_completed',
-        timestamp: new Date(),
-        payload: { source: 'ironclaw', emptyStream: true },
-      };
     }
   }
 
@@ -201,7 +201,7 @@ export class IronClawHttpClient {
    */
   async sendChatCompletion(
     messages: ChatMessage[],
-    opts: { model?: string; stream?: boolean } = {},
+    opts: { model?: string; stream?: boolean; allowRetry?: boolean; preflighted?: boolean } = {},
   ): Promise<ChatCompletionResponse> {
     const response = await this.fetchWithRetries('chat', `${this.config.apiUrl}/v1/chat/completions`, {
       method: 'POST',
@@ -212,7 +212,7 @@ export class IronClawHttpClient {
         stream: false,
       }),
       signal: AbortSignal.timeout(this.config.timeoutMs),
-    }, 'IronClaw chat completion');
+    }, 'IronClaw chat completion', opts.allowRetry ?? true, opts.preflighted === true);
 
     const payload = await response.json() as Record<string, unknown>;
     return this.parseChatCompletionResponse(payload, opts.model);
@@ -430,14 +430,18 @@ export class IronClawHttpClient {
    * Parse an IronClaw response into a SkyTwin ExecutionResult.
    *
    * IronClaw returns structured metadata when responding to SkyTwin-formatted
-   * messages. We look for status/outputs/error in metadata first, then fall
-   * back to inferring from the response content.
+   * messages. Execution authority comes only from explicit, internally
+   * consistent terminal protocol fields; human-readable content is never
+   * interpreted as terminal truth.
    */
   parseExecutionResult(planId: string, response: IronClawResponse, startedAt: Date): ExecutionResult {
     const metadata = response.metadata ?? {};
     const metadataError = this.readString(metadata, ['error']);
     const metadataOutputs = this.asRecord(metadata['outputs']);
     const status = this.parseExecutionStatus(response);
+    if (status !== 'completed' && status !== 'failed') {
+      throw new Error(`IronClaw returned non-terminal execution status ${status}`);
+    }
 
     const result: ExecutionResult = {
       planId,
@@ -461,17 +465,18 @@ export class IronClawHttpClient {
   }
 
   parseChatExecutionResult(planId: string, response: ChatCompletionResponse, startedAt: Date): ExecutionResult {
-    const content = response.content.toLowerCase();
-    const status: ExecutionStatus = content.includes('error') || content.includes('failed') || content.includes('unable')
-      ? 'failed'
-      : 'completed';
+    const status = this.parseDeclaredExecutionStatus(response.metadata ?? {});
+    if (status !== 'completed' && status !== 'failed') {
+      throw new Error(`IronClaw returned non-terminal execution status ${status}`);
+    }
+    const metadataError = this.readString(response.metadata ?? {}, ['error']);
 
     return {
       planId,
       status,
       startedAt,
       completedAt: new Date(),
-      error: status === 'failed' ? response.content : undefined,
+      error: status === 'failed' ? metadataError ?? response.content : undefined,
       output: {
         ironclawResponse: response.content,
         ironclawModel: response.model,
@@ -486,51 +491,56 @@ export class IronClawHttpClient {
    */
   parseRollbackResult(response: IronClawResponse): RollbackResult {
     const metadata = response.metadata ?? {};
-    const metadataStatus = this.readString(metadata, ['status']);
+    const status = this.parseDeclaredExecutionStatus(metadata);
 
-    if (metadataStatus === 'completed' || metadataStatus === 'success') {
+    if (status === 'completed') {
       return { success: true, message: response.content ?? 'Rollback completed.' };
     }
 
-    if (metadataStatus === 'failed' || metadataStatus === 'error') {
+    if (status === 'failed') {
       return {
         success: false,
         message: this.readString(metadata, ['error']) ?? response.content ?? 'Rollback failed.',
       };
     }
-
-    const content = (response.content ?? '').toLowerCase();
-    if (content.includes('error') || content.includes('failed') || content.includes('unable')) {
-      return { success: false, message: response.content };
-    }
-
-    return { success: true, message: response.content ?? 'Rollback completed.' };
+    throw new Error(`IronClaw returned non-terminal rollback status ${status}`);
   }
 
   parseExecutionStatus(response: IronClawResponse): ExecutionStatus {
-    const metadata = response.metadata ?? {};
-    const metadataStatus = this.readString(metadata, ['status']);
+    return this.parseDeclaredExecutionStatus(response.metadata ?? {});
+  }
 
-    if (metadataStatus === 'completed' || metadataStatus === 'success') {
-      return 'completed';
+  private parseDeclaredExecutionStatus(metadata: Record<string, unknown>): ExecutionStatus {
+    const declared = this.readString(metadata, ['status']);
+    const success = metadata['success'];
+    const error = metadata['error'];
+    if (success !== undefined && typeof success !== 'boolean') {
+      throw new Error('IronClaw execution success field is not boolean');
     }
-    if (metadataStatus === 'failed' || metadataStatus === 'error') {
-      return 'failed';
-    }
-    if (metadataStatus === 'pending') {
-      return 'pending';
-    }
-    if (metadataStatus === 'running') {
-      return 'running';
+    if (error !== undefined && error !== null && typeof error !== 'string') {
+      throw new Error('IronClaw execution error field is not a string');
     }
 
-    const content = (response.content ?? '').toLowerCase();
-    if (content.includes('pending')) return 'pending';
-    if (content.includes('running') || content.includes('in progress')) return 'running';
-    if (content.includes('error') || content.includes('failed') || content.includes('unable')) {
-      return 'failed';
+    let status: ExecutionStatus | null = null;
+    if (declared === 'completed' || declared === 'success') status = 'completed';
+    else if (declared === 'failed' || declared === 'error') status = 'failed';
+    else if (declared === 'pending') status = 'pending';
+    else if (declared === 'running') status = 'running';
+    else if (declared !== undefined) {
+      throw new Error(`IronClaw returned unknown execution status ${declared}`);
+    } else if (success === true) status = 'completed';
+    else if (success === false) status = 'failed';
+
+    if (!status) throw new Error('IronClaw response omitted explicit execution status');
+    if ((status === 'completed' && success === false) ||
+        (status === 'failed' && success === true) ||
+        ((status === 'pending' || status === 'running') && success !== undefined)) {
+      throw new Error('IronClaw response contained conflicting execution status fields');
     }
-    return 'completed';
+    if (status === 'completed' && typeof error === 'string' && error.length > 0) {
+      throw new Error('IronClaw completed response also contained an error');
+    }
+    return status;
   }
 
   /**
@@ -544,9 +554,19 @@ export class IronClawHttpClient {
     return this.getCircuitBreaker(endpoint).open;
   }
 
+  /** Resolve a known-open execution circuit before request-start is claimed. */
+  async ensureExecutionEndpointReady(streaming = false): Promise<void> {
+    await this.ensureEndpointReady(
+      streaming ? 'webhook' : (this.preferChatCompletions ? 'chat' : 'webhook'),
+    );
+  }
+
   // -- Webhook helpers -------------------------------------------------------
 
-  private async sendWebhookRequest(message: IronClawMessage): Promise<Response> {
+  private async sendWebhookRequest(
+    message: IronClawMessage,
+    preflighted = false,
+  ): Promise<Response> {
     const body = JSON.stringify(message);
     const signature = this.sign(body);
 
@@ -559,7 +579,7 @@ export class IronClawHttpClient {
       },
       body,
       signal: AbortSignal.timeout(this.config.timeoutMs),
-    }, 'IronClaw webhook');
+    }, 'IronClaw webhook', message.metadata['message_type'] === 'status', preflighted);
   }
 
   private readPlanId(message: IronClawMessage): string {
@@ -574,12 +594,15 @@ export class IronClawHttpClient {
     url: string,
     init: RequestInit,
     label: string,
+    allowRetry = true,
+    preflighted = false,
   ): Promise<Response> {
-    await this.ensureEndpointReady(endpoint);
+    if (!preflighted) await this.ensureEndpointReady(endpoint);
 
     let lastError: Error | null = null;
 
-    for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
+    const maxRetries = allowRetry ? this.config.maxRetries : 0;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (attempt > 0) {
         await this.delay(attempt * 1000);
       }
@@ -644,12 +667,25 @@ export class IronClawHttpClient {
     }
 
     const reader = body.getReader();
-    const decoder = new TextDecoder();
+    const decoder = new TextDecoder('utf-8', { fatal: true });
     let buffer = '';
+    let responseBytes = 0;
     // Per-chunk read timeout: if no data arrives within 2x the request timeout, abort.
     const chunkTimeoutMs = this.config.timeoutMs * 2;
 
     try {
+      const rejectOversizedStream = async (detail: string): Promise<never> => {
+        await reader.cancel(`IronClaw SSE limit exceeded: ${detail}`).catch(() => undefined);
+        throw new Error(`IronClaw SSE stream for ${contextId} exceeded its ${detail} limit`);
+      };
+      const validateRecord = async (record: string): Promise<void> => {
+        if (record.length > MAX_SSE_RECORD_CHARS) {
+          await rejectOversizedStream('record-size');
+        }
+        if (record.split('\n').some((line) => line.length > MAX_SSE_LINE_CHARS)) {
+          await rejectOversizedStream('line-size');
+        }
+      };
       while (true) {
         const readPromise = reader.read();
         let timerId: ReturnType<typeof setTimeout> | undefined;
@@ -663,19 +699,35 @@ export class IronClawHttpClient {
         });
         const { done, value } = await Promise.race([readPromise, timeoutPromise]);
         if (timerId !== undefined) clearTimeout(timerId);
-        if (done) break;
+        if (done) {
+          buffer += decoder.decode();
+          break;
+        }
+
+        if (value.byteLength > MAX_SSE_CHUNK_BYTES) {
+          await rejectOversizedStream('chunk-size');
+        }
+        responseBytes += value.byteLength;
+        if (responseBytes > MAX_SSE_RESPONSE_BYTES) {
+          await rejectOversizedStream('response-size');
+        }
 
         buffer += decoder.decode(value, { stream: true });
         const messages = buffer.split('\n\n');
         buffer = messages.pop() ?? '';
+        if (buffer.length > MAX_SSE_RECORD_CHARS) {
+          await rejectOversizedStream('record-size');
+        }
 
         for (const message of messages) {
+          await validateRecord(message);
           const parsed = this.parseSseMessage(message);
           if (parsed !== null) yield parsed;
         }
       }
 
       if (buffer.trim()) {
+        await validateRecord(buffer);
         const parsed = this.parseSseMessage(buffer);
         if (parsed !== null) yield parsed;
       }
@@ -702,14 +754,7 @@ export class IronClawHttpClient {
   }
 
   private normalizeExecutionEvent(planId: string, record: Record<string, unknown> | string): ExecutionEvent {
-    if (typeof record === 'string') {
-      return {
-        planId,
-        eventType: 'plan_completed',
-        timestamp: new Date(),
-        payload: { data: record },
-      };
-    }
+    if (typeof record === 'string') throw new Error('Unexpected non-JSON execution event');
 
     const rawEventType = this.readString(record, ['eventType', 'event_type', 'type']);
     const eventType = this.normalizeExecutionEventType(rawEventType);

@@ -1,5 +1,11 @@
 import { CircuitBreaker } from '@skytwin/core';
-import type { AIProviderName } from '@skytwin/shared-types';
+import { randomUUID } from 'node:crypto';
+import type {
+  AIProviderName,
+  ProviderExecutionAttempt,
+  ProviderExecutionMetadata,
+  ReasoningMode,
+} from '@skytwin/shared-types';
 import type {
   ProviderEntry,
   GenerateOptions,
@@ -8,6 +14,12 @@ import type {
   ProviderStreamFn,
   LlmStreamEvent,
   ChatMessage,
+  InferenceTrace,
+  LlmClientOptions,
+  ProviderPricingSnapshot,
+  ProviderGenerateOutput,
+  VerifiedProviderOutput,
+  ExactOllamaProviderOutput,
 } from './types.js';
 import {
   generate as anthropicGenerate,
@@ -17,6 +29,19 @@ import { generate as openaiGenerate } from './providers/openai.js';
 import { generate as googleGenerate } from './providers/google.js';
 import { generate as ollamaGenerate } from './providers/ollama.js';
 import { generate as embeddedGenerate } from './providers/embedded.js';
+import { generate as trustedRouterGenerate } from './providers/trustedrouter.js';
+import { generate as nearAiGenerate } from './providers/nearai.js';
+import {
+  isPricingUsableForUnattended,
+  providerPrivacyCapabilities,
+  providersForReasoningMode,
+  ProviderModePolicyError,
+} from './provider-privacy.js';
+import {
+  snapshotInferenceTrace,
+  snapshotProviderExecutionMetadata,
+} from './inference-trace.js';
+import { redactPromptPii } from './redact.js';
 
 const PROVIDER_FNS: Record<AIProviderName, ProviderGenerateFn> = {
   anthropic: anthropicGenerate,
@@ -24,6 +49,8 @@ const PROVIDER_FNS: Record<AIProviderName, ProviderGenerateFn> = {
   google: googleGenerate,
   ollama: ollamaGenerate,
   embedded: embeddedGenerate,
+  trustedrouter: trustedRouterGenerate,
+  nearai: nearAiGenerate,
 };
 
 /**
@@ -44,6 +71,8 @@ const PROVIDER_STREAM_FNS: Record<AIProviderName, ProviderStreamFn> = {
   google: makeFallbackStream(googleGenerate),
   ollama: makeFallbackStream(ollamaGenerate),
   embedded: makeFallbackStream(embeddedGenerate),
+  trustedrouter: makeFallbackStream(trustedRouterGenerate),
+  nearai: makeFallbackStream(nearAiGenerate),
 };
 
 /**
@@ -53,9 +82,64 @@ const PROVIDER_STREAM_FNS: Record<AIProviderName, ProviderStreamFn> = {
  */
 function makeFallbackStream(fn: ProviderGenerateFn): ProviderStreamFn {
   return async function* (apiKey, model, prompt, options) {
-    const text = await fn(apiKey, model, prompt, options);
+    const output = await fn(apiKey, model, prompt, options);
+    const text = typeof output === 'string' ? output : output.content;
     if (text) yield text;
   };
+}
+
+function isVerifiedProviderOutput(output: ProviderGenerateOutput): output is VerifiedProviderOutput {
+  return typeof output === 'object'
+    && output !== null
+    && 'requestBytes' in output
+    && typeof output.content === 'string'
+    && output.requestBytes instanceof Uint8Array
+    && output.responseBytes instanceof Uint8Array
+    && output.requestBytes.byteLength > 0
+    && output.responseBytes.byteLength > 0
+    && typeof output.endpointIdentity === 'string'
+    && output.endpointIdentity.length > 0
+    && typeof output.providerRequestId === 'string'
+    && output.providerRequestId.length > 0
+    && typeof output.resolvedModel === 'string'
+    && output.resolvedModel.length > 0
+    && output.verification?.outcome === 'verified'
+    && typeof output.verification.attestationPolicyVersion === 'string'
+    && output.verification.attestationPolicyVersion.length > 0
+    && typeof output.verification.verifierVersion === 'string'
+    && output.verification.verifierVersion.length > 0
+    && output.verification.evidence instanceof Uint8Array
+    && output.verification.evidence.byteLength > 0
+    && typeof output.verification.measurementIdentity === 'string'
+    && output.verification.measurementIdentity.length > 0
+    && typeof output.verification.verifiedAt === 'string'
+    && Number.isFinite(Date.parse(output.verification.verifiedAt))
+    && typeof output.verification.freshUntil === 'string'
+    && Number.isFinite(Date.parse(output.verification.freshUntil))
+    && Date.parse(output.verification.freshUntil) >= Date.parse(output.verification.verifiedAt)
+    && output.verification.responseSignature?.algorithm === 'Ed25519'
+    && typeof output.verification.responseSignature.keyId === 'string'
+    && output.verification.responseSignature.keyId.length > 0
+    && typeof output.verification.responseSignature.publicKeyPem === 'string'
+    && output.verification.responseSignature.publicKeyPem.length > 0
+    && typeof output.verification.responseSignature.signatureBase64 === 'string'
+    && output.verification.responseSignature.signatureBase64.length > 0;
+}
+
+function isExactOllamaProviderOutput(
+  output: ProviderGenerateOutput,
+): output is ExactOllamaProviderOutput {
+  return typeof output === 'object'
+    && output !== null
+    && 'runtimeIdentity' in output
+    && typeof output.content === 'string'
+    && typeof output.resolvedModel === 'string'
+    && output.resolvedModel.length > 0
+    && output.runtimeIdentity?.provider === 'ollama'
+    && typeof output.runtimeIdentity.serverVersion === 'string'
+    && output.runtimeIdentity.serverVersion.length > 0
+    && output.runtimeIdentity.serverVersion.length <= 256
+    && /^[a-f0-9]{64}$/u.test(output.runtimeIdentity.modelDigestSha256);
 }
 
 /**
@@ -79,10 +163,124 @@ function getCircuitBreaker(userId: string, providerName: string): CircuitBreaker
 }
 
 interface ChainEntry {
-  provider: ProviderEntry;
+  provider: Readonly<ProviderEntry>;
   generateFn: ProviderGenerateFn;
   streamFn: ProviderStreamFn;
   circuitBreaker: CircuitBreaker;
+}
+
+function snapshotProvider(provider: ProviderEntry): Readonly<ProviderEntry> {
+  const name = provider.name;
+  const apiKey = provider.apiKey;
+  const model = provider.model;
+  const baseUrl = provider.baseUrl;
+  return Object.freeze(baseUrl === undefined
+    ? { name, apiKey, model }
+    : { name, apiKey, model, baseUrl });
+}
+
+function snapshotPrompt(prompt: string | ChatMessage[]): string | ChatMessage[] {
+  if (typeof prompt === 'string') return prompt;
+  return Object.freeze(prompt.map((message) => Object.freeze({
+    role: message.role,
+    content: message.content,
+  }))) as unknown as ChatMessage[];
+}
+
+function snapshotGenerateOptions(options: GenerateOptions): Readonly<GenerateOptions> {
+  return Object.freeze({
+    temperature: options.temperature,
+    maxTokens: options.maxTokens,
+    systemPrompt: options.systemPrompt,
+    timeoutMs: options.timeoutMs,
+    invocationKind: options.invocationKind,
+    jsonSchema: options.jsonSchema,
+    disableReasoning: options.disableReasoning,
+    requireExactRuntimeIdentity: options.requireExactRuntimeIdentity,
+  });
+}
+
+/**
+ * Apply the provider trust boundary to system context immediately before a
+ * provider call. Assistant memory is intentionally kept intact for local
+ * providers (the user may be asking for an exact private fact), but cloud
+ * providers receive the existing high-precision email redaction. Keeping this
+ * here, after provider selection, avoids masking the local-first path and
+ * ensures fallback calls are each evaluated against their actual provider.
+ */
+function providerGenerateOptions(
+  provider: ProviderEntry,
+  options: Readonly<GenerateOptions>,
+  reasoningMode: ReasoningMode,
+): Readonly<GenerateOptions> {
+  if (!providerNeedsRedaction(provider, reasoningMode) || options.systemPrompt === undefined) return options;
+  return Object.freeze({
+    ...options,
+    systemPrompt: redactPromptPii(options.systemPrompt),
+  });
+}
+
+/** Apply the same boundary to native chat system messages (assistant path). */
+function providerGeneratePrompt(
+  provider: ProviderEntry,
+  prompt: string | ChatMessage[],
+  reasoningMode: ReasoningMode,
+): string | ChatMessage[] {
+  if (!providerNeedsRedaction(provider, reasoningMode) || typeof prompt === 'string') return prompt;
+  return Object.freeze(prompt.map((message) => Object.freeze({
+    role: message.role,
+    content: message.role === 'system' ? redactPromptPii(message.content) : message.content,
+  }))) as unknown as ChatMessage[];
+}
+
+/**
+ * Pricing is not a privacy signal: Ollama can point at a remote endpoint while
+ * still being zero-cost. Use the adapter-derived execution facts instead.
+ */
+function providerNeedsRedaction(provider: ProviderEntry, reasoningMode: ReasoningMode): boolean {
+  const capabilities = providerPrivacyCapabilities(provider, reasoningMode);
+  return capabilities.executionLocation !== 'on_device'
+    || capabilities.networkScope === 'external'
+    || capabilities.confidentiality !== 'device_local';
+}
+
+const DEFAULT_ENDPOINTS: Record<AIProviderName, string> = {
+  anthropic: 'https://api.anthropic.com',
+  openai: 'https://api.openai.com',
+  google: 'https://generativelanguage.googleapis.com',
+  ollama: 'http://127.0.0.1:11434',
+  embedded: 'local://embedded',
+  trustedrouter: 'https://api.trustedrouter.com/v1',
+  nearai: 'https://dsv4-flash.completions.near.ai/v1',
+};
+
+function endpointIdentity(provider: ProviderEntry): string {
+  const raw = provider.baseUrl ?? DEFAULT_ENDPOINTS[provider.name];
+  try {
+    const url = new URL(raw);
+    return `${url.protocol}//${url.host}${url.pathname.replace(/\/$/, '')}`;
+  } catch {
+    return raw;
+  }
+}
+
+function canonicalLogicalInputBytes(
+  prompt: string | ChatMessage[],
+  options: GenerateOptions,
+): Uint8Array {
+  // This is a versioned, provider-neutral logical input representation. It is
+  // not the exact HTTP body: adapters apply defaults and wire translations.
+  return Buffer.from(JSON.stringify({
+    prompt,
+    ...(options.systemPrompt === undefined ? {} : { systemPrompt: options.systemPrompt }),
+    ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
+    ...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
+    ...(options.jsonSchema === undefined ? {} : { jsonSchema: options.jsonSchema }),
+    ...(options.disableReasoning === undefined ? {} : { disableReasoning: options.disableReasoning }),
+    ...(options.requireExactRuntimeIdentity === undefined
+      ? {}
+      : { requireExactRuntimeIdentity: options.requireExactRuntimeIdentity }),
+  }), 'utf8');
 }
 
 /**
@@ -104,16 +302,79 @@ export class AllProvidersFailedError extends Error {
  * automatically falls through to the next provider in priority order.
  */
 export class LlmClient {
-  private readonly chain: ChainEntry[];
+  private readonly chain: readonly ChainEntry[];
+  private readonly options: LlmClientOptions;
+  private readonly reasoningMode: ReasoningMode;
 
-  constructor(providers: ProviderEntry[], userId?: string) {
+  private constructor(
+    providers: readonly ProviderEntry[],
+    userId: string | undefined,
+    options: LlmClientOptions,
+    reasoningMode: ReasoningMode,
+  ) {
+    this.options = Object.freeze({
+      onInferenceTrace: options.onInferenceTrace,
+      now: options.now,
+    });
+    this.reasoningMode = reasoningMode;
     const cbOwner = userId ?? 'shared';
-    this.chain = providers.map((p) => ({
-      provider: p,
-      generateFn: PROVIDER_FNS[p.name],
-      streamFn: PROVIDER_STREAM_FNS[p.name],
-      circuitBreaker: getCircuitBreaker(cbOwner, p.name),
+    this.chain = Object.freeze(providers.map((candidate) => {
+      const provider = snapshotProvider(candidate);
+      return Object.freeze({
+        provider,
+        generateFn: PROVIDER_FNS[provider.name],
+        streamFn: PROVIDER_STREAM_FNS[provider.name],
+        circuitBreaker: getCircuitBreaker(cbOwner, provider.name),
+      });
     }));
+  }
+
+  /** Construct a chain only after enforcing its explicit location boundary. */
+  static forReasoningMode(
+    mode: unknown,
+    providers: readonly ProviderEntry[],
+    userId?: string,
+    options: LlmClientOptions = {},
+  ): LlmClient {
+    const scoped = providersForReasoningMode(mode, providers);
+    return new LlmClient(scoped.providers, userId, options, scoped.mode);
+  }
+
+  private executionMetadata(
+    provider: ProviderEntry,
+    invocationId: string,
+    executionPath: readonly ProviderExecutionAttempt[],
+    output: ProviderGenerateOutput,
+  ): ProviderExecutionMetadata {
+    const capabilities = providerPrivacyCapabilities(provider, this.reasoningMode);
+    const verified = isVerifiedProviderOutput(output) ? output : null;
+    const exactOllama = isExactOllamaProviderOutput(output) ? output : null;
+    return snapshotProviderExecutionMetadata({
+      reasoningMode: this.reasoningMode,
+      provider: provider.name,
+      model: verified?.resolvedModel ?? exactOllama?.resolvedModel ?? provider.model,
+      request: { invocationId, providerRequestId: verified?.providerRequestId ?? null },
+      capabilities,
+      verificationStatus: verified
+        ? 'verified'
+        : capabilities.attestationPolicy === 'required'
+          ? 'required_missing'
+          : 'not_applicable',
+      executionPath,
+      costBasis: {
+        pricing: capabilities.pricing,
+        inputTokens: null,
+        outputTokens: null,
+      },
+      receiptId: null,
+    });
+  }
+
+  private canRunUnattended(provider: ProviderEntry, nowMs = Date.now()): boolean {
+    return isPricingUsableForUnattended(
+      providerPrivacyCapabilities(provider, this.reasoningMode).pricing,
+      nowMs,
+    );
   }
 
   /**
@@ -127,36 +388,75 @@ export class LlmClient {
    * chain translates the array to its native chat-completion shape.
    */
   async generate(prompt: string | ChatMessage[], options: GenerateOptions = {}): Promise<LlmResponse> {
+    const invocationPrompt = snapshotPrompt(prompt);
+    const invocationOptions = snapshotGenerateOptions(options);
+    const timeoutBudgetMs = invocationOptions.timeoutMs === undefined
+      ? null
+      : Math.max(1, Math.trunc(invocationOptions.timeoutMs));
+    const deadlineAt = timeoutBudgetMs === null ? null : Date.now() + timeoutBudgetMs;
+    const logicalRequest = canonicalLogicalInputBytes(invocationPrompt, invocationOptions);
     const attempted: string[] = [];
+    const executionPath: ProviderExecutionAttempt[] = [];
+    const invocationId = randomUUID();
 
     for (const entry of this.chain) {
       const { provider, generateFn, circuitBreaker } = entry;
+      const remainingMs = deadlineAt === null ? null : deadlineAt - Date.now();
+      // Provider timeouts are a total invocation budget, not a fresh budget
+      // for every fallback. This also prevents a detached timed-out caller
+      // from issuing a second provider request after its deadline.
+      if (remainingMs !== null && remainingMs <= 0) break;
+
+      if (invocationOptions.invocationKind !== 'interactive' && !this.canRunUnattended(provider)) {
+        attempted.push(`${provider.name}(price-unavailable)`);
+        executionPath.push({ provider: provider.name, outcome: 'price_unavailable' });
+        continue;
+      }
 
       if (!circuitBreaker.canExecute()) {
         attempted.push(`${provider.name}(circuit-open)`);
+        executionPath.push({ provider: provider.name, outcome: 'circuit_open' });
         continue;
       }
 
       attempted.push(provider.name);
       const start = Date.now();
-
       try {
-        const content = await generateFn(
+        const output = await generateFn(
           provider.apiKey,
           provider.model,
-          prompt,
-          { ...options, baseUrl: provider.baseUrl },
+          providerGeneratePrompt(provider, invocationPrompt, this.reasoningMode),
+          providerGenerateOptions(provider, Object.freeze({
+            ...invocationOptions,
+            ...(remainingMs === null ? {} : { timeoutMs: Math.max(1, remainingMs) }),
+            baseUrl: provider.baseUrl,
+            reasoningMode: this.reasoningMode,
+          }), this.reasoningMode),
         );
+        const content = typeof output === 'string' ? output : output.content;
+        const successfulPath = [
+          ...executionPath,
+          { provider: provider.name, outcome: 'succeeded' as const },
+        ];
+        const execution = this.executionMetadata(provider, invocationId, successfulPath, output);
+        const exactOllama = isExactOllamaProviderOutput(output) ? output : null;
+        this.recordSuccessfulInference(provider, logicalRequest, output, execution);
         circuitBreaker.recordSuccess();
+        executionPath.push({ provider: provider.name, outcome: 'succeeded' });
 
         return {
           content,
           provider: provider.name,
-          model: provider.model,
+          model: execution.model,
           latencyMs: Date.now() - start,
+          execution,
+          ...(exactOllama === null ? {} : { runtimeIdentity: exactOllama.runtimeIdentity }),
         };
       } catch (err) {
-        circuitBreaker.recordFailure();
+        if (!(err instanceof ProviderModePolicyError)) {
+          circuitBreaker.recordFailure();
+        }
+        executionPath.push({ provider: provider.name, outcome: 'failed' });
         console.warn(
           `[llm] ${provider.name} failed (${Date.now() - start}ms): ${err instanceof Error ? err.message : String(err)}`,
         );
@@ -190,13 +490,25 @@ export class LlmClient {
     prompt: string | ChatMessage[],
     options: GenerateOptions = {},
   ): AsyncIterable<LlmStreamEvent> {
+    const invocationPrompt = snapshotPrompt(prompt);
+    const invocationOptions = snapshotGenerateOptions(options);
+    const logicalRequest = canonicalLogicalInputBytes(invocationPrompt, invocationOptions);
     const attempted: string[] = [];
+    const executionPath: ProviderExecutionAttempt[] = [];
+    const invocationId = randomUUID();
 
     for (const entry of this.chain) {
       const { provider, streamFn, circuitBreaker } = entry;
 
+      if (invocationOptions.invocationKind !== 'interactive' && !this.canRunUnattended(provider)) {
+        attempted.push(`${provider.name}(price-unavailable)`);
+        executionPath.push({ provider: provider.name, outcome: 'price_unavailable' });
+        continue;
+      }
+
       if (!circuitBreaker.canExecute()) {
         attempted.push(`${provider.name}(circuit-open)`);
+        executionPath.push({ provider: provider.name, outcome: 'circuit_open' });
         continue;
       }
 
@@ -204,30 +516,79 @@ export class LlmClient {
       const start = Date.now();
       const collected: string[] = [];
       let firstChunkSeen = false;
+      let providerOutput: ProviderGenerateOutput | undefined;
+      let bufferedConfidentialContent: string | null = null;
 
       try {
-        for await (const chunk of streamFn(
-          provider.apiKey,
-          provider.model,
-          prompt,
-          { ...options, baseUrl: provider.baseUrl },
-        )) {
-          if (chunk.length === 0) continue;
-          firstChunkSeen = true;
-          collected.push(chunk);
-          yield { type: 'chunk', content: chunk };
+        const callPrompt = providerGeneratePrompt(provider, invocationPrompt, this.reasoningMode);
+        const callOptions = providerGenerateOptions(provider, Object.freeze({
+          ...invocationOptions,
+          baseUrl: provider.baseUrl,
+          reasoningMode: this.reasoningMode,
+        }), this.reasoningMode);
+        if (provider.name === 'trustedrouter' || provider.name === 'nearai') {
+          // Confidential output is buffered until attestation and the final
+          // exact-byte receipt both verify. No unverified token reaches a UI.
+          providerOutput = await entry.generateFn(
+            provider.apiKey,
+            provider.model,
+            callPrompt,
+            callOptions,
+          );
+          if (!isVerifiedProviderOutput(providerOutput)) {
+            throw new ProviderModePolicyError(
+              'verification_adapter_required',
+              `${provider.name} returned output without verified evidence`,
+              provider.name,
+            );
+          }
+          if (providerOutput.content.length > 0) {
+            collected.push(providerOutput.content);
+            bufferedConfidentialContent = providerOutput.content;
+          }
+        } else {
+          for await (const chunk of streamFn(
+            provider.apiKey,
+            provider.model,
+            callPrompt,
+            callOptions,
+          )) {
+            if (chunk.length === 0) continue;
+            collected.push(chunk);
+            firstChunkSeen = true;
+            yield { type: 'chunk', content: chunk };
+          }
         }
+        const content = collected.join('');
+        providerOutput ??= content;
+        const successfulPath = [
+          ...executionPath,
+          { provider: provider.name, outcome: 'succeeded' as const },
+        ];
+        const execution = this.executionMetadata(provider, invocationId, successfulPath, providerOutput);
+        this.recordSuccessfulInference(provider, logicalRequest, providerOutput, execution);
         circuitBreaker.recordSuccess();
+        executionPath.push({ provider: provider.name, outcome: 'succeeded' });
+        if (bufferedConfidentialContent !== null) {
+          // The adapter output, execution metadata, and receipt trace are all
+          // validated before confidential text crosses the streaming boundary.
+          firstChunkSeen = true;
+          yield { type: 'chunk', content: bufferedConfidentialContent };
+        }
         yield {
           type: 'done',
-          content: collected.join(''),
+          content,
           provider: provider.name,
-          model: provider.model,
+          model: execution.model,
           latencyMs: Date.now() - start,
+          execution,
         };
         return;
       } catch (err) {
-        circuitBreaker.recordFailure();
+        if (!(err instanceof ProviderModePolicyError)) {
+          circuitBreaker.recordFailure();
+        }
+        executionPath.push({ provider: provider.name, outcome: 'failed' });
         if (firstChunkSeen) {
           // Re-throw — caller already saw partial output, can't silently
           // re-try a different provider without producing duplicate text.
@@ -244,24 +605,102 @@ export class LlmClient {
     throw new AllProvidersFailedError(attempted);
   }
 
+  private recordSuccessfulInference(
+    provider: Readonly<ProviderEntry>,
+    logicalRequest: Uint8Array,
+    output: ProviderGenerateOutput,
+    execution: ProviderExecutionMetadata,
+  ): void {
+    const verified = isVerifiedProviderOutput(output) ? output : null;
+    const content = typeof output === 'string' ? output : output.content;
+    const request = verified
+      ? Uint8Array.from(verified.requestBytes)
+      : Uint8Array.from(logicalRequest);
+    const response = verified
+      ? Uint8Array.from(verified.responseBytes)
+      : Buffer.from(content, 'utf8');
+    const endpoint = verified?.endpointIdentity ?? endpointIdentity(provider);
+    const capabilities = execution.capabilities;
+    const status: InferenceTrace['status'] = execution.reasoningMode === 'on_device'
+      && capabilities.executionLocation === 'on_device'
+      && (capabilities.networkScope === 'none' || capabilities.networkScope === 'loopback')
+      && capabilities.confidentiality === 'device_local'
+      ? 'on_device'
+      : execution.reasoningMode === 'bring_your_own_provider'
+        && capabilities.executionLocation === 'remote_service'
+        && capabilities.networkScope === 'external'
+        ? 'conventional'
+        : execution.reasoningMode === 'verified_private_cloud'
+          && capabilities.executionLocation === 'remote_service'
+          && capabilities.networkScope === 'external'
+          && capabilities.confidentiality === 'attested_tee'
+          && capabilities.attestationPolicy === 'required'
+          && execution.verificationStatus === 'verified'
+          && verified
+          ? 'verified'
+        : (() => {
+            throw new ProviderModePolicyError(
+              'cross_mode_provider',
+              'Observed provider execution facts do not match the selected reasoning mode',
+              provider.name,
+            );
+          })();
+
+    const trace = snapshotInferenceTrace({
+      id: randomUUID(),
+      status,
+      execution,
+      endpointIdentity: endpoint,
+      request,
+      response,
+      cost: capabilities.pricing.kind === 'zero'
+        ? { basis: 'exact', currency: 'USD', amountMinor: 0 }
+        : { basis: 'unknown' },
+      createdAt: (this.options.now?.() ?? new Date()).toISOString(),
+      verifierVersion: verified?.verification.verifierVersion ?? 'skytwin-llm-boundary-v1',
+      ...(verified ? { verification: verified.verification } : {}),
+    });
+    this.options.onInferenceTrace?.(trace);
+  }
+
   /**
    * Test a single provider by generating a trivial response.
    */
-  static async testProvider(provider: ProviderEntry): Promise<{ latencyMs: number; model: string }> {
-    const generateFn = PROVIDER_FNS[provider.name];
+  static async testProviderForReasoningMode(
+    mode: unknown,
+    provider: ProviderEntry,
+  ): Promise<{ latencyMs: number; model: string }> {
+    const scoped = providersForReasoningMode(mode, [provider]);
+    const admitted = scoped.providers[0]!;
+    const generateFn = PROVIDER_FNS[admitted.name];
     if (!generateFn) {
-      throw new Error(`Unknown provider: ${provider.name}`);
+      throw new Error(`Unknown provider: ${admitted.name}`);
     }
 
     const start = Date.now();
-    await generateFn(
-      provider.apiKey,
-      provider.model,
+    const output = await generateFn(
+      admitted.apiKey,
+      admitted.model,
       'Respond with exactly: OK',
-      { maxTokens: 10, temperature: 0, baseUrl: provider.baseUrl },
+      {
+        maxTokens: 10,
+        temperature: 0,
+        baseUrl: admitted.baseUrl,
+        reasoningMode: scoped.mode,
+      },
     );
+    if (scoped.mode === 'verified_private_cloud' && !isVerifiedProviderOutput(output)) {
+      throw new ProviderModePolicyError(
+        'verification_adapter_required',
+        'The provider test did not return verified confidential evidence',
+        admitted.name,
+      );
+    }
 
-    return { latencyMs: Date.now() - start, model: provider.model };
+    return {
+      latencyMs: Date.now() - start,
+      model: isVerifiedProviderOutput(output) ? output.resolvedModel : admitted.model,
+    };
   }
 
   /**
@@ -269,5 +708,13 @@ export class LlmClient {
    */
   get hasProviders(): boolean {
     return this.chain.length > 0;
+  }
+
+  /** Pricing for the exact admitted chain, without exposing credentials or endpoints. */
+  getProviderPricingSnapshot(): readonly Readonly<ProviderPricingSnapshot>[] {
+    return Object.freeze(this.chain.map(({ provider }) => Object.freeze({
+      provider: provider.name,
+      pricing: providerPrivacyCapabilities(provider, this.reasoningMode).pricing,
+    })));
   }
 }

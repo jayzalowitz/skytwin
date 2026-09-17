@@ -7,7 +7,7 @@ import type {
   RollbackResult,
 } from '@skytwin/shared-types';
 import { OPENCLAW_ACTION_TYPES } from '@skytwin/shared-types';
-import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
+import { PreRequestExecutionError, type IronClawAdapter } from '@skytwin/ironclaw-adapter';
 
 /**
  * Credential requirement reported by an OpenClaw server.
@@ -15,6 +15,7 @@ import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
  * OpenClaw returns this in its response so SkyTwin can flag it to the user.
  */
 export interface OpenClawCredentialRequirement {
+  userId: string;
   integration: string;
   integrationLabel: string;
   description?: string;
@@ -33,6 +34,108 @@ export interface OpenClawCredentialRequirement {
  * The API layer provides an implementation that persists to the DB and notifies users.
  */
 export type OnCredentialNeeded = (requirement: OpenClawCredentialRequirement) => void | Promise<void>;
+
+const SAFE_SLUG = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const SAFE_USER_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const SAFE_TEXT = /^[^\u0000-\u001f\u007f]*$/;
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function hasOnlyKeys(record: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const allowedKeys = new Set(allowed);
+  return Object.keys(record).every((key) => allowedKeys.has(key));
+}
+
+function isBoundedText(value: unknown, maxLength: number, required = true): value is string {
+  return typeof value === 'string' && value.length <= maxLength && SAFE_TEXT.test(value)
+    && (!required || value.trim().length > 0);
+}
+
+function parseCredentialRequirement(
+  value: unknown,
+  owningUserId: unknown,
+  actionType: string,
+): OpenClawCredentialRequirement | null {
+  if (!isPlainRecord(value) ||
+      !isBoundedText(owningUserId, 128) ||
+      !SAFE_USER_ID.test(owningUserId)) {
+    return null;
+  }
+  // Identity is intentionally absent: the peer cannot choose the notification owner.
+  if (!hasOnlyKeys(value, ['integration', 'label', 'description', 'fields', 'skills'])) {
+    return null;
+  }
+
+  const integration = value['integration'] ?? actionType;
+  const integrationLabel = value['label'] ?? actionType;
+  if (!isBoundedText(integration, 64) || !SAFE_SLUG.test(integration) ||
+      !isBoundedText(integrationLabel, 80)) {
+    return null;
+  }
+  if (value['description'] !== undefined &&
+      !isBoundedText(value['description'], 500, false)) {
+    return null;
+  }
+
+  const rawFields = value['fields'] ?? [];
+  const rawSkills = value['skills'] ?? [actionType];
+  if (!Array.isArray(rawFields) || rawFields.length > 20 ||
+      !Array.isArray(rawSkills) || rawSkills.length > 50) {
+    return null;
+  }
+
+  const fieldKeys = new Set<string>();
+  const fields: OpenClawCredentialRequirement['fields'] = [];
+  for (const candidate of rawFields) {
+    if (!isPlainRecord(candidate) ||
+        !hasOnlyKeys(candidate, ['key', 'label', 'placeholder', 'secret', 'optional']) ||
+        !isBoundedText(candidate['key'], 64) ||
+        !SAFE_SLUG.test(candidate['key']) ||
+        fieldKeys.has(candidate['key']) ||
+        !isBoundedText(candidate['label'], 80) ||
+        (candidate['placeholder'] !== undefined &&
+          !isBoundedText(candidate['placeholder'], 120, false)) ||
+        (candidate['secret'] !== undefined && typeof candidate['secret'] !== 'boolean') ||
+        (candidate['optional'] !== undefined && typeof candidate['optional'] !== 'boolean')) {
+      return null;
+    }
+    fieldKeys.add(candidate['key']);
+    fields.push({
+      key: candidate['key'],
+      label: candidate['label'],
+      ...(candidate['placeholder'] !== undefined
+        ? { placeholder: candidate['placeholder'] as string }
+        : {}),
+      // The peer describes the field but cannot downgrade how SkyTwin handles
+      // its value. There is no trusted local non-secret allowlist for peer fields.
+      secret: true,
+      ...(candidate['optional'] !== undefined ? { optional: candidate['optional'] as boolean } : {}),
+    });
+  }
+
+  const skills: string[] = [];
+  for (const skill of rawSkills) {
+    if (!isBoundedText(skill, 64) || !SAFE_SLUG.test(skill) || skills.includes(skill)) {
+      return null;
+    }
+    skills.push(skill);
+  }
+
+  return {
+    userId: owningUserId,
+    integration,
+    integrationLabel,
+    ...(value['description'] !== undefined
+      ? { description: value['description'] as string }
+      : {}),
+    fields,
+    skills,
+  };
+}
 
 /**
  * The set of action types the OpenClaw adapter can handle.
@@ -66,6 +169,9 @@ export class OpenClawAdapter implements IronClawAdapter {
   }
 
   async buildPlan(action: CandidateAction): Promise<ExecutionPlan> {
+    if (!this.apiUrl) {
+      throw new PreRequestExecutionError('OpenClaw is not configured.');
+    }
     const planId = (action.parameters['executionPlanId'] as string | undefined)
       ?? `openclaw_plan_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const now = new Date();
@@ -147,30 +253,56 @@ export class OpenClawAdapter implements IronClawAdapter {
         });
 
         if (!response.ok) {
-          return this.recordExecutionResult({
-            planId: plan.id,
-            status: 'failed',
-            startedAt,
-            completedAt: new Date(),
-            error: `OpenClaw returned ${response.status}: ${await response.text()}`,
-          });
+          const responseBody = await response.text().catch(() => 'unreadable response');
+          throw new Error(`OpenClaw returned ${response.status}: ${responseBody}`);
         }
 
         const result = await response.json() as Record<string, unknown>;
+        const explicitStatus = result['status'];
+        const explicitSuccess = result['success'];
+        const explicitError = result['error'];
+        if (explicitSuccess !== undefined && typeof explicitSuccess !== 'boolean') {
+          throw new Error('OpenClaw success field is not boolean');
+        }
+        if (explicitError !== undefined && explicitError !== null && typeof explicitError !== 'string') {
+          throw new Error('OpenClaw error field is not a string');
+        }
+        if (explicitStatus !== undefined && explicitStatus !== 'completed' &&
+            explicitStatus !== 'failed' && explicitStatus !== 'pending' &&
+            explicitStatus !== 'running') {
+          throw new Error(`OpenClaw returned unknown status ${String(explicitStatus)}`);
+        }
+        if (explicitStatus === 'pending' || explicitStatus === 'running') {
+          throw new Error(`OpenClaw returned non-terminal status ${explicitStatus}`);
+        }
+        if ((explicitStatus === 'completed' && explicitSuccess === false) ||
+            (explicitStatus === 'failed' && explicitSuccess === true)) {
+          throw new Error('OpenClaw response contained conflicting terminal fields');
+        }
+        if ((explicitStatus === 'completed' || explicitSuccess === true) &&
+            typeof explicitError === 'string' && explicitError.length > 0) {
+          throw new Error('OpenClaw success response also contained an error');
+        }
 
         // Check if OpenClaw is reporting that this skill needs credentials
-        if (result['credential_required'] && this.onCredentialNeeded) {
-          const credReq = result['credential_required'] as Record<string, unknown>;
-          try {
-            await this.onCredentialNeeded({
-              integration: (credReq['integration'] as string) ?? plan.action.actionType,
-              integrationLabel: (credReq['label'] as string) ?? plan.action.actionType,
-              description: credReq['description'] as string | undefined,
-              fields: (credReq['fields'] as Array<{ key: string; label: string; placeholder?: string; secret?: boolean; optional?: boolean }>) ?? [],
-              skills: (credReq['skills'] as string[]) ?? [plan.action.actionType],
-            });
-          } catch {
-            // Don't let callback errors block the response
+        if (result['credential_required']) {
+          if (explicitStatus === 'completed' || explicitSuccess === true) {
+            throw new Error('OpenClaw credential failure conflicted with success');
+          }
+          const credReq = parseCredentialRequirement(
+            result['credential_required'],
+            plan.executionOwnerId,
+            plan.action.actionType,
+          );
+          if (!credReq) {
+            throw new Error('OpenClaw credential requirement was malformed');
+          }
+          if (this.onCredentialNeeded) {
+            try {
+              await this.onCredentialNeeded(credReq);
+            } catch {
+              // Don't let callback errors block the explicit response
+            }
           }
 
           return this.recordExecutionResult({
@@ -178,13 +310,29 @@ export class OpenClawAdapter implements IronClawAdapter {
             status: 'failed',
             startedAt,
             completedAt: new Date(),
-            error: `Credentials needed for ${(credReq['label'] as string) ?? plan.action.actionType}. Check the Setup page.`,
+            error: `Credentials needed for ${credReq.integrationLabel}. Check the Setup page.`,
             output: {
               adapter_used: 'openclaw',
               credential_required: true,
-              integration: credReq['integration'],
+              integration: credReq.integration,
             },
           });
+        }
+
+        if (explicitSuccess === false || explicitStatus === 'failed') {
+          return this.recordExecutionResult({
+            planId: plan.id,
+            status: 'failed',
+            startedAt,
+            completedAt: new Date(),
+            error: typeof result['error'] === 'string'
+              ? result['error']
+              : 'OpenClaw reported execution failure',
+            output: { adapter_used: 'openclaw', ...result },
+          });
+        }
+        if (explicitSuccess !== true && explicitStatus !== 'completed') {
+          throw new Error('OpenClaw response did not contain an explicit terminal status');
         }
 
         return this.recordExecutionResult({
@@ -201,13 +349,13 @@ export class OpenClawAdapter implements IronClawAdapter {
           },
         });
       } catch (err) {
-        return this.recordExecutionResult({
-          planId: plan.id,
-          status: 'failed',
-          startedAt,
-          completedAt: new Date(),
-          error: `OpenClaw execution error: ${err instanceof Error ? err.message : String(err)}`,
-        });
+        // Fetch rejection, timeout, response-body loss, and HTTP failure all
+        // happen after dispatch. None proves that the remote effect did not
+        // commit, so retain the running cache entry and surface ambiguity.
+        throw new Error(
+          `OpenClaw execution outcome is ambiguous: ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
+        );
       }
     }
 

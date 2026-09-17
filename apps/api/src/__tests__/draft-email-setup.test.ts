@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { LlmClient } from '@skytwin/llm-client';
+import type { LlmClient, ProviderPricingSnapshot } from '@skytwin/llm-client';
 import type { CostGatePort } from '@skytwin/decision-engine';
 
 const mockIsDraftsEnabled = vi.fn();
@@ -8,7 +8,6 @@ const mockGetDraftsDailyCallCap = vi.fn();
 const mockCheckAndReserveCall = vi.fn();
 const mockUpdateOutcome = vi.fn();
 const mockRecordCall = vi.fn();
-const mockGetEnabledForUser = vi.fn();
 const mockUserFindById = vi.fn();
 const mockCheckAndRecordSpend = vi.fn();
 const mockSpendReconcile = vi.fn();
@@ -23,9 +22,6 @@ vi.mock('@skytwin/db', () => ({
     checkAndReserveCall: (...args: unknown[]) => mockCheckAndReserveCall(...args),
     updateOutcome: (...args: unknown[]) => mockUpdateOutcome(...args),
     record: (...args: unknown[]) => mockRecordCall(...args),
-  },
-  aiProviderRepository: {
-    getEnabledForUser: (...args: unknown[]) => mockGetEnabledForUser(...args),
   },
   userRepository: {
     findById: (...args: unknown[]) => mockUserFindById(...args),
@@ -79,10 +75,18 @@ vi.mock('../memory-setup.js', () => ({
 
 const { buildDraftEmailGenerator, draftsEnabled } = await import('../draft-email-setup.js');
 
-const fakeLlm = (): LlmClient =>
+const zeroPricing = { kind: 'zero', unit: 'nano_usd', source: 'local_runtime' } as const;
+const unknownPricing = {
+  kind: 'unknown', unit: 'nano_usd', source: 'unknown', reason: 'not_reported',
+} as const;
+
+const fakeLlm = (
+  pricing: readonly ProviderPricingSnapshot[] = [{ provider: 'embedded', pricing: zeroPricing }],
+): LlmClient =>
   ({
     hasProviders: true,
     generate: vi.fn(async () => ({ content: 'draft body' })),
+    getProviderPricingSnapshot: vi.fn(() => pricing),
   }) as unknown as LlmClient;
 
 describe('draft-email-setup', () => {
@@ -95,7 +99,6 @@ describe('draft-email-setup', () => {
     mockCheckAndReserveCall.mockReset();
     mockUpdateOutcome.mockReset();
     mockRecordCall.mockReset();
-    mockGetEnabledForUser.mockReset();
     mockUserFindById.mockReset();
     mockCheckAndRecordSpend.mockReset();
     mockSpendReconcile.mockReset();
@@ -105,11 +108,6 @@ describe('draft-email-setup', () => {
     // Default eval gate: passed. Tests that exercise the eval gate
     // override per-test.
     mockIsDraftsEvalPassed.mockResolvedValue(true);
-    // Default AI providers: a single embedded provider — cheapest path,
-    // so the conservative cost estimate stays at 0 cents.
-    mockGetEnabledForUser.mockResolvedValue([
-      { provider: 'embedded', api_key: '', model: 'phi-3', base_url: null, priority: 0 },
-    ]);
     // Defaults so the gate's READ side never blocks unless overridden.
     mockGetDraftsDailyCallCap.mockResolvedValue(100);
     mockCheckAndReserveCall.mockResolvedValue({
@@ -235,28 +233,69 @@ describe('draft-email-setup', () => {
       expect(result).toBeNull();
     });
 
-    it('queries AI providers to pick the cost-cheapest one for the cost estimate (#299)', async () => {
+    it('fails closed when any possible fallback has unknown pricing', async () => {
       process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
-      // User has both anthropic AND embedded enabled. The cost-preferred
-      // resolver should pick embedded (cost-rank 0) → 0 cent estimate.
-      mockGetEnabledForUser.mockResolvedValue([
-        { provider: 'anthropic', api_key: 'sk-...', model: 'claude-3-5-sonnet', base_url: null, priority: 0 },
-        { provider: 'embedded', api_key: '', model: 'phi-3', base_url: null, priority: 1 },
-      ]);
-      const gen = await buildDraftEmailGenerator('u-1', fakeLlm());
-      expect(gen).not.toBeNull();
-      expect(mockGetEnabledForUser).toHaveBeenCalledWith('u-1');
+      const gen = await buildDraftEmailGenerator('u-1', fakeLlm([
+        { provider: 'anthropic', pricing: unknownPricing },
+        { provider: 'embedded', pricing: zeroPricing },
+      ]));
+      expect(gen).toBeNull();
     });
 
-    it('falls through to a conservative cost estimate when the AI-provider read errors (fail-safe-toward-restrictive)', async () => {
+    it('fails closed when the admitted-chain price cannot be read', async () => {
       process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
-      mockGetEnabledForUser.mockRejectedValue(new Error('CRDB pool exhausted'));
-      // No throw — the function must still return a generator, just with
-      // a conservative cost estimate. The mocked LlmClient + per-user
-      // flag are both fine; the AI-provider read failure should NOT
-      // propagate.
-      const gen = await buildDraftEmailGenerator('u-1', fakeLlm());
+      const llm = fakeLlm();
+      vi.mocked(llm.getProviderPricingSnapshot).mockImplementation(() => {
+        throw new Error('pricing snapshot unavailable');
+      });
+      const gen = await buildDraftEmailGenerator('u-1', llm);
+      expect(gen).toBeNull();
+    });
+
+    it('does not classify a remote Ollama endpoint as zero-cost local inference', async () => {
+      process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
+      expect(await buildDraftEmailGenerator('u-1', fakeLlm([
+        { provider: 'ollama', pricing: unknownPricing },
+      ]))).toBeNull();
+    });
+
+    it('keeps large safe-integer pricing arithmetic exact and upward-rounded', async () => {
+      process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
+      const checkCalls: Array<{ estimatedCostCents?: number }> = [];
+      const stubGate: CostGatePort = {
+        async check(input) {
+          checkCalls.push(input);
+          return { allowed: false, reason: 'test stop' };
+        },
+        async record() {},
+      };
+      const pricing = {
+        kind: 'fixed', unit: 'nano_usd', source: 'static_registry',
+        inputNanoUsdPerMillionTokens: 9_007_199_254_740_991,
+        outputNanoUsdPerMillionTokens: 9_007_191_490_518_019,
+        checkedAt: new Date().toISOString(),
+        expiresAt: null,
+      } as const;
+      const gen = await buildDraftEmailGenerator(
+        'u-1',
+        fakeLlm([{ provider: 'anthropic', pricing }]),
+        stubGate,
+      );
       expect(gen).not.toBeNull();
+      await gen!.generate({
+        id: 'd-price',
+        domain: 'email',
+        situationType: 'email_triage' as never,
+        urgency: 'normal' as never,
+        summary: 'reply needed',
+        rawData: { requiresResponse: true, from: 'a@b.com', subject: 'Hi', body: 'b' },
+        interpretedAt: new Date(),
+      } as never, {} as never, { userId: 'u-1' } as never);
+      const numerator = 9_007_199_254_740_991n * 2_000n
+        + 9_007_191_490_518_019n * 1_000n;
+      const expected = Number((numerator + 9_999_999_999_999n) / 10_000_000_000_000n);
+      expect(expected).toBe(2_702_160);
+      expect(checkCalls[0]?.estimatedCostCents).toBe(expected);
     });
 
     it('accepts an explicit CostGatePort override (test seam) and uses it for the generator', async () => {

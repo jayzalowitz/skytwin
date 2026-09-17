@@ -71,6 +71,11 @@ export class TwinService {
     this.evolutionTracker = new PreferenceEvolutionTracker(preferenceHistoryRepository ?? null);
   }
 
+  /** Read an existing profile without creating persistent state. */
+  async getProfile(userId: string): Promise<TwinProfile | null> {
+    return this.repository.getProfile(userId);
+  }
+
   /**
    * Get an existing twin profile or create a default one for the user.
    */
@@ -508,6 +513,29 @@ export class TwinService {
     const traits = await this.getTraits(userId);
     const temporalProfile = await this.getTemporalProfile(userId);
 
+    return {
+      userId,
+      exportedAt: new Date(),
+      format,
+      profile,
+      patterns,
+      traits,
+      temporalProfile,
+    };
+  }
+
+  /** Export an existing profile without creating one when it is absent. */
+  async exportTwinIfExists(
+    userId: string,
+    format: 'json' | 'markdown',
+  ): Promise<TwinExport | null> {
+    const profile = await this.repository.getProfile(userId);
+    if (!profile) return null;
+    const [patterns, traits, temporalProfile] = await Promise.all([
+      this.getPatterns(userId),
+      this.getTraits(userId),
+      this.getTemporalProfile(userId),
+    ]);
     return {
       userId,
       exportedAt: new Date(),

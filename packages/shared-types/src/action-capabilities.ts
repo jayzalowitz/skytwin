@@ -2,6 +2,7 @@ import {
   getExecutionRuntimeVersionSummary,
   type ExecutionRuntimeVersionSummary,
 } from './execution-runtime-versions.js';
+import { classifyGmailArchiveGenericAction } from './gmail-archive-quarantine.js';
 
 export type ExecutionAdapterName = 'ironclaw' | 'openclaw' | 'direct' | 'mcp-host';
 
@@ -18,8 +19,17 @@ export interface ExecutableActionPlan {
   adapterRationale: string;
 }
 
+/** Typed fail-closed result for action types owned by a dedicated lifecycle. */
+export class ReservedActionCapabilityError extends Error {
+  readonly code = 'reserved_action_type';
+
+  constructor(readonly actionType: string) {
+    super(`Action type "${actionType}" is reserved and has no generic capability plan.`);
+    this.name = 'ReservedActionCapabilityError';
+  }
+}
+
 export const IRONCLAW_CORE_ACTION_TYPES = new Set([
-  'archive_email',
   'label_email',
   'send_reply',
   'reply_email',
@@ -55,7 +65,6 @@ export const IRONCLAW_CORE_ACTION_TYPES = new Set([
 
 export const OPENCLAW_ACTION_TYPES = new Set([
   'send_email',
-  'archive_email',
   'label_email',
   'reply_email',
   'send_reply',
@@ -122,6 +131,9 @@ export const OPENCLAW_ACTION_TYPES = new Set([
 ]);
 
 export function buildExecutableActionPlan(actionType: string, label: string): ExecutableActionPlan {
+  if (classifyGmailArchiveGenericAction({ actionType }).kind === 'archive') {
+    throw new ReservedActionCapabilityError(actionType);
+  }
   if (IRONCLAW_CORE_ACTION_TYPES.has(actionType)) {
     const fallbackAdapters: ExecutionAdapterName[] = ['direct'];
     if (OPENCLAW_ACTION_TYPES.has(actionType)) fallbackAdapters.push('openclaw');

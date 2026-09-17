@@ -1,4 +1,4 @@
-import { fetchUser, updateTrustTier, fetchOAuthStatus, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, updateIronClawChannel, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger, createSession, fetchSessions, revokeSession, saveAIProviders, testAIProvider, fetchRoutines, deleteRoutine, startFederationPairing, completeFederationPairing, listFederationPeers, unpairFederationPeer } from '../api-client.js';
+import { fetchUser, updateTrustTier, escapeHtml, fetchSettings, updateAutonomySettings, updateIronClawChannel, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger, createSession, fetchSessions, revokeSession, saveAIProviders, testAIProvider, fetchRoutines, deleteRoutine, startFederationPairing, completeFederationPairing, listFederationPeers, unpairFederationPeer } from '../api-client.js';
 import { mountThemeSwitcher } from '../theme-switcher.js';
 import { mountEmbeddedLlmCard } from '../components/embedded-llm-card.js';
 import {
@@ -8,6 +8,8 @@ import {
 } from '../a11y.js';
 import { showSavedToast, showErrorToast } from '../toast.js';
 import { KEY_USER_ID, KEY_ONBOARDED, KEY_SESSION_TOKEN } from '../storage-keys.js';
+import { clearSampleSession, getEffectiveUserId } from '../sample-session.js';
+import { clearPendingAssistantRequest } from '../assistant-request-store.js';
 import { formatMoney } from '../format.js';
 
 const TIERS = [
@@ -102,28 +104,24 @@ function renderPromotionCriteriaSection(currentTier) {
 
 export async function renderSettings(container, userId) {
   let user = null;
-  let googleStatus = null;
   let settings = null;
   let sessions = [];
   let routines = [];
 
   try {
-    const [userResult, oauthResult, settingsResult, sessionsResult, routinesResult] = await Promise.allSettled([
+    const [userResult, settingsResult, sessionsResult, routinesResult] = await Promise.allSettled([
       fetchUser(userId),
-      fetchOAuthStatus(userId, 'google'),
       fetchSettings(userId),
       fetchSessions(userId),
       fetchRoutines(userId),
     ]);
     user = userResult.status === 'fulfilled' ? userResult.value?.user : null;
-    googleStatus = oauthResult.status === 'fulfilled' ? oauthResult.value : null;
     settings = settingsResult.status === 'fulfilled' ? settingsResult.value : null;
     sessions = sessionsResult.status === 'fulfilled' ? (sessionsResult.value?.sessions ?? []) : [];
     routines = routinesResult.status === 'fulfilled' ? (routinesResult.value?.routines ?? []) : [];
   } catch { /* empty */ }
 
   const currentTier = user?.trust_tier ?? 'suggest';
-  const googleConnected = googleStatus?.connected ?? false;
   const domainPolicies = settings?.domainPolicies ?? [];
   const escalationTriggers = settings?.escalationTriggers ?? [];
   const autonomy = settings?.autonomySettings ?? {};
@@ -137,19 +135,21 @@ export async function renderSettings(container, userId) {
       ? emailAttribution.text
       : `Sent by SkyTwin - the open-source digital twin: ${emailAttributionRepoUrl}`;
   const emailAttributionEnabled = emailAttribution.enabled !== false;
-  const aiProviders = settings?.aiProviders ?? [];
+  const aiProviders = (settings?.aiProviders ?? []).map((provider) => ({ ...provider }));
+  _aiSettingsLoaded = settings !== null;
+  _persistedReasoningMode = settings?.reasoningMode?.mode ?? null;
+  _reasoningMode = _persistedReasoningMode ?? 'on_device';
+  _reasoningModeRequiresConfirmation = settings?.reasoningMode?.requiresConfirmation === true;
+  const hashQuery = window.location.hash.split('?')[1] || '';
+  const confidentialSetupRequested = new URLSearchParams(hashQuery).get('setup') === 'confidential';
+  if (confidentialSetupRequested) {
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/settings`);
+    _reasoningMode = 'verified_private_cloud';
+  }
   const ironclawChannel = settings?.ironclawChannel ?? 'skytwin';
   const ironclawChannels = settings?.ironclawChannels ?? ['skytwin', 'telegram', 'discord', 'slack', 'signal'];
 
-  // Check for ?connected= query param after OAuth redirect
-  const params = new URLSearchParams(window.location.hash.split('?')[1] || '');
-  const justConnected = params.get('connected');
-
   container.innerHTML = `
-    ${justConnected ? `<div class="card" style="border-left: 3px solid var(--success);">
-      <span style="color: var(--success); font-weight: 600;">Connected!</span> Your ${escapeHtml(justConnected)} account is now linked. Your twin will start learning from your data.
-    </div>` : ''}
-
     ${(new URLSearchParams(window.location.search).get('dev') === '1') ? `
     <details class="card collapsible-card">
       <summary class="card-header collapsible-header">
@@ -209,15 +209,17 @@ export async function renderSettings(container, userId) {
       <div id="theme-switcher-target"></div>
     </div>
 
-    <div id="embedded-llm-card-target"></div>
+    <div id="embedded-llm-card-target" aria-live="polite" aria-atomic="true" aria-busy="true">Loading local model setup…</div>
 
     <div class="card" id="local-brain-card">
       <div class="card-header">
         <span class="card-title">Local brain</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 0.75rem;">
-        Your twin's memory runs locally by default — nothing leaves this computer.
-        Advanced users can switch the memory backend or see what's indexed.
+        Your twin's persistent memory is stored in SkyTwin's configured database; the
+        packaged desktop default keeps that database on this computer. It is not encrypted
+        by SkyTwin today, and connected providers may receive selected data.
+        Advanced users can switch the memory backend or inspect what's indexed.
       </div>
       <a class="btn btn-outline btn-sm" href="#/memory-settings">Manage local brain</a>
     </div>
@@ -271,22 +273,15 @@ export async function renderSettings(container, userId) {
         <span class="card-title">Connected accounts</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 1rem;">
-        Connect your accounts so your twin can see your email and calendar.
-        Your twin only reads data — it never sends emails or accepts invites without your permission (based on your autonomy level above).
+        Real-account connections are outside this preview's supported surface.
+        The account-free sample remains available without credentials.
       </div>
       <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">
         <div>
           <div style="font-weight: 600; font-size: 0.9rem;">Google (Gmail + Calendar)</div>
-          <div style="font-size: 0.8rem; color: var(--text-muted);">
-            ${googleConnected ? 'Connected — your twin is learning from your email and calendar' : 'Not connected'}
-          </div>
+          <div style="font-size: 0.8rem; color: var(--text-muted);">Unavailable in this preview</div>
         </div>
-        <div>
-          ${googleConnected
-            ? `<button class="btn btn-outline btn-sm" data-action="disconnect-google">Disconnect</button>`
-            : `<button class="btn btn-primary btn-sm" data-action="connect-google">Connect</button>`
-          }
-        </div>
+        <span style="font-size: 0.75rem; color: var(--text-dim);">No account access</span>
       </div>
     </div>
 
@@ -358,7 +353,7 @@ export async function renderSettings(container, userId) {
       <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-top: 0.5rem;">
         <div>
           <div style="font-weight: 500;">Pause background work when idle</div>
-          <div style="font-size: 0.85rem; color: var(--text-muted);">Stop polling Gmail and generating decisions after 5 minutes of inactivity. Resumes automatically when you come back.</div>
+          <div style="font-size: 0.85rem; color: var(--text-muted);">Pause supported background work after 5 minutes of inactivity. Resumes automatically when you come back.</div>
         </div>
         <label class="toggle-switch">
           <input type="checkbox" id="idle-pause-toggle" data-action="toggle-idle-pause">
@@ -368,7 +363,7 @@ export async function renderSettings(container, userId) {
       <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-top: 0.5rem;">
         <div>
           <div style="font-weight: 500;">Send anonymous crash reports</div>
-          <div style="font-size: 0.85rem; color: var(--text-muted);">If the app crashes, send an anonymous report (error type, stack trace, app version) so we can fix it. No personal data, email, or twin content is ever included. Off by default.</div>
+          <div style="font-size: 0.85rem; color: var(--text-muted);">If the app crashes, send an anonymous report (error type, scrubbed message and stack trace, app version) so we can fix it. SkyTwin applies pattern-based scrubbing for recognized email addresses, credential patterns, and user-home paths before upload. The report has no dedicated account, message, calendar, memory, or twin-profile fields, but messages and stack traces may still contain incidental content or unknown secret formats. Off by default.</div>
         </div>
         <label class="toggle-switch">
           <input type="checkbox" id="crash-reports-toggle" data-action="toggle-crash-reports">
@@ -378,7 +373,7 @@ export async function renderSettings(container, userId) {
     </div>
     ` : ''}
 
-    <details class="card collapsible-card" id="ai-brain-card">
+    <details class="card collapsible-card" id="ai-brain-card" ${confidentialSetupRequested ? 'open' : ''}>
       <summary class="card-header collapsible-header">
         <span class="card-title">${aiProviders.length > 0 ? 'AI brain — connected providers' : 'AI brain — needed for Chat (optional otherwise)'}</span>
         <span class="collapse-icon"></span>
@@ -386,8 +381,11 @@ export async function renderSettings(container, userId) {
       <div class="collapsible-body">
         <div class="card-subtitle" style="margin-bottom: 1rem;">
           ${aiProviders.length > 0
-            ? `Out of the box your twin uses the local AI on your machine plus built-in rules — that's enough for most decisions. Add a paid provider here if you want sharper reasoning on the tricky calls. Multiple are tried in order with automatic fallback.`
-            : `<strong>The Chat surface needs at least one AI provider configured here</strong> to generate replies. Other features (decisions, approvals) work without one — they fall back to local AI + built-in rules. Multiple providers are tried in priority order with automatic fallback.`}
+            ? `Built-in rules handle decisions without a model. When a compatible llama.cpp runtime and local model are installed, your twin can also use local AI on this machine. Add a paid provider here if you want sharper reasoning on the tricky calls. Multiple are tried in order with automatic fallback.`
+            : `<strong>The Chat surface needs at least one AI provider configured here</strong> to generate replies. Other features (decisions, approvals) work without one through built-in rules. Local AI becomes available only when a compatible llama.cpp runtime and model are installed. Multiple providers are tried in priority order with automatic fallback.`}
+        </div>
+        <div id="ai-reasoning-location">
+          ${renderReasoningLocation(settings !== null)}
         </div>
         <div id="ai-mode-toggle">
           ${renderModeToggle(aiProviders)}
@@ -396,18 +394,11 @@ export async function renderSettings(container, userId) {
           ${renderProviderChain(aiProviders)}
         </div>
         <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; align-items: center;">
-          <select class="form-input" id="add-provider-select" style="flex: 1;">
-            <option value="">+ Add a provider…</option>
-            <option value="anthropic">Anthropic (Claude)</option>
-            <option value="openai">OpenAI (GPT)</option>
-            <option value="google">Google (Gemini)</option>
-            <option value="ollama">Local AI on this machine (Ollama)</option>
-            <option value="embedded">Embedded (llama.cpp, no install)</option>
-          </select>
+          ${renderAddProviderSelect()}
         </div>
         <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; justify-content: space-between; align-items: center;">
-          <div style="font-size: 0.75rem; color: var(--text-dim);">If every provider you add is unreachable, your twin falls back to local AI + built-in rules.</div>
-          <button id="save-ai-btn" class="btn btn-primary btn-sm" data-action="save-ai-providers">Save</button>
+          <div style="font-size: 0.75rem; color: var(--text-dim);">If no provider inside your selected boundary responds, your twin uses built-in rules. It never falls through to a different location.</div>
+          <button id="save-ai-btn" class="btn btn-primary btn-sm" data-action="save-ai-providers" ${_aiSettingsLoaded ? '' : 'disabled'}>Save</button>
         </div>
       </div>
     </details>
@@ -418,7 +409,7 @@ export async function renderSettings(container, userId) {
         <span class="card-title">Scheduled actions</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 1rem;">
-        Recurring things your twin runs on a schedule (e.g. weekly inbox cleanup).
+        Existing scheduled actions are shown for inspection. Removal is unavailable in this release.
       </div>
       ${routines.map(routine => `
         <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.5rem;">
@@ -426,7 +417,7 @@ export async function renderSettings(container, userId) {
             <div style="font-weight: 600; font-size: 0.9rem;">${escapeHtml(routine.planSummary || routine.id)}</div>
             <div style="font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(routine.schedule)}${routine.nextRunAt ? ` · next ${escapeHtml(formatRelativeTime(routine.nextRunAt))}` : ''}</div>
           </div>
-          <button class="btn btn-outline btn-sm" data-action="delete-routine" data-routine-id="${escapeHtml(routine.id)}">Delete</button>
+          <button class="btn btn-outline btn-sm" type="button" disabled title="Routine removal is unavailable in this release">Removal unavailable</button>
         </div>
       `).join('')}
     </div>
@@ -453,17 +444,15 @@ export async function renderSettings(container, userId) {
 
     <div class="card">
       <div class="card-header">
-        <span class="card-title">Your data, your machine</span>
+        <span class="card-title">Data storage and network use</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 1rem;">
-        Everything your twin learns lives on this computer. Nothing is sent to a SkyTwin cloud, because there isn't one.
+        SkyTwin stores persistent application data in its configured CockroachDB database, without app-level encryption today. The packaged desktop default keeps that database on this computer; server and self-hosted configurations can point it elsewhere. Connectors contact their providers, and configured hosted-model features send selected content to those providers.
       </div>
       <div style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.8;">
-        <strong>I keep:</strong> the preferences I learn, patterns I notice, and a log of every decision I made (with the reasoning).<br>
-        <strong>I don't keep:</strong> the actual contents of your emails, your calendar event details, or any of your passwords.<br>
-        <strong>Account access:</strong> ${googleConnected
-          ? 'I have a sign-in token from Google so I can read inbox and calendar. Disconnect above and that token is destroyed.'
-          : 'No accounts linked yet — I can\'t see anything until you connect one.'}<br>
+        <strong>Stored in SkyTwin's configured database:</strong> authorized email and calendar fields, selected source content, learned preferences and patterns, memory, and decision, explanation, and receipt records. Signal data is retained there under the app’s retention policy.<br>
+        <strong>Sent when enabled:</strong> OAuth and connector requests go to the connected service. When an IronClaw execution adapter is configured, stored service credentials are also registered with that configured server, which may be remote. In “My configured provider” mode, prompts and responses may travel to enabled providers in the chain. Separately, an administrator-configured OpenAI-compatible embedding key may send memory text for indexing and semantic-search query text to that endpoint.<br>
+        <strong>Account access:</strong> Gmail and Google Calendar connections are unavailable in this preview; the sample uses fictional data and no account grant.<br>
       </div>
     </div>
 
@@ -663,6 +652,12 @@ export async function renderSettings(container, userId) {
 
   ensureSettingsListener();
 
+  if (confidentialSetupRequested) {
+    requestAnimationFrame(() => {
+      document.getElementById('add-provider-select')?.focus();
+    });
+  }
+
   // UX review #7: mount the theme switcher inside the dedicated card.
   // Re-mounted on every render so the dropdown reflects the latest
   // selection (no stale state across save-induced re-renders).
@@ -674,7 +669,11 @@ export async function renderSettings(container, userId) {
   // No-await — render shouldn't block the rest of the settings page.
   const embeddedTarget = document.getElementById('embedded-llm-card-target');
   if (embeddedTarget) {
-    void mountEmbeddedLlmCard(embeddedTarget, userId).catch(() => { /* best-effort */ });
+    void mountEmbeddedLlmCard(embeddedTarget, userId).catch(() => {
+      embeddedTarget.setAttribute('aria-busy', 'false');
+      embeddedTarget.textContent = 'Local model setup could not load. Reload Settings to try again.';
+      embeddedTarget.dispatchEvent(new Event('skytwin:embedded-llm-ready'));
+    });
   }
 
   // Hydrate the launch-at-login toggle from the desktop API. Skipped in
@@ -838,10 +837,39 @@ window.federationUnpair = async function(userId, peerId) {
 // argument so the singleton always acts on the current user even after
 // the dev "Switch user" button changes localStorage. Hash-route gate
 // keeps the singleton from misfiring on other pages — the SPA reuses
-// one #page-content container, so data-action names that overlap with
-// other pages (e.g. "connect-google" also lives on dashboard) need an
-// authoritative scope, and the URL hash is it.
+// one #page-content container, so any overlapping data-action names need
+// an authoritative scope, and the URL hash is it.
 let _settingsListenerWired = false;
+
+function openLocalInferenceSetup() {
+  const card = document.getElementById('ai-brain-card');
+  if (card instanceof HTMLDetailsElement) card.open = true;
+
+  const target = document.getElementById('embedded-llm-card-target');
+  target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+  // The local-model card loads its registry asynchronously. Its one-shot ready
+  // event gives this action a lifecycle-bound handoff rather than a long-lived
+  // DOM observer or a timing guess.
+  const focusSetupControl = () => {
+    const picker = target?.querySelector('#embedded-model-select');
+    const resumeOrProgressControl = target?.querySelector(
+      '[data-action="embedded-resume-download"], [data-action="embedded-pause-download"], [data-action="embedded-cancel-download"]',
+    );
+    const focusTarget = picker instanceof HTMLSelectElement
+      ? picker
+      : resumeOrProgressControl instanceof HTMLElement
+        ? resumeOrProgressControl
+        : target?.querySelector('#embedded-llm-card');
+    if (!(focusTarget instanceof HTMLElement)) return false;
+    if (focusTarget === target?.querySelector('#embedded-llm-card')) focusTarget.tabIndex = -1;
+    focusTarget.focus();
+    return true;
+  };
+  if (focusSetupControl() || !target) return;
+
+  target.addEventListener('skytwin:embedded-llm-ready', focusSetupControl, { once: true });
+}
 
 function ensureSettingsListener() {
   if (_settingsListenerWired || typeof document === 'undefined') return;
@@ -884,6 +912,43 @@ function ensureSettingsListener() {
     if (action === 'a11y-set-reduced-motion' && target instanceof HTMLSelectElement) {
       setReducedMotion(target.value);
       showSavedToast('Animation preference updated');
+      return;
+    }
+    if (action === 'ai-reasoning-mode' && target instanceof HTMLSelectElement) {
+      if (target.value !== 'on_device'
+          && target.value !== 'bring_your_own_provider'
+          && target.value !== 'verified_private_cloud') return;
+      _reasoningMode = target.value;
+      _reasoningModeRequiresConfirmation = false;
+      _aiChain.forEach((provider) => { provider.privacy = null; });
+      const location = document.getElementById('ai-reasoning-location');
+      if (location) location.innerHTML = renderReasoningLocation();
+      const chain = document.getElementById('ai-provider-chain');
+      if (chain) chain.innerHTML = renderProviderChain(_aiChain);
+      const addProvider = document.getElementById('add-provider-select');
+      if (addProvider instanceof HTMLSelectElement) addProvider.outerHTML = renderAddProviderSelect();
+      return;
+    }
+    if (action === 'ai-add-provider' && target instanceof HTMLSelectElement) {
+      const provider = target.value;
+      if (!provider) return;
+      target.value = '';
+
+      const models = PROVIDER_MODELS[provider] || [];
+      const defaultModel = models[0]?.id || '';
+      _aiChain.push({
+        provider,
+        model: defaultModel,
+        apiKey: '',
+        baseUrl: provider === 'ollama' ? 'http://localhost:11434' : undefined,
+        priority: _aiChain.length,
+        enabled: true,
+        hasApiKey: false,
+        apiKeyPreview: '',
+      });
+
+      const chain = document.getElementById('ai-provider-chain');
+      if (chain) chain.innerHTML = renderProviderChain(_aiChain);
       return;
     }
     if (action === 'toggle-email-attribution' && target instanceof HTMLInputElement) {
@@ -981,17 +1046,21 @@ function ensureSettingsListener() {
       case 'save-tier':
         window.saveTier(uid);
         return;
-      case 'connect-google':
-        window.handleConnectGoogle(uid);
-        return;
-      case 'disconnect-google':
-        window.handleDisconnectGoogle(uid);
-        return;
       case 'save-ai-providers':
         window.saveAIProvidersHandler(uid);
         return;
+      case 'reload-settings':
+        renderSettings(document.getElementById('page-content'), uid);
+        return;
+      case 'open-local-inference-setup':
+        openLocalInferenceSetup();
+        return;
       case 'switch-to-smart':
         window.switchAIBrainMode(uid, 'smart');
+        return;
+      case 'switch-to-smart-boundary-blocked':
+        document.getElementById('ai-reasoning-mode')?.focus();
+        showErrorToast('Choose On this device and save it before selecting Smart.');
         return;
       case 'switch-to-smarter':
         window.switchAIBrainMode(uid, 'smarter');
@@ -1170,74 +1239,6 @@ function scheduleTierAutosave(userId) {
     }
   }, 800);
 }
-
-window.handleConnectGoogle = async function(userId) {
-  try {
-    // In the desktop app, open OAuth in the system browser to support
-    // passkeys/WebAuthn which Electron's BrowserWindow cannot handle.
-    // The `desktop` flag must be set at authorize-time so the server can
-    // sign it into the state — mutating the signed state on the client
-    // breaks HMAC verification on the callback.
-    const { startGoogleSignIn } = await import('../google-signin.js');
-    const result = await startGoogleSignIn({
-      userId,
-      onComplete: async (connected) => {
-        // Desktop polling runs for up to 5 minutes — the user may have
-        // navigated away. Re-query the container and bail unless we're
-        // still on /settings, so we don't render over another page.
-        if (window.location.hash.split('?')[0] !== '#/settings') return;
-        const banner = document.getElementById('oauth-polling-banner');
-        if (!connected) {
-          if (banner) banner.textContent = 'Sign-in timed out. Refresh the page to try again.';
-          return;
-        }
-        banner?.remove();
-        const container = document.getElementById('page-content');
-        if (!container) return;
-        await renderSettings(container, userId);
-      },
-    });
-    // Re-query the container after the await — a navigation during the
-    // startGoogleSignIn call could have detached the original element.
-    const pageContent = document.getElementById('page-content');
-    if (!pageContent) return;
-    if (result.status === 'polling') {
-      pageContent.insertAdjacentHTML(
-        'afterbegin',
-        '<div class="info-banner" id="oauth-polling-banner">Waiting for Google sign-in to complete in your browser\u2026</div>',
-      );
-      return;
-    }
-    if (result.status === 'redirecting') {
-      return;
-    }
-    if (result.status === 'error') {
-      const msg = /credentials|authorize url/i.test(result.error || '')
-        ? 'Google access isn\'t set up on this server yet. Head to <a href="#/setup">Connect</a> for the 5-minute walkthrough.'
-        : escapeHtml(result.error || 'Could not start Google sign-in.');
-      pageContent.insertAdjacentHTML('afterbegin', `<div class="error-banner">${msg}</div>`);
-      return;
-    }
-  } catch (err) {
-    document.getElementById('page-content')?.insertAdjacentHTML(
-      'afterbegin',
-      `<div class="error-banner">${escapeHtml(err.message)}</div>`,
-    );
-  }
-};
-
-window.handleDisconnectGoogle = async function(userId) {
-  try {
-    await disconnectProvider('google', userId);
-    const { renderSettings } = await import('./settings.js');
-    await renderSettings(document.getElementById('page-content'), userId);
-  } catch (err) {
-    document.getElementById('page-content').insertAdjacentHTML(
-      'afterbegin',
-      `<div class="error-banner">${escapeHtml(err.message)}</div>`,
-    );
-  }
-};
 
 window.toggleEmailAttribution = async function(userId, checkbox) {
   const enabled = checkbox.checked;
@@ -1627,21 +1628,29 @@ const PROVIDER_MODELS = {
   embedded: [
     { id: 'auto', label: 'Auto-detect (first GGUF in model dir)' },
   ],
+  trustedrouter: [
+    { id: 'trustedrouter/confidential', label: 'Confidential route (automatic model)' },
+  ],
+  nearai: [
+    { id: 'deepseek-ai/DeepSeek-V4-Flash', label: 'DeepSeek V4 Flash (direct TEE)' },
+  ],
 };
 
 const PROVIDER_LABELS = {
   anthropic: 'Anthropic (Claude)',
   openai: 'OpenAI (GPT)',
   google: 'Google (Gemini)',
-  ollama: 'Ollama (local)',
+  ollama: 'Ollama',
   embedded: 'Embedded (llama.cpp)',
+  trustedrouter: 'TrustedRouter (verified private)',
+  nearai: 'NEAR AI (verification pending)',
 };
 
 // #187 AC#6: providers that count as "Smarter" — i.e. external paid APIs
 // the user is choosing to delegate the harder thinking to. `ollama` lives
-// on a third rail: it's local like `embedded` but the user installed it
-// themselves, so we treat it as Smarter too (the operator chose it
-// deliberately and may have a beefier model than the embedded default).
+// on a third rail: it is request-constrained to local execution in on-device
+// mode, but may relay remotely in bring-your-own-provider mode. Either way,
+// the operator chose it deliberately and it may be stronger than embedded.
 const SMARTER_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'ollama']);
 
 /**
@@ -1650,8 +1659,9 @@ const SMARTER_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'ollama']);
  *   'smart'    — top enabled provider is `embedded` (Smart mode default
  *                per #187 AC#6).
  *   'smarter'  — top enabled provider is hosted / Ollama (BYO API path).
- *   'none'     — no enabled providers; the LlmClient will return null and
- *                callers fall back to local AI + built-in rules.
+ *   'none'     — no enabled providers; model-backed callers return null and
+ *                decision paths use built-in rules. Local AI requires an
+ *                installed compatible runtime and model.
  *
  * Pure helper so the mode pill, the action handler, and any future audit
  * route all agree on one definition.
@@ -1730,6 +1740,83 @@ export function applySmarterMode(chain) {
 
 // In-memory state for the current chain being edited
 let _aiChain = [];
+let _aiSettingsLoaded = false;
+let _reasoningMode = 'on_device';
+let _persistedReasoningMode = null;
+let _reasoningModeRequiresConfirmation = false;
+
+function renderAddProviderSelect() {
+  return `
+    <select class="form-input" id="add-provider-select" data-action="ai-add-provider" style="flex: 1;">
+      <option value="">+ Add a provider…</option>
+      ${_reasoningMode === 'verified_private_cloud' ? `
+        <option value="trustedrouter">TrustedRouter (verified private)</option>
+        <option value="" disabled>NEAR AI (verification pending)</option>
+      ` : `
+        <option value="anthropic">Anthropic (Claude)</option>
+        <option value="openai">OpenAI (GPT)</option>
+        <option value="google">Google (Gemini)</option>
+        <option value="ollama">Ollama (local-only in On this device mode)</option>
+        <option value="embedded">Embedded (requires llama.cpp + model)</option>
+      `}
+    </select>
+  `;
+}
+
+function renderReasoningLocation(settingsAvailable = true) {
+  if (!settingsAvailable) {
+    return `
+      <div style="padding: 0.75rem; margin-bottom: 0.75rem; border: 1px solid var(--danger); border-radius: 8px;">
+        <div style="font-size: 0.85rem;">Could not load the reasoning-location boundary.</div>
+        <button class="btn btn-outline btn-sm" style="margin-top: 0.5rem;" data-action="reload-settings">Retry</button>
+      </div>
+    `;
+  }
+  const boundaryDescription = _reasoningMode === 'on_device'
+    ? 'This is the default boundary. SkyTwin admits only its embedded runtime or a source-qualified loopback Ollama model here. Managed local setup stays unavailable until its artifact and runtime pass verification; an explicitly configured local model remains local but is not represented as artifact-verified. This boundary never falls through to a remote provider.'
+    : _reasoningMode === 'bring_your_own_provider'
+      ? 'Prompts and responses may travel over the network to any enabled provider in this chain. Embedded inference is ineligible in this mode; Ollama may relay through its operator, so this mode treats it as potentially remote. This mode makes no confidential-computing claim.'
+      : 'SkyTwin sends a prompt only through the verifier-owned TrustedRouter adapter. It requires a fresh same-session gateway attestation and confidential-route receipt. NEAR AI is visible as a future option but remains unavailable because its current base-CVM evidence does not pin the dynamically selected inference workload. Any verification failure stops the request path without conventional fallback.';
+  const hasUnsavedMode = _reasoningMode !== _persistedReasoningMode;
+  const persistedLabel = _persistedReasoningMode === 'on_device'
+    ? 'On this device'
+    : _persistedReasoningMode === 'bring_your_own_provider'
+      ? 'My configured provider'
+      : _persistedReasoningMode === 'verified_private_cloud'
+        ? 'Verified private cloud'
+        : 'No confirmed location';
+  const disclosure = hasUnsavedMode
+    ? `Draft only — this selection is not active until you press Save. The active boundary remains “${persistedLabel}”. If saved: ${boundaryDescription}`
+    : boundaryDescription;
+  const localSetup = _reasoningMode === 'on_device' ? `
+    <button type="button" class="btn btn-primary btn-sm" style="margin-top: 0.65rem;" data-action="open-local-inference-setup">Set up local model</button>
+  ` : '';
+  return `
+    <div style="padding: 0.75rem; margin-bottom: 0.75rem; background: var(--bg); border: 1px solid ${_reasoningModeRequiresConfirmation || hasUnsavedMode ? 'var(--warning)' : 'var(--border)'}; border-radius: 8px;">
+      <label for="ai-reasoning-mode" style="display: block; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.35rem;">Where reasoning runs</label>
+      <select id="ai-reasoning-mode" class="form-input" data-action="ai-reasoning-mode" aria-describedby="ai-reasoning-disclosure">
+        <option value="on_device" ${_reasoningMode === 'on_device' ? 'selected' : ''}>On this device</option>
+        <option value="bring_your_own_provider" ${_reasoningMode === 'bring_your_own_provider' ? 'selected' : ''}>My configured provider</option>
+        <option value="verified_private_cloud" ${_reasoningMode === 'verified_private_cloud' ? 'selected' : ''}>Verified private cloud</option>
+      </select>
+      <div id="ai-reasoning-disclosure" style="font-size: 0.75rem; line-height: 1.45; color: var(--text-muted); margin-top: 0.5rem;">${disclosure}</div>
+      ${localSetup}
+      ${_reasoningModeRequiresConfirmation ? '<div style="font-size: 0.75rem; color: var(--warning); margin-top: 0.4rem;">Your earlier provider chain was ambiguous. Choose a location before testing or saving.</div>' : ''}
+    </div>
+    <details style="margin: -0.25rem 0 0.75rem; padding: 0.65rem 0.75rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);">
+      <summary style="cursor: pointer; font-size: 0.8rem; color: var(--text-muted);">Confidential remote inference options</summary>
+      <div style="font-size: 0.75rem; line-height: 1.5; color: var(--text-muted); margin-top: 0.55rem;">
+        TrustedRouter is available through a verifier-owned adapter; a key alone is never enough. It requires a live same-connection gateway attestation, a SkyTwin-pinned workload identity, and a confidential-route receipt. NEAR AI remains listed for transparency but unavailable: the public evidence verifies a base CVM whose privileged compose manager can change the model and proxy workload, so SkyTwin cannot yet bind a call to a pinned inference workload.
+        <div style="display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.45rem;">
+          <a href="https://trustedrouter.com/docs" target="_blank" rel="noopener noreferrer">TrustedRouter docs</a>
+          <a href="https://trust.trustedrouter.com/" target="_blank" rel="noopener noreferrer">TrustedRouter live trust record</a>
+          <a href="https://github.com/nearai/nearai-cloud-verifier" target="_blank" rel="noopener noreferrer">NEAR AI verifier</a>
+          <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/confidential-inference.md" target="_blank" rel="noopener noreferrer">SkyTwin verification guide</a>
+        </div>
+      </div>
+    </details>
+  `;
+}
 
 /**
  * #187 AC#6: render the Smart / Smarter mode pill above the provider
@@ -1740,20 +1827,30 @@ let _aiChain = [];
  *   - Switch-to-Smarter is disabled when no hosted/Ollama provider exists
  *     in the chain (we don't auto-add one because the user has to supply
  *     an API key).
- *   - Switch-to-Smart is always available — if no embedded entry exists
- *     yet, `applySmartMode` adds one with `model: 'auto'` so the runtime
- *     picks up the first GGUF in the detected model directory.
+ *   - Switch-to-Smart requires a saved on-device boundary. If no embedded
+ *     entry exists, `applySmartMode` adds one with `model: 'auto'` so the
+ *     runtime picks up the first GGUF in the detected model directory.
  */
 function renderModeToggle(providers) {
+  if (_reasoningMode === 'verified_private_cloud') {
+    return `
+      <div style="padding:0.65rem 0.75rem;margin-bottom:0.75rem;border:1px solid var(--border);border-radius:8px;background:var(--bg);font-size:0.78rem;color:var(--text-muted);line-height:1.45;">
+        Verified-private mode currently uses only TrustedRouter's isolated verifier-owned path. NEAR AI remains unavailable pending dynamic-workload verification. This mode never falls through to the providers used by Smart or Smarter modes.
+      </div>
+    `;
+  }
   const mode = detectAIMode(providers);
   const hasSmarterCandidate = providers.some((p) => SMARTER_PROVIDERS.has(p.provider));
+  const smartBoundaryReady = _reasoningMode === 'on_device'
+    && _persistedReasoningMode === 'on_device'
+    && !_reasoningModeRequiresConfirmation;
 
-  const pill = (label, isActive, action, helperText) => `
+  const pill = (label, isActive, action, helperText, isDisabled = false) => `
     <div style="flex: 1; min-width: 0;">
       <button class="btn ${isActive ? 'btn-primary' : 'btn-outline'} btn-sm"
               style="width: 100%; padding: 0.5rem 0.75rem; font-size: 0.85rem;"
               data-action="${action}"
-              ${isActive ? 'disabled' : ''}>
+              ${isActive || isDisabled ? 'disabled' : ''}>
         ${isActive ? '✓ ' : ''}${label}${isActive ? '' : ' →'}
       </button>
       ${helperText ? `<div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.25rem;">${helperText}</div>` : ''}
@@ -1763,12 +1860,15 @@ function renderModeToggle(providers) {
   return `
     <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem;">
       ${pill(
-        'Smart (free, on-device)',
+        'Smart (prefer on-device)',
         mode === 'smart',
-        'switch-to-smart',
+        smartBoundaryReady ? 'switch-to-smart' : 'switch-to-smart-boundary-blocked',
         mode === 'smart'
-          ? 'Embedded model is your top choice.'
-          : 'No API costs, runs offline.',
+          ? 'Embedded provider is first; runtime and model availability are checked separately.'
+          : !smartBoundaryReady
+            ? 'Choose On this device above and save that boundary before selecting Smart.'
+            : 'No hosted-provider fee; requires an installed local runtime and model.',
+        !smartBoundaryReady,
       )}
       ${pill(
         'Smarter (paid API or Ollama)',
@@ -1788,11 +1888,11 @@ function renderProviderChain(providers) {
   _aiChain = providers.map((p, i) => ({ ...p, priority: i }));
 
   if (_aiChain.length === 0) {
-    return '<div style="font-size: 0.85rem; color: var(--text-muted); padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">No paid providers added. Your twin runs on the local AI on this machine plus built-in rules — that\'s the default.</div>';
+    return '<div style="font-size: 0.85rem; color: var(--text-muted); padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">No model provider configured. Built-in rules remain available; on-device model reasoning requires a compatible local runtime and model.</div>';
   }
 
   return _aiChain.map((p, idx) => `
-    <div class="ai-provider-card" draggable="true" data-idx="${idx}"
+    <div class="ai-provider-card" draggable="true" data-idx="${idx}" data-provider="${escapeHtml(p.provider)}"
          data-region="ai-provider-card"
          style="display: flex; gap: 0.5rem; align-items: flex-start; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.5rem; border: 2px solid transparent; cursor: grab; transition: border-color 0.15s, opacity 0.15s;">
       <div style="display: flex; flex-direction: column; align-items: center; gap: 0.25rem; padding-top: 0.25rem; color: var(--text-dim); font-size: 0.75rem; user-select: none;">
@@ -1804,7 +1904,8 @@ function renderProviderChain(providers) {
           <span style="font-weight: 600; font-size: 0.9rem;">${escapeHtml(PROVIDER_LABELS[p.provider] || p.provider)}</span>
           <div style="display: flex; gap: 0.25rem; align-items: center;">
             <label style="font-size: 0.75rem; display: flex; align-items: center; gap: 0.25rem; cursor: pointer;">
-              <input type="checkbox" ${p.enabled !== false ? 'checked' : ''} data-action="ai-toggle-enabled">
+              <input type="checkbox" ${providerEnabledForMode(p) ? 'checked' : ''} data-action="ai-toggle-enabled"
+                     ${providerCompatibleWithMode(p) ? '' : 'disabled'}>
               on
             </label>
             <button class="btn btn-outline btn-sm" style="padding: 0.15rem 0.4rem; font-size: 0.7rem;" data-action="ai-test-provider" data-idx="${idx}">Test</button>
@@ -1833,13 +1934,46 @@ function renderProviderChain(providers) {
           }
         </div>
         <div id="ai-test-result-${idx}" style="margin-top: 0.25rem;"></div>
+        <div data-region="provider-boundary" style="margin-top: 0.4rem; font-size: 0.7rem; color: var(--text-dim); line-height: 1.4;">
+          ${renderProviderBoundary(p)}
+        </div>
       </div>
     </div>
   `).join('');
 }
 
+function providerCompatibleWithMode(provider) {
+  return _reasoningMode === 'verified_private_cloud'
+    ? provider.provider === 'trustedrouter'
+    : provider.provider !== 'trustedrouter' && provider.provider !== 'nearai';
+}
+
+function providerEnabledForMode(provider) {
+  return providerCompatibleWithMode(provider) && provider.enabled !== false;
+}
+
+function renderProviderBoundary(provider) {
+  const privacy = provider?.privacy;
+  if (!privacy) return 'Boundary details will be available after this endpoint is validated and saved.';
+  const location = privacy.executionLocation === 'on_device' ? 'On device' : 'Remote service';
+  const network = privacy.networkScope === 'none'
+    ? 'no network'
+    : privacy.networkScope === 'loopback'
+      ? 'loopback only'
+      : 'external network';
+  const price = privacy.pricing?.kind === 'zero'
+    ? 'no per-token provider charge'
+    : privacy.pricing?.kind === 'unknown'
+      ? 'price not established'
+      : 'metered price';
+  const assurance = privacy.confidentiality === 'attested_tee'
+    ? 'attestation required for every response'
+    : null;
+  return `${escapeHtml(location)} · ${escapeHtml(network)} · ${escapeHtml(price)}${assurance ? ` · ${escapeHtml(assurance)}` : ''}. ${escapeHtml(privacy.retention?.summary || '')}`;
+}
+
 function getCurrentUserId() {
-  return localStorage.getItem(KEY_USER_ID) || 'default-user';
+  return getEffectiveUserId() || 'default-user';
 }
 
 // Drag and drop state
@@ -1881,7 +2015,20 @@ window.aiToggleEnabled = function(idx, checked) {
 };
 
 window.aiUpdateField = function(idx, field, value) {
-  _aiChain[idx][field] = value;
+  if (!Number.isSafeInteger(idx) || idx < 0) return;
+  const provider = _aiChain[idx];
+  if (!provider) return;
+  provider[field] = value;
+  if (field !== 'baseUrl' && field !== 'model') return;
+
+  // Privacy metadata belongs to the persisted endpoint snapshot. Never keep
+  // showing it after the user edits the authority locally.
+  provider.privacy = null;
+  const card = document.querySelector(
+    `[data-region="ai-provider-card"][data-idx="${idx}"]`,
+  );
+  const boundary = card?.querySelector('[data-region="provider-boundary"]');
+  if (boundary) boundary.innerHTML = renderProviderBoundary(provider);
 };
 
 window.aiRemoveProvider = function(idx, userId) {
@@ -1891,6 +2038,14 @@ window.aiRemoveProvider = function(idx, userId) {
 };
 
 window.aiTestProvider = async function(idx, userId) {
+  if (!_aiSettingsLoaded) return;
+  if (_reasoningModeRequiresConfirmation || _reasoningMode !== _persistedReasoningMode) {
+    document.getElementById('ai-reasoning-mode')?.focus();
+    showErrorToast(_reasoningModeRequiresConfirmation
+      ? 'Choose where reasoning runs before testing a provider.'
+      : 'Save where reasoning runs before testing a provider.');
+    return;
+  }
   const p = _aiChain[idx];
   const resultEl = document.getElementById(`ai-test-result-${idx}`);
   resultEl.innerHTML = '<span style="font-size: 0.75rem; color: var(--text-muted);">Testing...</span>';
@@ -1901,10 +2056,14 @@ window.aiTestProvider = async function(idx, userId) {
       apiKey: p.apiKey || '',
       model: p.model,
       baseUrl: p.baseUrl,
+      reasoningMode: _reasoningMode,
     });
 
     if (result.success) {
-      resultEl.innerHTML = `<span style="font-size: 0.75rem; color: var(--success);">Connected — ${escapeHtml(result.model)} responding in ~${result.latencyMs}ms</span>`;
+      const label = p.provider === 'trustedrouter'
+        ? `Verified confidential route — ${escapeHtml(result.model)} in ~${result.latencyMs}ms`
+        : `Connected — ${escapeHtml(result.model)} responding in ~${result.latencyMs}ms`;
+      resultEl.innerHTML = `<span style="font-size: 0.75rem; color: var(--success);">${label}</span>`;
     } else {
       resultEl.innerHTML = `<span style="font-size: 0.75rem; color: var(--danger);">Failed: ${escapeHtml(result.error || 'Unknown error')}</span>`;
     }
@@ -1921,6 +2080,19 @@ window.aiTestProvider = async function(idx, userId) {
  * agree.
  */
 window.switchAIBrainMode = async function(userId, target) {
+  if (!_aiSettingsLoaded) return;
+  if (_reasoningModeRequiresConfirmation || _reasoningMode !== _persistedReasoningMode) {
+    document.getElementById('ai-reasoning-mode')?.focus();
+    showErrorToast(_reasoningModeRequiresConfirmation
+      ? 'Choose where reasoning runs before changing provider priority.'
+      : 'Save where reasoning runs before changing provider priority.');
+    return;
+  }
+  if (target === 'smart' && _reasoningMode !== 'on_device') {
+    document.getElementById('ai-reasoning-mode')?.focus();
+    showErrorToast('Choose On this device and save it before selecting Smart.');
+    return;
+  }
   const next = target === 'smart'
     ? applySmartMode(_aiChain)
     : applySmarterMode(_aiChain);
@@ -1942,6 +2114,7 @@ window.switchAIBrainMode = async function(userId, target) {
   // Re-render the pill + provider chain optimistically so the click
   // produces an immediate visual change while the save round-trips.
   document.getElementById('ai-mode-toggle').innerHTML = renderModeToggle(_aiChain);
+  document.getElementById('ai-reasoning-location').innerHTML = renderReasoningLocation();
   document.getElementById('ai-provider-chain').innerHTML = renderProviderChain(_aiChain);
 
   try {
@@ -1951,8 +2124,8 @@ window.switchAIBrainMode = async function(userId, target) {
       model: p.model,
       baseUrl: p.baseUrl,
       priority: i,
-      enabled: p.enabled !== false,
-    })));
+      enabled: providerEnabledForMode(p),
+    })), _reasoningMode);
     // Re-fetch from the server so the pill reflects the persisted state
     // (handles edge cases like an existing-but-disabled embedded entry
     // that was re-enabled by applySmartMode, where the server response
@@ -1964,6 +2137,7 @@ window.switchAIBrainMode = async function(userId, target) {
     // switch succeeded.
     _aiChain = prev;
     document.getElementById('ai-mode-toggle').innerHTML = renderModeToggle(_aiChain);
+    document.getElementById('ai-reasoning-location').innerHTML = renderReasoningLocation();
     document.getElementById('ai-provider-chain').innerHTML = renderProviderChain(_aiChain);
     // Defensive `err.message` access — a non-Error rejection (string,
     // object, undefined) would otherwise produce "Failed to switch
@@ -1978,6 +2152,7 @@ window.switchAIBrainMode = async function(userId, target) {
 };
 
 window.saveAIProvidersHandler = async function(userId) {
+  if (!_aiSettingsLoaded) return;
   const btn = document.getElementById('save-ai-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
 
@@ -1988,8 +2163,8 @@ window.saveAIProvidersHandler = async function(userId) {
       model: p.model,
       baseUrl: p.baseUrl,
       priority: i,
-      enabled: p.enabled !== false,
-    })));
+      enabled: providerEnabledForMode(p),
+    })), _reasoningMode);
     if (btn) { btn.textContent = 'Saved!'; }
     setTimeout(async () => {
       const { renderSettings } = await import('./settings.js');
@@ -2004,38 +2179,17 @@ window.saveAIProvidersHandler = async function(userId) {
   }
 };
 
-// Handle the "Add provider" dropdown
-document.addEventListener('change', (e) => {
-  if (e.target?.id !== 'add-provider-select') return;
-  const provider = e.target.value;
-  if (!provider) return;
-  e.target.value = '';
-
-  const models = PROVIDER_MODELS[provider] || [];
-  const defaultModel = models[0]?.id || '';
-
-  _aiChain.push({
-    provider,
-    model: defaultModel,
-    apiKey: '',
-    baseUrl: provider === 'ollama' ? 'http://localhost:11434' : undefined,
-    priority: _aiChain.length,
-    enabled: true,
-    hasApiKey: false,
-    apiKeyPreview: '',
-  });
-
-  document.getElementById('ai-provider-chain').innerHTML = renderProviderChain(_aiChain);
-});
-
 window.signOut = function() {
   // Clear identity AND the bearer token. Without dropping the session
   // token, the next user-switch / new-onboarding flow would still send
   // the prior user's bearer header from api-client.js authHeaders(),
   // either 403'ing the new identity or silently keeping the old one.
+  const departingUserId = getEffectiveUserId();
+  clearPendingAssistantRequest(departingUserId);
   localStorage.removeItem(KEY_USER_ID);
   localStorage.removeItem(KEY_ONBOARDED);
   localStorage.removeItem(KEY_SESSION_TOKEN);
+  clearSampleSession();
   window.location.hash = '#/';
   window.location.reload();
 };

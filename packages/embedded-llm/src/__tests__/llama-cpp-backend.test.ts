@@ -2,14 +2,20 @@ import { EventEmitter } from 'node:events';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
-vi.mock('node:fs', () => ({
+vi.mock('node:fs', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:fs')>()),
   existsSync: vi.fn(),
   readdirSync: vi.fn(),
   statSync: vi.fn(),
 }));
+vi.mock('../runtime-compatibility.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../runtime-compatibility.js')>()),
+  detectLlamaCppBuild: vi.fn(),
+}));
 
 import { spawn } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
+import { detectLlamaCppBuild } from '../runtime-compatibility.js';
 
 import {
   findFirstGgufModel,
@@ -20,6 +26,7 @@ const mockSpawn = vi.mocked(spawn);
 const mockExistsSync = vi.mocked(existsSync);
 const mockReaddirSync = vi.mocked(readdirSync);
 const mockStatSync = vi.mocked(statSync);
+const mockRuntimeBuild = vi.mocked(detectLlamaCppBuild);
 
 interface FakeChild extends EventEmitter {
   stdout: EventEmitter;
@@ -37,6 +44,7 @@ function makeChild(): FakeChild {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockRuntimeBuild.mockReturnValue(5_000);
 });
 
 describe('LlamaCppTextBackend', () => {
@@ -59,7 +67,19 @@ describe('LlamaCppTextBackend', () => {
     expect(port.capabilities.contextWindow).toBe(32_768);
   });
 
-  it('passes prompt and options to llama-cli and returns stdout', async () => {
+  it('fails closed when the runtime build changes after readiness', async () => {
+    mockRuntimeBuild.mockReturnValue(5_001);
+    const port = new LlamaCppTextBackend({
+      binaryPath: '/usr/bin/llama-cli',
+      modelPath: '/models/qwen.gguf',
+      runtimeBuild: 5_000,
+    });
+
+    await expect(port.generate('hello')).rejects.toThrow(/runtime build changed/);
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
+  it('passes prompt and options to llama-completion and returns stdout', async () => {
     const child = makeChild();
     mockSpawn.mockReturnValue(child as never);
 
@@ -86,7 +106,32 @@ describe('LlamaCppTextBackend', () => {
     expect(args).toContain('--temp');
     expect(args).toContain('0.2');
     expect(args).toContain('--no-display-prompt');
-    expect(args).toContain('-no-cnv');
+    expect(args).toContain('--single-turn');
+    expect(args).not.toContain('-no-cnv');
+  });
+
+  it('enforces schema-constrained output with reasoning disabled', async () => {
+    const child = makeChild();
+    mockSpawn.mockReturnValue(child as never);
+    const port = new LlamaCppTextBackend({
+      binaryPath: '/usr/bin/llama-completion',
+      modelPath: '/models/qwen3.gguf',
+    });
+
+    const schema = '{"type":"object"}';
+    const promise = port.generate('strict prompt', {
+      jsonSchema: schema,
+      disableReasoning: true,
+    });
+    child.stdout.emit('data', Buffer.from('<think>\n\n</think>\n{"ok":true}'));
+    child.emit('close', 0);
+
+    await expect(promise).resolves.toBe('{"ok":true}');
+    const [, args] = mockSpawn.mock.calls[0]!;
+    expect(args).toEqual(expect.arrayContaining([
+      '--reasoning', 'off', '--reasoning-format', 'deepseek',
+      '--json-schema', schema,
+    ]));
   });
 
   it('strips llama.cpp end-of-text markers from output', async () => {
@@ -130,7 +175,7 @@ describe('LlamaCppTextBackend', () => {
     });
     const promise = port.generate('hi');
     child.emit('error', new Error('ENOENT'));
-    await expect(promise).rejects.toThrow(/failed to spawn llama-cli.*ENOENT/);
+    await expect(promise).rejects.toThrow(/failed to spawn llama-completion.*ENOENT/);
   });
 
   it('kills child and rejects on timeout', async () => {

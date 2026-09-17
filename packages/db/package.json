@@ -9,10 +9,15 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./source-key-registry": {
+      "import": "./dist/source-key-registry.js",
+      "types": "./dist/source-key-registry.d.ts"
     }
   },
   "bin": {
-    "skytwin-backup": "./dist/bin/backup-cli.js"
+    "skytwin-backup": "./dist/bin/backup-cli.js",
+    "skytwin-verify-receipt": "./dist/bin/verify-inference-receipt.js"
   },
   "scripts": {
     "build": "tsc && node scripts/copy-sql.cjs",
@@ -22,7 +27,7 @@
     "demo:fixture": "tsx src/seeds/demo-fixture.ts",
     "backup": "tsx src/bin/backup-cli.ts",
     "generate": "tsc --declaration --emitDeclarationOnly",
-    "test": "vitest run",
+    "test": "vitest run --exclude '**/dist/**'",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
@@ -31,15 +36,16 @@
     "@skytwin/decision-engine": "workspace:*",
     "@skytwin/explanations": "workspace:*",
     "@skytwin/policy-engine": "workspace:*",
+    "@skytwin/routines": "workspace:*",
     "@skytwin/shared-types": "workspace:*",
     "@skytwin/twin-model": "workspace:*",
-    "pg": "^8.22.0"
+    "pg": "^8.23.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
-    "@types/pg": "^8.10.9",
-    "tsx": "^4.22.4",
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.23.13",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.10"
+    "vitest": "5.0.1"
   }
 }

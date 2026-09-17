@@ -1,6 +1,6 @@
 import { escapeHtml } from '../api-client.js';
 import { showSavedToast, showErrorToast } from '../toast.js';
-import { KEY_SESSION_TOKEN, KEY_USER_ID } from '../storage-keys.js';
+import { getEffectiveAuthToken, getEffectiveUserId } from '../sample-session.js';
 
 /**
  * Memory backend settings page (#197 AC #6).
@@ -21,7 +21,7 @@ let _sseListenerWired = false;
 let _sseRefreshTimer = null;
 
 function getCurrentUserId() {
-  return localStorage.getItem(KEY_USER_ID) ?? '';
+  return getEffectiveUserId();
 }
 
 /**
@@ -50,7 +50,7 @@ function ensureSseListener() {
 
 async function api(path, init = {}) {
   const userId = getCurrentUserId();
-  const sessionToken = localStorage.getItem(KEY_SESSION_TOKEN) ?? '';
+  const sessionToken = getEffectiveAuthToken();
   const encodedUserId = encodeURIComponent(userId);
   const url = path.includes('?') ? `${path}&userId=${encodedUserId}` : `${path}?userId=${encodedUserId}`;
   return fetch(url, {
@@ -238,8 +238,8 @@ export async function renderMemorySettings(container, userId) {
   const showSmarterNotice =
     data.backend === 'hybrid' && data.hybridNotificationDismissed === false;
   const suggest = data.suggestion ?? {};
-  const showHybridSuggestion =
-    suggest.suggest && data.backend !== 'hybrid' && !data.hybridNotificationDismissed;
+  const showExternalGbrainNotice =
+    suggest.suggest && !data.hybridNotificationDismissed;
 
   const diagBlock = diagnostics?.diagnostics
     ? `<div class="card" style="margin-top: 1rem;">
@@ -267,11 +267,12 @@ export async function renderMemorySettings(container, userId) {
         </div>
       </div>
     ` : ''}
-    ${showHybridSuggestion ? `
+    ${showExternalGbrainNotice ? `
       <div class="card" style="border-left: 3px solid var(--info); margin-bottom: 1rem;">
-        <strong>You already have a gbrain set up locally.</strong>
-        Switch to hybrid mode to combine your existing brain with mempalace's
-        spatial + AAAK features.
+        <strong>A separate upstream gbrain installation was detected.</strong>
+        SkyTwin does not read or import that brain automatically. Its gbrain
+        backend stays in CockroachDB, and hybrid mode adds SkyTwin's internal
+        mempalace features; it does not connect the external installation.
       </div>
     ` : ''}
     <div class="card">
@@ -388,7 +389,7 @@ function renderDashboard(dashboard) {
       </div>`;
 
   const entitiesBlock = ents.length === 0
-    ? `<p class="card-subtitle">No entities mined yet. Connect Gmail / Calendar to start.</p>`
+    ? `<p class="card-subtitle">No entities mined yet. The isolated sample does not read connected accounts.</p>`
     : `<ul style="margin-top: 0.5rem;">
         ${ents.map((e) => `
           <li>

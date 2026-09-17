@@ -86,8 +86,15 @@ export const mcpServerChangelogRepository = {
     changelogVersion?: string,
   ): Promise<void> {
     await query(
-      `INSERT INTO pending_skill_opt_ins (server_id, skill_name, changelog_version)
-       VALUES ($1, $2, $3)
+      `WITH owner AS (
+         SELECT u.id
+           FROM users u
+           JOIN mcp_servers ms ON ms.user_id = u.id
+          WHERE ms.id = $1
+          FOR UPDATE
+       )
+       INSERT INTO pending_skill_opt_ins (server_id, skill_name, changelog_version)
+       SELECT $1, $2, $3 FROM owner
        ON CONFLICT (server_id, skill_name) DO NOTHING`,
       [serverId, skillName, changelogVersion ?? null],
     );
@@ -100,14 +107,23 @@ export const mcpServerChangelogRepository = {
    */
   async listPendingOptInsForUser(
     userId: string,
-  ): Promise<Array<PendingSkillOptInRow & { server_display_name: string; server_registry_id: string | null }>> {
+  ): Promise<Array<PendingSkillOptInRow & {
+    server_display_name: string;
+    server_registry_id: string | null;
+    server_oauth_provider: string | null;
+  }>> {
     const result = await query<
-      PendingSkillOptInRow & { server_display_name: string; server_registry_id: string | null }
+      PendingSkillOptInRow & {
+        server_display_name: string;
+        server_registry_id: string | null;
+        server_oauth_provider: string | null;
+      }
     >(
       `SELECT p.id, p.server_id, p.skill_name, p.changelog_version,
               p.detected_at, p.accepted_at, p.rejected_at,
               ms.display_name AS server_display_name,
-              ms.registry_id  AS server_registry_id
+              ms.registry_id  AS server_registry_id,
+              ms.oauth_provider AS server_oauth_provider
        FROM pending_skill_opt_ins p
        JOIN mcp_servers ms ON ms.id = p.server_id
        WHERE ms.user_id = $1
@@ -152,8 +168,8 @@ export const mcpServerChangelogRepository = {
   },
 
   /**
-   * Check whether a given skill on a given server has an unaccepted
-   * pending opt-in (i.e. the hard rail — block execution until accepted).
+   * Check whether a discovered skill on a given server lacks an explicit
+   * acceptance. Rejection is durable denial, not permission to execute.
    */
   async hasPendingOptIn(serverId: string, skillName: string): Promise<boolean> {
     const result = await query<{ id: string }>(
@@ -161,7 +177,6 @@ export const mcpServerChangelogRepository = {
        WHERE server_id = $1
          AND skill_name = $2
          AND accepted_at IS NULL
-         AND rejected_at IS NULL
        LIMIT 1`,
       [serverId, skillName],
     );

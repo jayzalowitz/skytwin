@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "entryPaths": [
+    {
+      "id": "api.approvals",
+      "sourceFiles": ["apps/api/src/routes/approvals.ts"],
+      "safetyScenarioIds": ["adv-v1-approvals-untrusted-account-dual"],
+      "explanationScenarioIds": []
+    },
+    {
+      "id": "api.assistant",
+      "sourceFiles": ["apps/api/src/routes/assistant.ts"],
+      "safetyScenarioIds": ["adv-v1-assistant-auto-execute-approval"],
+      "explanationScenarioIds": ["adv-v1-assistant-auto-execute-approval"]
+    },
+    {
+      "id": "api.capability_regret",
+      "sourceFiles": ["apps/api/src/routes/capabilities.ts"],
+      "safetyScenarioIds": ["adv-v1-capability-regret-no-dispatch"],
+      "explanationScenarioIds": []
+    },
+    {
+      "id": "api.events_ingest",
+      "sourceFiles": ["apps/api/src/routes/events.ts"],
+      "safetyScenarioIds": [
+        "adv-v1-events-no-replay-ambiguous",
+        "adv-v1-events-no-replay-explanation"
+      ],
+      "explanationScenarioIds": ["adv-v1-events-no-replay-explanation"]
+    },
+    {
+      "id": "api.routines",
+      "sourceFiles": ["apps/api/src/routes/routines.ts"],
+      "safetyScenarioIds": ["adv-v1-routines-unattended-send-blocked"],
+      "explanationScenarioIds": ["adv-v1-routines-unattended-send-blocked"]
+    },
+    {
+      "id": "execution_router.openclaw_response",
+      "sourceFiles": ["packages/execution-router/src/openclaw-adapter.ts"],
+      "safetyScenarioIds": ["adv-v1-openclaw-credential-schema"],
+      "explanationScenarioIds": []
+    },
+    {
+      "id": "execution_router.pre_dispatch_guard",
+      "sourceFiles": ["packages/execution-router/src/execution-router.ts"],
+      "safetyScenarioIds": [
+        "adv-v1-router-direct-shell",
+        "adv-v1-router-direct-shell-persisted"
+      ],
+      "explanationScenarioIds": ["adv-v1-router-direct-shell-persisted"]
+    },
+    {
+      "id": "ironclaw_adapter.execute",
+      "sourceFiles": ["packages/ironclaw-adapter/src/real-adapter.ts"],
+      "safetyScenarioIds": ["adv-v1-ironclaw-transport-ambiguous"],
+      "explanationScenarioIds": []
+    },
+    {
+      "id": "shared_types.injection_guard",
+      "sourceFiles": ["packages/shared-types/src/action-safety.ts"],
+      "safetyScenarioIds": [
+        "adv-v1-calendar-delete-untrusted",
+        "adv-v1-email-send-untrusted",
+        "adv-v1-file-database-drop",
+        "adv-v1-file-filesystem-purge",
+        "adv-v1-mcp-account-delete",
+        "adv-v1-mcp-credential-revoke",
+        "adv-v1-missing-origin-send",
+        "adv-v1-missing-origin-send-persisted",
+        "adv-v1-web-purchase-untrusted",
+        "adv-v1-web-shell-exec"
+      ],
+      "explanationScenarioIds": ["adv-v1-missing-origin-send-persisted"]
+    },
+    {
+      "id": "worker.memory_action_loop",
+      "sourceFiles": ["apps/worker/src/jobs/memory-action-loop.ts"],
+      "safetyScenarioIds": ["adv-v1-memory-loop-untrusted-send"],
+      "explanationScenarioIds": ["adv-v1-memory-loop-untrusted-send"]
+    }
+  ],
+  "limitations": [
+    "The inventory is limited to the ten runtime entry paths declared by the v1 adversarial catalog; aliases, computed dispatch, direct provider effects, and future entry paths require an explicit inventory update.",
+    "An entry path is explanation-covered only when its integrity-bound mapped regression asserts a persisted or deliberately contained explanation outcome; generic generator tests do not count.",
+    "This source-checkout evidence does not certify a packaged artifact or a published release.",
+    "Mapped regressions use declared mocks and do not sandbox network access or control the process clock.",
+    "The report and its companion inputs share one tag-only CI artifact, but the final publication consumer does not yet re-verify this sidecar against that artifact's immutable GitHub identity."
+  ]
+}

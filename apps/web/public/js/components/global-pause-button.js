@@ -14,7 +14,7 @@
 
 import { fetchCapabilities, pauseAllCapabilities, resumeAllCapabilities, escapeHtml } from '../api-client.js';
 import { showToast } from '../toast.js';
-import { KEY_USER_ID } from '../storage-keys.js';
+import { getEffectiveUserId } from '../sample-session.js';
 
 // Module-level state
 let _isPaused = false;
@@ -22,7 +22,7 @@ let _pauseButtonTargetEl = null;
 let _pauseButtonListenerWired = false;
 
 function getCurrentUserId() {
-  return localStorage.getItem(KEY_USER_ID) || '';
+  return getEffectiveUserId();
 }
 
 /**

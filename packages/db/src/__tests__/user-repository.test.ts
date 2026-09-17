@@ -76,14 +76,18 @@ describe('userRepository', () => {
 
   describe('findDemoById', () => {
     it('requires the database sample marker as well as the reserved id', async () => {
-      const row = fakeUserRow();
+      const row = {
+        ...fakeUserRow(),
+        demo_authority_revision: '1777777777.0000000000',
+      };
       mockQuery.mockResolvedValue({ rows: [row], rowCount: 1 });
 
       const result = await userRepository.findDemoById('u-001');
 
       expect(result).toEqual(row);
       expect(mockQuery).toHaveBeenCalledWith(
-        'SELECT * FROM users WHERE id = $1 AND is_demo = true',
+        `SELECT *, crdb_internal_mvcc_timestamp::STRING AS demo_authority_revision
+       FROM users WHERE id = $1 AND is_demo = true`,
         ['u-001'],
       );
     });
@@ -288,6 +292,24 @@ describe('userRepository', () => {
     });
   });
 
+  describe('updateIronClawChannel', () => {
+    it('rotates execution authority with the trusted outbound channel', async () => {
+      const row = {
+        ...fakeUserRow(),
+        ironclaw_channel: 'telegram',
+        execution_authority_revision: 'new-authority-revision',
+      };
+      mockQuery.mockResolvedValue({ rows: [row], rowCount: 1 });
+
+      await expect(userRepository.updateIronClawChannel('u-001', 'telegram'))
+        .resolves.toEqual(row);
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('ironclaw_channel = $1');
+      expect(sql).toContain('execution_authority_revision = gen_random_uuid()');
+      expect(params).toEqual(['telegram', 'u-001']);
+    });
+  });
+
   // -----------------------------------------------------------------------
   // updateLocale (#486)
   // -----------------------------------------------------------------------
@@ -352,7 +374,13 @@ describe('userRepository', () => {
   describe('delete', () => {
     it('executes cascading deletes in a transaction and returns true', async () => {
       const mockClient = {
-        query: vi.fn().mockResolvedValue({ rowCount: 1 }),
+        query: vi.fn().mockImplementation((sql: string) => {
+          if (sql.includes('SELECT id, email FROM users')) {
+            return Promise.resolve({ rows: [{ id: 'u-001', email: 'owner@example.test' }] });
+          }
+          if (sql.includes('active_count')) return Promise.resolve({ rows: [{ active_count: 0 }] });
+          return Promise.resolve({ rows: [], rowCount: 1 });
+        }),
       };
 
       // withTransaction receives an async fn; we invoke it with our mock client
@@ -367,20 +395,34 @@ describe('userRepository', () => {
       const calls = mockClient.query.mock.calls;
       expect(calls.length).toBeGreaterThanOrEqual(10);
 
-      // First delete should be feedback_events
-      expect(calls[0]![0]).toContain('DELETE FROM feedback_events');
+      expect(calls[0]![0]).toContain('SELECT id, email FROM users');
+      expect(calls.some((call) => String(call[0]).includes('DELETE FROM feedback_events'))).toBe(true);
       // Last delete should be users
       expect(calls[calls.length - 1]![0]).toContain('DELETE FROM users WHERE id = $1');
+      const barrierIndex = calls.findIndex((call) =>
+        String(call[0]).includes('DELETE FROM execution_admission_barriers'));
+      const planIndex = calls.findIndex((call) =>
+        String(call[0]).includes('DELETE FROM execution_plans'));
+      expect(barrierIndex).toBeGreaterThanOrEqual(0);
+      expect(barrierIndex).toBeLessThan(planIndex);
+      const outcomeIndex = calls.findIndex((call) =>
+        String(call[0]).includes('DELETE FROM decision_outcomes'));
+      expect(outcomeIndex).toBeGreaterThanOrEqual(0);
+      expect(outcomeIndex).toBeLessThan(planIndex);
 
-      // All calls should pass the user id
+      // Owner-scoped calls pass the user id. The durable account tombstone is
+      // deliberately keyed by provider + normalized email instead.
       for (const call of calls) {
-        expect(call[1]).toEqual(['u-001']);
+        if (!String(call[0]).includes('oauth_account_connection_authority') &&
+            !String(call[0]).includes('oauth_new_user_authorizations')) {
+          expect(call[1]).toEqual(['u-001']);
+        }
       }
     });
 
     it('returns false when user row does not exist', async () => {
       const mockClient = {
-        query: vi.fn().mockResolvedValue({ rowCount: 0 }),
+        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
       };
 
       mockWithTransaction.mockImplementation(async (fn: (client: typeof mockClient) => Promise<unknown>) => {

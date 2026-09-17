@@ -1,18 +1,27 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockListActive = vi.fn();
+const mockListSkillNamesForServer = vi.fn();
 const mockCreateIfPending = vi.fn();
 const mockQuery = vi.fn();
+const mockLoadConfig = vi.fn();
 // Soak-floor source (spec 10 Part C): default to a value comfortably past the
 // observer floor (24h) so existing promotion-eligibility cases behave as before;
 // individual tests can override to assert the floor blocks early promotion.
 const mockHoursInCurrentTier = vi.fn().mockResolvedValue(72);
 
 vi.mock('@skytwin/db', () => ({
-  mcpServerRepository: { listActive: mockListActive },
+  mcpServerRepository: {
+    listActive: mockListActive,
+    listSkillNamesForServer: mockListSkillNamesForServer,
+  },
   promotionOffersRepository: { createIfPending: mockCreateIfPending },
   trustTierAuditRepository: { hoursInCurrentTier: mockHoursInCurrentTier },
   query: mockQuery,
+}));
+
+vi.mock('@skytwin/config', () => ({
+  loadConfig: mockLoadConfig,
 }));
 
 const mockEvaluateProgression = vi.fn();
@@ -47,6 +56,8 @@ function makeServer(overrides: Record<string, unknown> = {}): Record<string, unk
     trust_tier: 'observer',
     auto_promote_paused_until: null,
     status: 'active',
+    registry_id: 'linear-mcp',
+    oauth_provider: null,
     ...overrides,
   };
 }
@@ -54,6 +65,8 @@ function makeServer(overrides: Record<string, unknown> = {}): Record<string, unk
 describe('runPromotionEligibilityCheckJob (#310)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+    mockListSkillNamesForServer.mockResolvedValue(['create_issue']);
     // Default: no approval stats — engine returns "stable" by default
     mockQuery.mockResolvedValue({ rows: [{ total: '0', approved: '0' }] });
     mockEvaluateProgression.mockReturnValue({
@@ -94,6 +107,73 @@ describe('runPromotionEligibilityCheckJob (#310)', () => {
       decisionsObservedCount: 20,
       approvedCount: 18,
     });
+  });
+
+  it('does not evaluate or create offers for retained account-backed servers while disabled', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockListActive.mockResolvedValue([
+      makeServer({ id: 'gmail', registry_id: 'gmail-mcp' }),
+      makeServer({ id: 'outlook', registry_id: 'custom', oauth_provider: 'outlook' }),
+    ]);
+
+    const summary = await runPromotionEligibilityCheckJob();
+
+    expect(summary).toEqual({ evaluated: 0, offered: 0, alreadyPending: 0 });
+    expect(mockListSkillNamesForServer).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockCreateIfPending).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before offer creation when cached skill inventory is empty', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockListActive.mockResolvedValue([
+      makeServer({ id: 'empty', registry_id: 'custom-empty' }),
+    ]);
+    mockListSkillNamesForServer.mockResolvedValue([]);
+
+    const summary = await runPromotionEligibilityCheckJob();
+
+    expect(summary).toEqual({ evaluated: 0, offered: 0, alreadyPending: 0 });
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockCreateIfPending).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before offer creation when cached skill inventory cannot be read', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockListActive.mockResolvedValue([
+      makeServer({ id: 'unreadable', registry_id: 'custom-unreadable' }),
+    ]);
+    mockListSkillNamesForServer.mockRejectedValue(new Error('inventory unavailable'));
+
+    const summary = await runPromotionEligibilityCheckJob();
+
+    expect(summary).toEqual({ evaluated: 0, offered: 0, alreadyPending: 0 });
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockCreateIfPending).not.toHaveBeenCalled();
+  });
+
+  it('preserves promotion offers for account-backed servers under exact experimental mode', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+    mockListActive.mockResolvedValue([makeServer({ id: 'gmail', registry_id: 'gmail-mcp' })]);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ total: '20', approved: '18' }] })
+      .mockResolvedValueOnce({ rows: Array(10).fill({ payload: { approved: true } }) });
+    mockEvaluateProgression.mockReturnValue({
+      shouldChange: true,
+      currentTier: 'observer',
+      recommendedTier: 'suggest',
+      direction: 'promotion',
+      reason: 'Eligible.',
+    });
+    mockCreateIfPending.mockResolvedValue({ id: 'offer' });
+
+    const summary = await runPromotionEligibilityCheckJob();
+
+    expect(summary.offered).toBe(1);
+    expect(mockListSkillNamesForServer).not.toHaveBeenCalled();
+    expect(mockCreateIfPending).toHaveBeenCalledWith(expect.objectContaining({
+      serverId: 'gmail',
+    }));
   });
 
   it('passes hoursInCurrentTier from the audit repo into the engine (soak-floor wiring, spec 10 Part C)', async () => {

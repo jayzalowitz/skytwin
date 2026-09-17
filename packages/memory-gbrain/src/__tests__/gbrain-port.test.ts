@@ -65,17 +65,104 @@ describe('GbrainMemoryPort', () => {
       expect(mockExecFileSync).not.toHaveBeenCalled();
     });
 
-    it('returns parsed SemanticHit[] on successful gbrain output', async () => {
+    it('normalizes upstream gbrain v0.50.5.0 SearchResult output', async () => {
       mockIsInstalled.mockReturnValue(true);
-      const hits: SemanticHit[] = [
-        { id: 'h1', score: 0.95, content: 'result text', source: 'file.ts' },
-        { id: 'h2', score: 0.8, content: 'other text', source: 'readme.md', metadata: { line: 42 } },
+      const hits = [
+        {
+          slug: 'projects/skytwin',
+          page_id: 41,
+          chunk_id: 99,
+          chunk_index: 2,
+          score: 0.95,
+          chunk_text: 'result text',
+          source_id: 'main',
+          title: 'SkyTwin',
+          type: 'project',
+          stale: false,
+        },
       ];
       mockExecFileSync.mockReturnValue(JSON.stringify(hits));
       const port = new GbrainMemoryPort();
       const result = await port.searchSemantic('query', 10);
-      expect(result).toHaveLength(2);
-      expect(result[0]).toMatchObject({ id: 'h1', score: 0.95 });
+      expect(result).toEqual([
+        {
+          id: 'projects/skytwin',
+          score: 0.95,
+          content: 'result text',
+          source: 'main',
+          metadata: {
+            source_id: 'main',
+            title: 'SkyTwin',
+            type: 'project',
+            page_id: 41,
+            chunk_id: 99,
+            chunk_index: 2,
+            stale: false,
+          },
+        },
+      ]);
+    });
+
+    it('falls back to the slug when a current gbrain hit has no source id', async () => {
+      mockIsInstalled.mockReturnValue(true);
+      mockExecFileSync.mockReturnValue(
+        JSON.stringify([
+          {
+            slug: 'projects/skytwin',
+            score: 0.95,
+            chunk_text: 'result text',
+          },
+        ]),
+      );
+
+      const port = new GbrainMemoryPort();
+      const result = await port.searchSemantic('query', 10);
+
+      expect(result[0]).toMatchObject({
+        id: 'projects/skytwin',
+        source: 'projects/skytwin',
+      });
+    });
+
+    it('drops malformed optional metadata from current gbrain output', async () => {
+      mockIsInstalled.mockReturnValue(true);
+      mockExecFileSync.mockReturnValue(
+        JSON.stringify([
+          {
+            slug: 'projects/skytwin',
+            score: 0.95,
+            chunk_text: 'result text',
+            source_id: 'main',
+            metadata: 'not-an-object',
+            page_id: Number.POSITIVE_INFINITY,
+            chunk_id: 'wrong-type',
+            stale: 'false',
+          },
+        ]),
+      );
+
+      const port = new GbrainMemoryPort();
+      const result = await port.searchSemantic('query', 10);
+
+      expect(result[0]?.metadata).toEqual({ source_id: 'main' });
+    });
+
+    it('retains compatibility with the legacy gbrain hit shape', async () => {
+      mockIsInstalled.mockReturnValue(true);
+      const hits: SemanticHit[] = [
+        { id: 'h1', score: 0.95, content: 'result text', source: 'file.ts' },
+        {
+          id: 'h2',
+          score: 0.8,
+          content: 'other text',
+          source: 'readme.md',
+          metadata: { line: 42 },
+        },
+      ];
+      mockExecFileSync.mockReturnValue(JSON.stringify(hits));
+      const port = new GbrainMemoryPort();
+      const result = await port.searchSemantic('query', 10);
+      expect(result).toEqual(hits);
     });
 
     it('returns [] on non-zero exit (execSync throws)', async () => {
@@ -108,6 +195,7 @@ describe('GbrainMemoryPort', () => {
       const mixed = [
         { id: 'h1', score: 0.9, content: 'good', source: 'a.ts' },
         { id: 'h2', score: 'bad-score', content: 'bad', source: 'b.ts' }, // score is not a number
+        { id: 'h3', score: Number.NaN, content: 'bad', source: 'c.ts' },
         null,
         42,
       ];

@@ -78,8 +78,9 @@ the `brain_*` tables defined in
 There is no separate Postgres process — gbrain runs against the SkyTwin
 CRDB stack directly.
 
-The retrieval engine is hybrid: every page gets both an embedding (FLOAT8[])
-and a tsvector. A query produces a query embedding plus a `plainto_tsquery`,
+The retrieval engine is hybrid: every page gets a tsvector and attempts an
+embedding (FLOAT8[]). External embedding failures leave the embedding null and
+enqueue a retry. A query produces a query embedding plus a `plainto_tsquery`,
 two ranked lists are fetched in parallel, then folded via Reciprocal Rank
 Fusion (`rrfFold`) with the standard k=60 constant.
 
@@ -93,7 +94,7 @@ Fusion (`rrfFold`) with the standard k=60 constant.
        │  ┌──────────────┐ ┌──────────────┐    │
        │  │ vectorSearch │ │  textSearch  │    │
        │  │ (FLOAT8[]    │ │ (tsvector,   │    │
-       │  │  cosine)     │ │  ts_rank_cd) │    │
+       │  │  cosine)     │ │  ts_rank)    │    │
        │  └──────┬───────┘ └──────┬───────┘    │
        └─────────┼─────────────────┼───────────┘
                  │                 │
@@ -168,8 +169,13 @@ same `OPENAI_EMBEDDING_BASE_URL` knob, point it at the server's port.
 the request path when a provider is fast (hash); when an external provider
 is configured, embedding is allowed to fail at write time and gets retried
 asynchronously. The `brain_embedding_jobs` table is a CRDB-native job queue
-with `SELECT FOR UPDATE SKIP LOCKED` lease semantics — workers that drain
-it can scale horizontally.
+with `SELECT FOR UPDATE SKIP LOCKED` lease semantics, so workers that drain
+it can scale horizontally. Each claim returns the exact database lease expiry
+as a token. Completion and failure require that still-active token; a late
+worker cannot overwrite a job another worker reclaimed. Successful completion
+updates the page embedding and terminalizes the job in one transaction.
+Expired in-progress jobs are claimable again, and a job abandoned three times
+is terminalized as failed instead of retrying forever.
 
 ## How hybrid mode works
 
@@ -201,44 +207,45 @@ The default routing in SkyTwin is:
 
 ## Migrating data between backends
 
-`MemoryPort.exportAll()` produces a stream of `MemoryRecord` values
-(signals, entities, triples, episodes); `importAll()` consumes the stream.
-Both methods are idempotent — duplicates are counted and skipped, not
-errored. To re-ingest mempalace data into gbrain:
+`MemoryPort.exportAll()` / `importAll()` define the backend migration contract,
+but SkyTwin does not currently expose a supported cross-backend migration
+command or factory override. The MemPalace export adapter also requires an
+explicit owner binding that the current convenience path does not supply.
+Do not use the API backend selector as a migration tool.
 
-```ts
-import { getMemoryPortForUser } from '@skytwin/api/memory-setup';
-
-const fromMem = await getMemoryPortForUser(userId, /* override */ 'mempalace');
-const toGbrain = await getMemoryPortForUser(userId, /* override */ 'gbrain');
-const summary = await toGbrain.port.importAll(fromMem.port.exportAll());
-console.log(`imported ${summary.imported}, skipped ${summary.skipped}`);
-```
-
-(The `apps/api` `getMemoryPortForUser` doesn't take an override yet —
-follow-up: extract a pure factory.)
+Imports are only partially idempotent today: duplicate signal IDs are skipped
+and entities upsert, but repeated triple or episode imports can create duplicate
+records. A supported migration command must bind the owner explicitly, add a
+durable identity for every record kind, and verify a dry-run summary before this
+section can provide an executable migration procedure.
 
 ## Verifying the CRDB SQL paths
 
-The `@skytwin/memory-gbrain-crdb-adapter` package has 6 DB-gated integration
+The `@skytwin/memory-gbrain-crdb-adapter` package has 7 DB-gated integration
 tests covering `insertPage` + `hybridSearch`, entity/triple round-trip,
-episode persistence, the embedding job queue lifecycle, settings round-trip,
-and `countPages`. They're skipped by default (no live DB) and gated on
-`RUN_DB_TESTS=1`.
+episode persistence, the embedding job queue lifecycle and stale-lease fence,
+settings round-trip, and `countPages`. They're skipped by default (no live DB)
+and gated on `RUN_DB_TESTS=1`.
 
 To exercise them against a hermetic local CRDB:
 
 ```bash
-# From the repo root. Requires Docker + psql client.
+# From the repo root. Requires Docker; the container supplies the SQL client.
 pnpm --filter @skytwin/memory-gbrain-crdb-adapter test:crdb
 ```
 
 The script (`packages/memory-gbrain-crdb-adapter/scripts/run-crdb-integration.sh`):
 
-1. Spins up `cockroachdb/cockroach:latest-v23.2` on a non-default port
-   (26259, so it doesn't collide with a dev cluster).
+1. Spins up `cockroachdb/cockroach:latest-v23.2` with Docker assigning an
+   ephemeral host port bound to loopback by default. Set `PORT=26259` (or any
+   other available port via `PORT`) to request a fixed host port. The harness
+   bypasses the image's secure-init entrypoint for this explicitly insecure,
+   disposable test node and runs the image's own SQL client, so no host `psql`
+   installation is required.
 2. Creates a `skytwin_test` database + a minimal `users` table for the FK.
-3. Applies `040-gbrain-memory.sql`.
+3. Applies the brain-specific migration chain that can run in isolation (`040`,
+   `043`, `044`, and `052`). The repository's full migration/rollback CI lane
+   separately exercises the complete application schema.
 4. Seeds one test user.
 5. Runs the integration suite with `RUN_DB_TESTS=1` and the right `DATABASE_*`
    env vars.
@@ -266,32 +273,45 @@ issue is resolved. The `/api/mempalace` REST surface continues to work
 regardless of backend selection — it queries memory_* tables directly,
 not via `MemoryPort`.
 
-## Why not run gbrain externally?
+## Upstream gbrain boundary
 
-Issue #197 originally targeted the upstream `gbrain` CLI. We ship an
-in-process embedded port instead because:
+Issue #197 originally targeted the upstream `gbrain` CLI. SkyTwin's default
+`EmbeddedGbrainMemoryPort` is a CRDB-native, gbrain-compatible implementation,
+not a vendored copy of the upstream runtime. We keep that boundary because:
 
-1. **No second Postgres.** Upstream gbrain defaults to PGLite or Supabase.
-   Running PGLite alongside CRDB means two databases per install — a
-   nontrivial operational burden. The CRDB adapter (in this repo) lets
-   gbrain run against the database SkyTwin already has.
-2. **No second install step.** Users don't need to `brew install gbrain`
-   or `npm install -g gbrain` — the backend is a pnpm dep.
+1. **No second Postgres.** Upstream gbrain v0.50.5.0 supports PGLite and
+   PostgreSQL, not CockroachDB. Its unchanged schema/runtime still relies on
+   PostgreSQL-specific DDL and functions: our CRDB v26.1 compatibility probe
+   fails on function-level `SET search_path` syntax, and `pg_notify()` is not
+   available. SkyTwin also supports CRDB 23.2. Running either upstream engine
+   alongside CRDB means two databases per install. The CRDB-native adapter
+   preserves one datastore, owner scoping, serializable retry semantics, and
+   the complete `MemoryPort` contract.
+2. **No second runtime or install step.** Upstream gbrain v0.50.5.0 requires
+   Bun and is installed from GitHub; its maintainers explicitly warn that the
+   npm package named `gbrain` is unrelated. SkyTwin's default remains Node-only.
 3. **Same retrieval primitives.** RRF over vector + tsvector is well-defined
    without depending on upstream gbrain's specific implementation.
 
-The CLI shell-out path is still available (`@skytwin/memory-gbrain`'s
-`GbrainMemoryPort`) for users who already run gbrain externally and want to
-consume their existing brain via a thin wrapper. The dashboard surfaces
-"Your existing gbrain detected" prompts (via
-`hasExternalGbrainConfig()`) when `~/.config/gbrain/` is present.
+The real upstream CLI code path remains available as
+`@skytwin/memory-gbrain`'s `GbrainMemoryPort`. The adapter shells out without a
+command shell and translates upstream `SearchResult` JSON into SkyTwin's
+`MemoryPort` search shape. It is a programmatic interoperability adapter and is
+not selectable through the API backend factory, environment configuration, or
+dashboard: automatic adoption would bypass per-user CRDB custody, and the
+adapter does not implement SkyTwin's write, episode, or graph contract.
+
+The dashboard only discloses that a separate installation was detected (via
+`hasExternalGbrainConfig()` / `isGbrainInstalled()`). Selecting `hybrid` still
+means SkyTwin CRDB memory plus SkyTwin MemPalace; it never imports or queries the
+external brain without an explicit future integration.
 
 ## References
 
-- [#138](https://github.com/anthropics/skytwin/issues/138) — Replace
+- [#138](https://github.com/jayzalowitz/skytwin/issues/138) — Replace
   `@skytwin/mempalace` with GBrain (epic).
-- [#196](https://github.com/anthropics/skytwin/issues/196) — `@skytwin/memory-port` interface (shipped).
-- [#197](https://github.com/anthropics/skytwin/issues/197) — `@skytwin/memory-gbrain` + hybrid composer + CRDB adapter (this).
+- [#196](https://github.com/jayzalowitz/skytwin/issues/196) — `@skytwin/memory-port` interface (shipped).
+- [#197](https://github.com/jayzalowitz/skytwin/issues/197) — `@skytwin/memory-gbrain` + hybrid composer + CRDB adapter (this).
 - [`packages/memory-gbrain-crdb-adapter/src/repository.ts`](../packages/memory-gbrain-crdb-adapter/src/repository.ts) — RRF + vector + tsvector query layer.
 - [`packages/memory-hybrid/src/hybrid-port.ts`](../packages/memory-hybrid/src/hybrid-port.ts) — composer + diagnostics.
 - [`apps/api/src/memory-setup.ts`](../apps/api/src/memory-setup.ts) — backend factory, embedding provider selection.

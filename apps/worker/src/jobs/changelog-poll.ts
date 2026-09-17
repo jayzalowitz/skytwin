@@ -1,8 +1,11 @@
 import { createLogger } from '@skytwin/core';
+import { loadConfig, type GoogleConnectionMode } from '@skytwin/config';
 import { McpHost, isDestructiveSkill } from '@skytwin/mcp-host';
 import { mcpServerChangelogRepository, mcpServerRepository } from '@skytwin/db';
 import type { McpServerRow } from '@skytwin/db';
 import type { McpServerConfig } from '@skytwin/mcp-host';
+import { isAccountBackedIntegration } from '@skytwin/shared-types';
+import { requireJobAdmission, runAdmitted } from './job-admission.js';
 
 const log = createLogger('worker:changelog-poll');
 
@@ -21,6 +24,9 @@ export interface ChangelogPollDeps {
   changelogRepo?: typeof mcpServerChangelogRepository;
   /** Inject the server repository for testing. */
   serverRepo?: typeof mcpServerRepository;
+  /** Exact preview mode from the worker generation; inject for tests. */
+  googleConnectionMode?: GoogleConnectionMode;
+  signal?: AbortSignal;
 }
 
 /**
@@ -38,14 +44,16 @@ export interface ChangelogPollDeps {
  * Individual server errors are caught and logged; they do not abort the job.
  */
 export async function runChangelogPollJob(deps: ChangelogPollDeps = {}): Promise<void> {
+  requireJobAdmission(deps.signal);
   const repo = deps.changelogRepo ?? mcpServerChangelogRepository;
   const serverRepo = deps.serverRepo ?? mcpServerRepository;
+  const googleConnectionMode = deps.googleConnectionMode ?? loadConfig().googleConnectionMode;
 
   log.info('Changelog poll job starting');
 
   let servers: McpServerRow[];
   try {
-    servers = await serverRepo.listActive();
+    servers = await runAdmitted(deps.signal, () => serverRepo.listActive());
   } catch (err) {
     log.warn('Changelog poll: could not list active servers', {
       error: err instanceof Error ? err.message : String(err),
@@ -56,8 +64,14 @@ export async function runChangelogPollJob(deps: ChangelogPollDeps = {}): Promise
   log.info(`Changelog poll: processing ${servers.length} active server(s)`);
 
   for (const server of servers) {
+    requireJobAdmission(deps.signal);
+    if (googleConnectionMode !== 'experimental' &&
+        await isBlockedAccountServer(server, serverRepo, deps.signal)) {
+      log.info(`Changelog poll: skipping account-backed server ${server.id} while connection is disabled`);
+      continue;
+    }
     try {
-      await pollServerChangelog(server, repo, deps.mcpHostFactory);
+      await pollServerChangelog(server, repo, deps.mcpHostFactory, deps.signal);
     } catch (err) {
       log.warn(`Changelog poll: error processing server ${server.id}`, {
         serverId: server.id,
@@ -65,18 +79,54 @@ export async function runChangelogPollJob(deps: ChangelogPollDeps = {}): Promise
         error: err instanceof Error ? err.message : String(err),
       });
     }
+    requireJobAdmission(deps.signal);
   }
 
+  requireJobAdmission(deps.signal);
   log.info('Changelog poll job complete');
+}
+
+async function isBlockedAccountServer(
+  server: McpServerRow,
+  serverRepo: typeof mcpServerRepository,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (isAccountBackedIntegration({
+    key: server.registry_id ?? undefined,
+    integration: server.oauth_provider ?? undefined,
+  })) return true;
+
+  try {
+    const skills = await runAdmitted(signal, () =>
+      serverRepo.listSkillNamesForServer(server.id));
+    // Registry identity alone does not durably bind the mutable persisted
+    // command/URL that the poller would contact. Without cached skill evidence,
+    // disabled mode cannot prove that target is account-free.
+    if (skills.length === 0) return true;
+    return isAccountBackedIntegration({
+      key: server.registry_id ?? undefined,
+      integration: server.oauth_provider ?? undefined,
+      skills,
+    });
+  } catch (error) {
+    // This poll is advisory. If local classification state cannot be read,
+    // do not spawn a process or contact a remote server in disabled mode.
+    log.warn('Changelog poll: skipping server because account boundary classification failed', {
+      serverId: server.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return true;
+  }
 }
 
 async function pollServerChangelog(
   server: McpServerRow,
   repo: typeof mcpServerChangelogRepository,
   mcpHostFactory?: (config: McpServerConfig) => McpHost,
+  signal?: AbortSignal,
 ): Promise<void> {
   // Rate-limit: skip if we fetched within the last 12 hours
-  const existing = await repo.getForServer(server.id);
+  const existing = await runAdmitted(signal, () => repo.getForServer(server.id));
   if (existing) {
     const ageMs = Date.now() - new Date(existing.fetched_at).getTime();
     if (ageMs < CHANGELOG_REFRESH_MIN_MS) {
@@ -101,20 +151,19 @@ async function pollServerChangelog(
 
   // In the poll job we can't actually connect to every server (they may not
   // be running). We use a best-effort approach: try to install, fetch, clean up.
-  let installed = false;
+  let installAttempted = false;
   try {
-    const installResult = await host.installServer(config);
+    installAttempted = true;
+    const installResult = await runAdmitted(signal, () => host.installServer(config));
     if (!installResult.success) {
       log.info(`Changelog poll: could not connect to ${server.display_name}: ${installResult.error}`);
       return;
     }
-    installed = true;
-
     // Fetch changelog
-    const changelog = await host.fetchChangelog(server.id);
+    const changelog = await runAdmitted(signal, () => host.fetchChangelog(server.id));
 
     // List current skills
-    const skillsResult = await host.listSkills(server.id);
+    const skillsResult = await runAdmitted(signal, () => host.listSkills(server.id));
     const currentSkills: string[] = skillsResult.success
       ? skillsResult.skills.map((s) => s.name)
       : [];
@@ -129,16 +178,17 @@ async function pollServerChangelog(
     // Create opt-in prompts for newly discovered destructive skills
     for (const skillName of newDestructiveSkills) {
       log.info(`Changelog poll: new destructive skill detected on ${server.display_name}: ${skillName}`);
-      await repo.addPendingOptIn(server.id, skillName, changelog?.currentVersion);
+      await runAdmitted(signal, () =>
+        repo.addPendingOptIn(server.id, skillName, changelog?.currentVersion));
     }
 
     // Upsert changelog row
-    await repo.upsert(server.id, {
+    await runAdmitted(signal, () => repo.upsert(server.id, {
       currentVersion: changelog?.currentVersion,
       rawText: changelog?.rawText,
       lastSeenSkills: currentSkills,
       lastKnownDestructiveSkills: currentDestructive,
-    });
+    }));
 
     log.info(`Changelog poll: updated ${server.display_name}`, {
       version: changelog?.currentVersion ?? 'unknown',
@@ -146,7 +196,7 @@ async function pollServerChangelog(
       newDestructive: newDestructiveSkills.length,
     });
   } finally {
-    if (installed) {
+    if (installAttempted) {
       await host.uninstallServer(server.id).catch(() => {
         // best-effort cleanup
       });

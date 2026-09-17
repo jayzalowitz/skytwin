@@ -12,17 +12,16 @@ on:
   # against the cumulative branch state).
   workflow_dispatch: {}
 
-# Cancel in-progress runs for the same branch/PR
+permissions:
+  contents: read
+
+# Cancel stale branch/PR runs, but never interrupt a tag publication run.
 concurrency:
   group: build-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
 
 env:
   NODE_VERSION: '20'
-  # Turbo remote cache — uses the GitHub Actions cache as the backend via
-  # dtinth/setup-github-actions-caching-for-turbo. No external account needed.
-  # All build jobs share cached package outputs, so the second job onward gets
-  # `pnpm build` as cache hits.
   TURBO_TELEMETRY_DISABLED: '1'
 
 jobs:
@@ -37,8 +36,8 @@ jobs:
       desktop: ${{ steps.filter.outputs.desktop }}
       mobile: ${{ steps.filter.outputs.mobile }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dorny/paths-filter@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d
         id: filter
         with:
           filters: |
@@ -64,27 +63,149 @@ jobs:
   # Tests — gate all builds behind passing tests
   # ──────────────────────────────────────────────
   test:
-    name: Test
+    name: release-claim-ci
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # The v2 evidence verifier proves that its immutable predecessor is
+          # an ancestor of the checked-out commit. Pull requests are tested at
+          # GitHub's synthetic merge commit, so both parent histories must be
+          # available for that proof during the broad test suite.
+          fetch-depth: 0
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
-      # Turbo cache is opportunistic; GitHub cache API failures must not fail
-      # correctness gates after install/build/test pass.
-      - name: Set up Turbo remote cache
-        uses: dtinth/setup-github-actions-caching-for-turbo@v1
-        continue-on-error: true
+      - name: Capture release claim CI runtime
+        id: capture-release-claim-runtime
+        env:
+          BASH_ENV: ''
+          ENV: ''
+          LD_LIBRARY_PATH: ''
+          LD_PRELOAD: ''
+          NODE_PATH: ''
+          NODE_OPTIONS: ''
+        shell: /bin/bash --noprofile --norc -eo pipefail {0}
+        run: node scripts/release-claims/capture-release-claim-ci-runtime.mjs
 
       - run: pnpm install --frozen-lockfile
+      - name: Test and enforce dependency advisory policy
+        run: |
+          pnpm audit:test
+          pnpm audit:check
+      - name: Validate encryption field inventory
+        run: pnpm check:encryption-inventory
+      - name: Install CockroachDB for migration integration tests
+        run: |
+          mkdir -p "${RUNNER_TEMP}/skytwin-cockroach"
+          curl --fail --location --retry 3 --output "${RUNNER_TEMP}/skytwin-cockroach/cockroach.tgz" https://binaries.cockroachdb.com/cockroach-v26.1.0.linux-amd64.tgz
+          echo "096e2d40a2b30ce296c13652b839e04612003aef2820cfc5b8d712d06c9d0d86  ${RUNNER_TEMP}/skytwin-cockroach/cockroach.tgz" | sha256sum --check
+          tar --extract --gzip --file "${RUNNER_TEMP}/skytwin-cockroach/cockroach.tgz" --directory "${RUNNER_TEMP}/skytwin-cockroach"
+          sudo install --mode 0755 "${RUNNER_TEMP}/skytwin-cockroach/cockroach-v26.1.0.linux-amd64/cockroach" /usr/local/bin/cockroach
+      - name: Validate beta release claims
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: pnpm claims:check
+      - name: Test beta release-claim guard
+        run: pnpm claims:test
+      - name: Test release artifact construction and verification
+        env:
+          BASH_ENV: ''
+          ENV: ''
+          LD_LIBRARY_PATH: ''
+          LD_PRELOAD: ''
+          NODE_PATH: ''
+          NODE_OPTIONS: ''
+          SKYTWIN_RELEASE_CI_NODE_PATH: ${{ steps.capture-release-claim-runtime.outputs.node-path }}
+          SKYTWIN_RELEASE_CI_NODE_SHA256: ${{ steps.capture-release-claim-runtime.outputs.node-sha256 }}
+        shell: /bin/bash --noprofile --norc -eo pipefail {0}
+        run: |
+          /usr/bin/printf '%s  %s\n' "$SKYTWIN_RELEASE_CI_NODE_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" | /usr/bin/sha256sum --check --strict -
+          /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/file-integrity.test.mjs
+          /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/generate-release-manifest.test.mjs
+          /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/materialize-attestation-bundles.test.mjs
       - run: pnpm build
       - run: pnpm test
+
+      - name: Produce and verify release safety evidence
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        timeout-minutes: 15
+        env:
+          BASH_ENV: ''
+          COREPACK_HOME: ''
+          ENV: ''
+          LD_LIBRARY_PATH: ''
+          LD_PRELOAD: ''
+          NODE_PATH: ''
+          NODE_OPTIONS: ''
+          PNPM_HOME: ''
+          SKYTWIN_RELEASE_CI_NODE_PATH: ${{ steps.capture-release-claim-runtime.outputs.node-path }}
+          SKYTWIN_RELEASE_CI_NODE_SHA256: ${{ steps.capture-release-claim-runtime.outputs.node-sha256 }}
+          SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH: ${{ steps.capture-release-claim-runtime.outputs.pnpm-entry-path }}
+          SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256: ${{ steps.capture-release-claim-runtime.outputs.pnpm-entry-sha256 }}
+        shell: /bin/bash --noprofile --norc -eo pipefail {0}
+        run: |
+          SKYTWIN_RELEASE_CI_NODE_BIN="${SKYTWIN_RELEASE_CI_NODE_PATH%/*}"
+          /usr/bin/test "$SKYTWIN_RELEASE_CI_NODE_BIN/node" -ef "$SKYTWIN_RELEASE_CI_NODE_PATH"
+          /usr/bin/printf '%s  %s\n' "$SKYTWIN_RELEASE_CI_NODE_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" | /usr/bin/sha256sum --check --strict -
+          /usr/bin/printf '%s  %s\n' "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256" "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" | /usr/bin/sha256sum --check --strict -
+          /usr/bin/env -i PATH="$SKYTWIN_RELEASE_CI_NODE_BIN:/usr/bin:/bin" CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" "$SKYTWIN_RELEASE_CI_NODE_PATH" "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" --filter @skytwin/evals eval:adversarial --output release-claims-ci/adversarial-evidence.json
+          /usr/bin/env -i PATH="$SKYTWIN_RELEASE_CI_NODE_BIN:/usr/bin:/bin" CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" "$SKYTWIN_RELEASE_CI_NODE_PATH" scripts/release-evidence/verify-adversarial-evidence.mjs release-claims-ci/adversarial-evidence.json --fixture packages/evals/fixtures/v1/adversarial-scenarios.json --expected-commit "$GITHUB_SHA" --require-clean
+          /usr/bin/env -i PATH="$SKYTWIN_RELEASE_CI_NODE_BIN:/usr/bin:/bin" CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" "$SKYTWIN_RELEASE_CI_NODE_PATH" scripts/release-evidence/generate-release-safety-evidence.mjs --adversarial release-claims-ci/adversarial-evidence.json --output release-claims-ci/release-safety-evidence.json
+          /usr/bin/env -i PATH="$SKYTWIN_RELEASE_CI_NODE_BIN:/usr/bin:/bin" CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" "$SKYTWIN_RELEASE_CI_NODE_PATH" scripts/release-evidence/verify-release-safety-evidence.mjs --adversarial release-claims-ci/adversarial-evidence.json --report release-claims-ci/release-safety-evidence.json
+
+      - name: Produce release claim CI result
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        timeout-minutes: 15
+        env:
+          BASH_ENV: ''
+          COREPACK_HOME: ''
+          ENV: ''
+          LD_LIBRARY_PATH: ''
+          LD_PRELOAD: ''
+          NODE_PATH: ''
+          NODE_OPTIONS: ''
+          PNPM_HOME: ''
+          SKYTWIN_RELEASE_CI_NODE_PATH: ${{ steps.capture-release-claim-runtime.outputs.node-path }}
+          SKYTWIN_RELEASE_CI_NODE_SHA256: ${{ steps.capture-release-claim-runtime.outputs.node-sha256 }}
+          SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH: ${{ steps.capture-release-claim-runtime.outputs.pnpm-entry-path }}
+          SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256: ${{ steps.capture-release-claim-runtime.outputs.pnpm-entry-sha256 }}
+        shell: /bin/bash --noprofile --norc -eo pipefail {0}
+        run: |
+          /usr/bin/printf '%s  %s\n' "$SKYTWIN_RELEASE_CI_NODE_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" | /usr/bin/sha256sum --check --strict -
+          /usr/bin/printf '%s  %s\n' "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256" "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" | /usr/bin/sha256sum --check --strict -
+          exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" SKYTWIN_RELEASE_CI_NODE_PATH="$SKYTWIN_RELEASE_CI_NODE_PATH" SKYTWIN_RELEASE_CI_NODE_SHA256="$SKYTWIN_RELEASE_CI_NODE_SHA256" SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH="$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256="$SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" scripts/release-claims/run-release-claim-ci.mjs --output release-claims-ci/result.json
+
+      - name: Upload release claim CI result
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-claims-ci
+          path: |
+            release-claims-ci/result.json
+            release-claims-ci/adversarial-evidence.json
+            release-claims-ci/adversarial-evidence.json.sha256
+            release-claims-ci/release-safety-evidence.json
+          if-no-files-found: error
+          compression-level: 0
+
+      # Keep the final readiness failure after evidence production so a
+      # blocked tag run can still provide immutable input to the later
+      # rehearsal/resolution process. This remains a hard dependency of every
+      # packaging and publication job.
+      - name: Enforce beta release readiness
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
+            pnpm claims:check -- --require-ready --preflight --tag "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" --repository "${GITHUB_REPOSITORY}" --run-id "${GITHUB_RUN_ID}" --ref "${GITHUB_REF}"
+          fi
 
       # Guardrail (#380): block any push that hardcodes a literal
       # version into the README badge URL. The badge is a dynamic
@@ -98,6 +219,52 @@ jobs:
             exit 1
           fi
 
+  migration-rollback-cockroach:
+    name: Migration rollback — CockroachDB
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build workspace dependencies for focused E2E imports
+        run: pnpm build --concurrency=1
+      - name: Start disposable CockroachDB
+        run: |
+          # The image's shell entrypoint rejects wildcard listen addresses even
+          # though the Cockroach binary supports them. Bypass only that wrapper
+          # so Docker's port forwarding can reach SQL, while binding the host
+          # side to loopback keeps this insecure test node runner-local.
+          docker run --detach --name skytwin-migration-crdb \
+            --publish 127.0.0.1:26257:26257 \
+            --entrypoint /cockroach/cockroach \
+            cockroachdb/cockroach:latest-v23.2 \
+            start-single-node --insecure --listen-addr=0.0.0.0:26257
+          for _ in $(seq 1 60); do
+            if docker exec skytwin-migration-crdb cockroach sql --insecure --execute 'SELECT 1'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs skytwin-migration-crdb
+          exit 1
+      - name: Verify owned-schema rollback and reapply
+        env:
+          DATABASE_URL: postgresql://root@127.0.0.1:26257/defaultdb?sslmode=disable
+          E2E: 'true'
+          MIGRATION_ROLLBACK_E2E: 'true'
+        run: pnpm --filter @skytwin/db exec vitest run src/__tests__/migration-rollback.e2e.test.ts
+      - name: Verify admission, purge, and restore races
+        env:
+          DATABASE_URL: postgresql://root@127.0.0.1:26257/defaultdb?sslmode=disable
+          E2E: 'true'
+        run: |
+          pnpm --filter @skytwin/db migrate
+          pnpm --filter @skytwin/db exec vitest run src/__tests__/inference-receipt-repository.e2e.test.ts
+
   # ──────────────────────────────────────────────
   # Desktop — one job per OS, uploads installer artifacts
   # ──────────────────────────────────────────────
@@ -106,22 +273,23 @@ jobs:
     needs: [test, changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     runs-on: macos-latest
+    outputs:
+      dmg-artifact-id: ${{ steps.upload-macos-dmg.outputs.artifact-id }}
+      dmg-artifact-digest: ${{ steps.upload-macos-dmg.outputs.artifact-digest }}
+      zip-artifact-id: ${{ steps.upload-macos-zip.outputs.artifact-id }}
+      zip-artifact-digest: ${{ steps.upload-macos-zip.outputs.artifact-digest }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
-      - name: Set up Turbo remote cache
-        uses: dtinth/setup-github-actions-caching-for-turbo@v1
-        continue-on-error: true
-
       - name: Cache electron-builder + CRDB downloads
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             ~/Library/Caches/electron
@@ -171,14 +339,16 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - name: Upload macOS DMG
-        uses: actions/upload-artifact@v7
+        id: upload-macos-dmg
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: SkyTwin-macOS-dmg
           path: apps/desktop/dist-electron/*.dmg
           if-no-files-found: error
 
       - name: Upload macOS ZIP
-        uses: actions/upload-artifact@v7
+        id: upload-macos-zip
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: SkyTwin-macOS-zip
           path: apps/desktop/dist-electron/*.zip
@@ -191,7 +361,7 @@ jobs:
       # `release` job attaches it. Without this asset on the Release, an
       # installed app's checkForUpdates() against the GitHub provider fails.
       - name: Upload macOS update manifest (latest-mac.yml)
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: SkyTwin-macOS-update-manifest
           path: apps/desktop/dist-electron/latest-mac.yml
@@ -207,23 +377,21 @@ jobs:
     needs: [test, changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     runs-on: windows-latest
+    outputs:
+      installer-artifact-id: ${{ steps.upload-windows-installer.outputs.artifact-id }}
+      installer-artifact-digest: ${{ steps.upload-windows-installer.outputs.artifact-digest }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
-      # Turbo remote cache action is skipped on Windows — dtinth/setup-...@v1
-      # writes to /tmp/turbogha.log which doesn't exist on Windows runners
-      # (ENOENT on D:\tmp\turbogha.log). Electron-builder packaging dominates
-      # wall-clock here; missing the TS-compile cache is negligible.
-
       - name: Cache electron-builder + CRDB downloads
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             ~/AppData/Local/electron/Cache
@@ -235,7 +403,11 @@ jobs:
             ${{ runner.os }}-electron-
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm build
+      # Windows runners intermittently terminate parallel TypeScript child
+      # processes with STATUS_DLL_INIT_FAILED (0xC0000142). Serializing Turbo
+      # also avoids the documented shared dist writer race and costs little
+      # compared with Electron packaging.
+      - run: pnpm build --concurrency=1
 
       # Exclude the electron-builder workspace from Windows Defender
       # real-time scanning. NSIS's makensis is a 32-bit process that
@@ -274,7 +446,8 @@ jobs:
         run: pnpm --filter skytwin-desktop run package:win --publish never "--config.extraMetadata.version=${{ env.APP_VERSION }}"
 
       - name: Upload Windows installer
-        uses: actions/upload-artifact@v7
+        id: upload-windows-installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: SkyTwin-Windows-installer
           path: apps/desktop/dist-electron/*.exe
@@ -284,7 +457,7 @@ jobs:
       # Generated by electron-builder alongside the NSIS installer regardless
       # of `--publish never`; collected here so the `release` job attaches it.
       - name: Upload Windows update manifest (latest.yml)
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: SkyTwin-Windows-update-manifest
           path: apps/desktop/dist-electron/latest.yml
@@ -297,22 +470,25 @@ jobs:
     needs: [test, changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
+    outputs:
+      appimage-artifact-id: ${{ steps.upload-linux-appimage.outputs.artifact-id }}
+      appimage-artifact-digest: ${{ steps.upload-linux-appimage.outputs.artifact-digest }}
+      deb-artifact-id: ${{ steps.upload-linux-deb.outputs.artifact-id }}
+      deb-artifact-digest: ${{ steps.upload-linux-deb.outputs.artifact-digest }}
+      rpm-artifact-id: ${{ steps.upload-linux-rpm.outputs.artifact-id }}
+      rpm-artifact-digest: ${{ steps.upload-linux-rpm.outputs.artifact-digest }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
-      - name: Set up Turbo remote cache
-        uses: dtinth/setup-github-actions-caching-for-turbo@v1
-        continue-on-error: true
-
       - name: Cache electron-builder + CRDB downloads
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             ~/.cache/electron
@@ -339,7 +515,8 @@ jobs:
         continue-on-error: true
 
       - name: Upload Linux AppImage
-        uses: actions/upload-artifact@v7
+        id: upload-linux-appimage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: SkyTwin-Linux-AppImage
@@ -347,7 +524,8 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Linux deb
-        uses: actions/upload-artifact@v7
+        id: upload-linux-deb
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: SkyTwin-Linux-deb
@@ -355,7 +533,8 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Linux rpm
-        uses: actions/upload-artifact@v7
+        id: upload-linux-rpm
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: SkyTwin-Linux-rpm
@@ -368,12 +547,103 @@ jobs:
       # Linux package step's own `continue-on-error: true` tolerance — a Linux
       # packaging hiccup must not fail the whole tagged build.
       - name: Upload Linux update manifest (latest-linux.yml)
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: SkyTwin-Linux-update-manifest
           path: apps/desktop/dist-electron/latest-linux.yml
           if-no-files-found: warn
+
+  release-artifact-materials:
+    name: Produce release artifact verification materials
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - desktop-mac
+      - desktop-windows
+      - desktop-linux
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Derive release artifact identity
+        shell: bash
+        run: |
+          bash .github/scripts/derive-app-version.sh
+          CREATED_UTC="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          printf 'CREATED_UTC=%s\n' "$CREATED_UTC" >> "$GITHUB_ENV"
+      - name: Download SkyTwin-macOS-dmg
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: SkyTwin-macOS-dmg
+          path: artifacts/SkyTwin-macOS-dmg
+      - name: Download SkyTwin-macOS-zip
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: SkyTwin-macOS-zip
+          path: artifacts/SkyTwin-macOS-zip
+      - name: Download SkyTwin-macOS-update-manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: SkyTwin-macOS-update-manifest
+          path: artifacts/SkyTwin-macOS-update-manifest
+      - name: Download SkyTwin-Windows-installer
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: SkyTwin-Windows-installer
+          path: artifacts/SkyTwin-Windows-installer
+      - name: Download SkyTwin-Windows-update-manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: SkyTwin-Windows-update-manifest
+          path: artifacts/SkyTwin-Windows-update-manifest
+      - name: Download SkyTwin-Linux-AppImage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: SkyTwin-Linux-AppImage
+          path: artifacts/SkyTwin-Linux-AppImage
+      - name: Download SkyTwin-Linux-deb
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: SkyTwin-Linux-deb
+          path: artifacts/SkyTwin-Linux-deb
+      - name: Download SkyTwin-Linux-rpm
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: SkyTwin-Linux-rpm
+          path: artifacts/SkyTwin-Linux-rpm
+      - name: Download SkyTwin-Linux-update-manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: SkyTwin-Linux-update-manifest
+          path: artifacts/SkyTwin-Linux-update-manifest
+      - name: Generate exact release artifact materials
+        shell: bash
+        run: node scripts/release-artifacts/generate-release-manifest.mjs --root artifacts --output .release-artifacts --repository "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" --ref "$GITHUB_REF" --releaseTag "$GITHUB_REF_NAME" --appVersion "$APP_VERSION" --runId "$GITHUB_RUN_ID" --created "$CREATED_UTC"
+      - name: Validate staged release artifact materials
+        shell: bash
+        run: node scripts/release-artifacts/verify-release-manifest.mjs --root .release-artifacts --manifest .release-artifacts/release-artifact-manifest.json --repository "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" --ref "$GITHUB_REF" --releaseTag "$GITHUB_REF_NAME" --appVersion "$APP_VERSION" --runId "$GITHUB_RUN_ID" --created "$CREATED_UTC"
+      - name: Attest exact release artifact subjects
+        id: attest-release-artifacts
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-checksums: .release-artifacts/artifact-verification/SHA256SUMS
+      - name: Materialize digest-named provenance bundles
+        shell: bash
+        run: node scripts/release-artifacts/materialize-attestation-bundles.mjs --manifest .release-artifacts/release-artifact-manifest.json --bundle "${{ steps.attest-release-artifacts.outputs.bundle-path }}" --output .release-artifacts/artifact-verification
+      - name: Upload release artifact verification materials
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-artifact-materials
+          path: .release-artifacts/artifact-verification
+          if-no-files-found: error
+          compression-level: 0
 
   # ──────────────────────────────────────────────
   # Mobile — Android APK (no signing certs needed for internal distribution)
@@ -384,29 +654,29 @@ jobs:
     if: github.event_name != 'pull_request' || needs.changes.outputs.mobile == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
         with:
           distribution: 'temurin'
           java-version: '17'
 
       - name: Set up Gradle (cached)
-        uses: gradle/actions/setup-gradle@v6
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
-
-      - name: Set up Turbo remote cache
-        uses: dtinth/setup-github-actions-caching-for-turbo@v1
-        continue-on-error: true
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699
+        with:
+          # The action's default also requests the retired `tools` package,
+          # which is absent from current hosted-runner SDK repositories.
+          packages: 'platform-tools'
 
       - run: pnpm install --frozen-lockfile
 
@@ -417,12 +687,10 @@ jobs:
       - name: Prebuild Android project
         run: npx expo prebuild --platform android --no-install
         working-directory: apps/mobile
-        continue-on-error: true
 
       - name: Install native dependencies
         run: pnpm install --frozen-lockfile
         working-directory: apps/mobile
-        continue-on-error: true
 
       - name: Build Android APK
         run: |
@@ -430,15 +698,14 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease
         working-directory: apps/mobile
-        continue-on-error: true
 
       - name: Upload Android APK
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: SkyTwin-Android-apk
           path: apps/mobile/android/app/build/outputs/apk/release/*.apk
-          if-no-files-found: warn
+          if-no-files-found: error
 
   # ──────────────────────────────────────────────
   # Mobile — iOS (unsigned .app for simulator / TestFlight prep)
@@ -449,21 +716,17 @@ jobs:
     if: github.event_name != 'pull_request' || needs.changes.outputs.mobile == 'true'
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
-      - name: Set up Turbo remote cache
-        uses: dtinth/setup-github-actions-caching-for-turbo@v1
-        continue-on-error: true
-
       - name: Cache CocoaPods
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             apps/mobile/ios/Pods
@@ -481,19 +744,16 @@ jobs:
       - name: Prebuild iOS project
         run: npx expo prebuild --platform ios --no-install
         working-directory: apps/mobile
-        continue-on-error: true
 
       - name: Install native dependencies
         run: pnpm install --frozen-lockfile
         working-directory: apps/mobile
-        continue-on-error: true
 
       - name: Install CocoaPods
         run: |
           cd ios
           pod install
         working-directory: apps/mobile
-        continue-on-error: true
 
       - name: Build iOS simulator app
         run: |
@@ -506,22 +766,214 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             | xcpretty
         working-directory: apps/mobile
-        continue-on-error: true
 
       - name: Package iOS simulator build
         run: |
           cd build/Build/Products/Release-iphonesimulator
           zip -r ../../../../SkyTwin-iOS-simulator.zip SkyTwin.app
         working-directory: apps/mobile
-        continue-on-error: true
 
       - name: Upload iOS simulator build
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: SkyTwin-iOS-simulator
           path: apps/mobile/SkyTwin-iOS-simulator.zip
-          if-no-files-found: warn
+          if-no-files-found: error
+
+  # Missing machine-verifier implementations fail closed here instead of
+  # allowing a hand-authored passing report into the release artifact graph.
+  release-machine-evidence:
+    name: release-machine-evidence / ${{ matrix.claimId }} / ${{ matrix.platform }}
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - desktop-mac
+      - desktop-windows
+      - desktop-linux
+      - release-artifact-materials
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - claimId: storage.desktop-crdb
+            platform: macos
+            runner: macos-15
+            reportName: storage.desktop-crdb.json
+          - claimId: inference.on-device-availability
+            platform: macos
+            runner: macos-15
+            reportName: inference.on-device-availability.json
+          - claimId: inference.confidential-verification
+            platform: linux
+            runner: ubuntu-24.04
+            reportName: inference.confidential-verification.json
+          - claimId: network.explicit-boundaries
+            platform: macos
+            runner: macos-15
+            reportName: network.explicit-boundaries.json
+          - claimId: sample.packaged-account-free
+            platform: macos
+            runner: macos-15
+            reportName: sample.packaged-account-free.macos.json
+          - claimId: sample.packaged-account-free
+            platform: windows
+            runner: windows-2025
+            reportName: sample.packaged-account-free.windows.json
+          - claimId: sample.packaged-account-free
+            platform: linux
+            runner: ubuntu-24.04
+            reportName: sample.packaged-account-free.linux.json
+          - claimId: models.verified-delivery
+            platform: linux
+            runner: ubuntu-24.04
+            reportName: models.verified-delivery.json
+          - claimId: release.signing
+            platform: macos
+            runner: macos-15
+            reportName: release.signing.macos.json
+          - claimId: release.signing
+            platform: windows
+            runner: windows-2025
+            reportName: release.signing.windows.json
+          - claimId: release.signing
+            platform: linux
+            runner: ubuntu-24.04
+            reportName: release.signing.linux.json
+          - claimId: release.artifact-verification
+            platform: linux
+            runner: ubuntu-24.04
+            reportName: release.artifact-verification.json
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Download release artifacts for non-model verifiers
+        if: matrix.claimId != 'models.verified-delivery'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          path: artifacts
+      - name: Prepare private model delivery subject directory
+        if: matrix.claimId == 'models.verified-delivery'
+        shell: bash
+        run: install -d -m 0700 -- .release-evidence/model-delivery-subject
+      - name: Download exact Linux AppImage for model delivery
+        id: download-model-appimage
+        if: matrix.claimId == 'models.verified-delivery'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ needs.desktop-linux.outputs.appimage-artifact-id }}
+          path: .release-evidence/model-delivery-subject
+          digest-mismatch: error
+      - name: Download release artifact verification materials
+        if: matrix.claimId == 'release.artifact-verification'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-artifact-materials
+          path: .release-evidence/artifact-verification
+      - name: Resolve packaged sample provenance
+        id: sample-provenance
+        if: matrix.claimId == 'sample.packaged-account-free'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/release-claims/verifiers/sample.packaged-account-free.mjs --discover --platform ${{ matrix.platform }} --descriptor .release-evidence/provenance/${{ matrix.reportName }}
+      - name: Run canonical packaged sample verifier without GitHub API token
+        if: matrix.claimId == 'sample.packaged-account-free'
+        env:
+          SKYTWIN_RELEASE_PROVENANCE_SHA256: ${{ steps.sample-provenance.outputs.descriptor_sha256 }}
+        run: node scripts/release-claims/verifiers/sample.packaged-account-free.mjs --verify --platform ${{ matrix.platform }} --descriptor .release-evidence/provenance/${{ matrix.reportName }} --output .release-evidence/reports/${{ matrix.reportName }}
+      - name: Run canonical machine verifier
+        id: machine-verifier
+        if: matrix.claimId != 'sample.packaged-account-free'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SKYTWIN_RELEASE_ARTIFACT_IDS: ${{ matrix.platform == 'macos' && format('SkyTwin-macOS-dmg={0},SkyTwin-macOS-zip={1}', needs.desktop-mac.outputs.dmg-artifact-id, needs.desktop-mac.outputs.zip-artifact-id) || matrix.platform == 'windows' && format('SkyTwin-Windows-installer={0}', needs.desktop-windows.outputs.installer-artifact-id) || matrix.platform == 'linux' && format('SkyTwin-Linux-AppImage={0},SkyTwin-Linux-deb={1},SkyTwin-Linux-rpm={2}', needs.desktop-linux.outputs.appimage-artifact-id, needs.desktop-linux.outputs.deb-artifact-id, needs.desktop-linux.outputs.rpm-artifact-id) || '' }}
+          SKYTWIN_RELEASE_ARTIFACT_DIGESTS: ${{ matrix.platform == 'macos' && format('SkyTwin-macOS-dmg={0},SkyTwin-macOS-zip={1}', needs.desktop-mac.outputs.dmg-artifact-digest, needs.desktop-mac.outputs.zip-artifact-digest) || matrix.platform == 'windows' && format('SkyTwin-Windows-installer={0}', needs.desktop-windows.outputs.installer-artifact-digest) || matrix.platform == 'linux' && format('SkyTwin-Linux-AppImage={0},SkyTwin-Linux-deb={1},SkyTwin-Linux-rpm={2}', needs.desktop-linux.outputs.appimage-artifact-digest, needs.desktop-linux.outputs.deb-artifact-digest, needs.desktop-linux.outputs.rpm-artifact-digest) || '' }}
+          SKYTWIN_LINUX_APPIMAGE_ARTIFACT_ID: ${{ needs.desktop-linux.outputs.appimage-artifact-id }}
+          SKYTWIN_LINUX_APPIMAGE_ARTIFACT_DIGEST: ${{ needs.desktop-linux.outputs.appimage-artifact-digest }}
+          SKYTWIN_MODEL_APPIMAGE_DOWNLOAD_PATH: ${{ steps.download-model-appimage.outputs.download-path }}
+        run: node scripts/release-claims/verifiers/${{ matrix.claimId }}.mjs --platform ${{ matrix.platform }} --output .release-evidence/reports/${{ matrix.reportName }}
+      - name: Upload machine evidence report
+        id: upload-machine-evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ matrix.claimId == 'release.signing' && format('release-signing-report-{0}-attempt-{1}', matrix.platform, github.run_attempt) || format('release-machine-evidence-{0}-{1}-attempt-{2}', matrix.claimId, matrix.platform, github.run_attempt) }}
+          path: .release-evidence/reports/${{ matrix.reportName }}
+          if-no-files-found: error
+          compression-level: 0
+      - name: Download exact uploaded signing report
+        if: matrix.claimId == 'release.signing'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ steps.upload-machine-evidence.outputs.artifact-id }}
+          path: .release-evidence/upload-confirmation
+          merge-multiple: true
+      - name: Verify exact uploaded signing report binding
+        if: matrix.claimId == 'release.signing'
+        env:
+          SKYTWIN_EXPECTED_REPORT_SHA256: ${{ steps.machine-verifier.outputs.report_sha256 }}
+          SKYTWIN_UPLOADED_ARTIFACT_ID: ${{ steps.upload-machine-evidence.outputs.artifact-id }}
+          SKYTWIN_UPLOADED_ARTIFACT_NAME: release-signing-report-${{ matrix.platform }}-attempt-${{ github.run_attempt }}
+          SKYTWIN_UPLOADED_ARTIFACT_SHA256: ${{ steps.upload-machine-evidence.outputs.artifact-digest }}
+        run: node scripts/release-claims/verifiers/release.signing.mjs --verify-upload --platform ${{ matrix.platform }} --report .release-evidence/upload-confirmation/${{ matrix.reportName }} --binding .release-evidence/upload-bindings/${{ matrix.reportName }}.binding.json
+      - name: Upload signing report source binding
+        if: matrix.claimId == 'release.signing'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-signing-binding-${{ matrix.platform }}-attempt-${{ github.run_attempt }}
+          path: .release-evidence/upload-bindings/${{ matrix.reportName }}.binding.json
+          if-no-files-found: error
+          compression-level: 0
+
+  aggregate-release-evidence:
+    name: Aggregate release machine evidence
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - release-machine-evidence
+      - release-artifact-materials
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Download signing report source bindings for this run attempt
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: release-signing-binding-*-attempt-${{ github.run_attempt }}
+          path: .release-evidence/upload-bindings
+          merge-multiple: true
+      - name: Resolve exact source signing report artifact IDs
+        id: signing-report-bindings
+        run: node scripts/release-claims/verifiers/release.signing.mjs --resolve-upload-bindings --bindings .release-evidence/upload-bindings
+      - name: Download exact source signing reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ steps.signing-report-bindings.outputs.artifact_ids }}
+          path: .release-evidence/reports
+          merge-multiple: true
+      - name: Verify aggregated source signing report bindings
+        run: node scripts/release-claims/verifiers/release.signing.mjs --verify-aggregated-uploads --bindings .release-evidence/upload-bindings --reports .release-evidence/reports
+      - name: Download non-signing machine evidence reports for this run attempt
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: release-machine-evidence-*-attempt-${{ github.run_attempt }}
+          path: .release-evidence/reports
+          merge-multiple: true
+      - name: Download release artifact verification materials
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-artifact-materials
+          path: .release-evidence/artifact-verification
+      - name: Upload aggregated release evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-evidence
+          path: .release-evidence
+          if-no-files-found: error
+          compression-level: 0
 
   # ──────────────────────────────────────────────
   # Release — attach all artifacts to GitHub Release on tag push
@@ -539,16 +991,23 @@ jobs:
   # PR — build.yml is now the only publisher.
   release:
     name: Create GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs:
+      - test
       - desktop-mac
       - desktop-windows
       - desktop-linux
-      - mobile-android
-      - mobile-ios
+      - aggregate-release-evidence
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release-publication
+    concurrency:
+      group: release-publication-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: write
+      actions: read
+      attestations: read
     steps:
       # #370 AC#2: confirm the GitHub Releases endpoint this repo's
       # electron-updater feed lives behind is reachable before we publish a
@@ -565,19 +1024,80 @@ jobs:
             "https://github.com/${{ github.repository }}/releases/latest" \
             -o /dev/null
 
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install release claim checker
+        run: corepack pnpm@9.1.0 install --frozen-lockfile --ignore-scripts --filter skytwin
+
+      # Checkout must precede download: checkout's default clean would remove
+      # the untracked artifacts directory if these steps were reversed.
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           path: artifacts
+
+      - name: Verify post-build release evidence
+        id: verify-release-evidence
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # Fail closed until an upstream job supplies digest-bound reports.
+          # The manifest is generated outside the evidence artifact so it can
+          # bind that artifact and the release artifacts without a hash cycle.
+          cp -R artifacts/release-evidence .release-evidence
+          node scripts/release-claims/generate-evidence-manifest.mjs \
+            docs/beta-claim-ledger.json \
+            .release-evidence/reports \
+            .release-evidence/manifest.json
+          node scripts/release-claims/check-release-claims.mjs \
+            --require-ready \
+            --tag "${GITHUB_REF_NAME}" \
+            --commit "${GITHUB_SHA}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --ref "${GITHUB_REF}" \
+            --evidence-manifest .release-evidence/manifest.json \
+            --github-output "$GITHUB_OUTPUT"
 
       - name: List artifacts
         run: find artifacts -type f | sort
 
+      # A missing environment is auto-created by GitHub without protection.
+      # Verify the live settings after the environment gate so absence or drift
+      # still fails closed before any release mutation.
+      - name: Verify protected release environment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/release-claims/verify-release-environment.mjs
+
+      - name: Refuse an existing release tag
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/release-claims/publish-verified-draft.mjs --assert-absent
+
+      # target_commitish is ignored for an existing tag. Dereference the tag
+      # itself immediately before draft creation, including annotated tags,
+      # and reject any source commit not already merged into main.
+      - name: Verify release tag target and main ancestry
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/release-claims/publish-verified-draft.mjs --assert-tag-target
+
       - name: Create release
-        uses: softprops/action-gh-release@v3
+        id: create-release-draft
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64
         with:
           draft: true
+          prerelease: true
+          target_commitish: ${{ github.sha }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             artifacts/SkyTwin-macOS-dmg/*
             artifacts/SkyTwin-macOS-zip/*
@@ -588,5 +1108,28 @@ jobs:
             artifacts/SkyTwin-Linux-deb/*
             artifacts/SkyTwin-Linux-rpm/*
             artifacts/SkyTwin-Linux-update-manifest/*
-            artifacts/SkyTwin-Android-apk/*
-            artifacts/SkyTwin-iOS-simulator/*
+            artifacts/release-claims-ci/result.json
+            artifacts/release-claims-ci/adversarial-evidence.json
+            artifacts/release-claims-ci/adversarial-evidence.json.sha256
+            artifacts/release-claims-ci/release-safety-evidence.json
+            .release-evidence/reports/storage.desktop-crdb.json
+            .release-evidence/reports/inference.on-device-availability.json
+            .release-evidence/reports/inference.confidential-verification.json
+            .release-evidence/reports/network.explicit-boundaries.json
+            .release-evidence/reports/sample.packaged-account-free.macos.json
+            .release-evidence/reports/sample.packaged-account-free.windows.json
+            .release-evidence/reports/sample.packaged-account-free.linux.json
+            .release-evidence/reports/models.verified-delivery.json
+            .release-evidence/reports/release.signing.macos.json
+            .release-evidence/reports/release.signing.windows.json
+            .release-evidence/reports/release.signing.linux.json
+            .release-evidence/reports/release.artifact-verification.json
+            .release-evidence/artifact-verification/*
+            .release-evidence/manifest.json
+
+      - name: Verify exact draft assets and publish
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.create-release-draft.outputs.id }}
+          RELEASE_EVIDENCE_MANIFEST_SHA256: ${{ steps.verify-release-evidence.outputs.manifest-sha256 }}
+        run: node scripts/release-claims/publish-verified-draft.mjs .release-evidence/manifest.json

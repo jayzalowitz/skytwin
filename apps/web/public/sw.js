@@ -21,7 +21,8 @@
  * writes verbatim with their OWN session token. It never synthesizes,
  * mutates, or re-targets a request, and it skips OAuth / pairing / stream
  * endpoints. It is not a new action source — it is a deferred send of an
- * action the user already took while the connection was down.
+ * action the user already took while the connection was down. Time-bound
+ * approval responses are excluded from the queue and must complete online.
  */
 
 import {
@@ -29,6 +30,7 @@ import {
   RUNTIME_CACHE,
   PRECACHE_URLS,
   classifyRequest,
+  isQueuedWriteEligible,
   serializeWrite,
   decideReplayOutcome,
 } from '/js/pwa/sw-policy.js';
@@ -50,7 +52,9 @@ self.addEventListener('install', (event) => {
           try {
             const res = await fetch(url, { cache: 'reload' });
             if (res.ok) await cache.put(url, res.clone());
-          } catch { /* asset optional — runtime cache will pick it up */ }
+          } catch {
+            /* asset optional — runtime cache will pick it up */
+          }
         }),
       );
       await self.skipWaiting();
@@ -64,11 +68,7 @@ self.addEventListener('activate', (event) => {
     (async () => {
       const keep = new Set([SHELL_CACHE, RUNTIME_CACHE]);
       const names = await caches.keys();
-      await Promise.all(
-        names
-          .filter((n) => n.startsWith('skytwin-') && !keep.has(n))
-          .map((n) => caches.delete(n)),
-      );
+      await Promise.all(names.filter((n) => n.startsWith('skytwin-') && !keep.has(n)).map((n) => caches.delete(n)));
       await self.clients.claim();
     })(),
   );
@@ -78,7 +78,15 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   const route = classifyRequest(
-    { method: request.method, url: request.url, mode: request.mode, headers: { accept: request.headers.get('accept') || '' } },
+    {
+      method: request.method,
+      url: request.url,
+      mode: request.mode,
+      headers: {
+        accept: request.headers.get('accept') || '',
+        authorization: request.headers.get('authorization') || '',
+      },
+    },
     self.location.origin,
   );
 
@@ -105,8 +113,7 @@ async function handleNavigation(request) {
     }
     return res;
   } catch {
-    const cached =
-      (await caches.match('/index.html')) || (await caches.match('/'));
+    const cached = (await caches.match('/index.html')) || (await caches.match('/'));
     if (cached) return cached;
     return new Response(
       '<!doctype html><meta charset=utf-8><title>Offline</title><body style="font-family:system-ui;padding:2rem">SkyTwin is offline and no cached shell is available yet.</body>',
@@ -142,7 +149,10 @@ async function networkFirst(request) {
     const cached = await caches.match(request);
     if (cached) return cached;
     return new Response(
-      JSON.stringify({ error: 'offline', details: 'No cached copy available.' }),
+      JSON.stringify({
+        error: 'offline',
+        details: 'No cached copy available.',
+      }),
       { status: 503, headers: { 'Content-Type': 'application/json' } },
     );
   }
@@ -159,7 +169,10 @@ async function handleWrite(request) {
     return await fetch(request.clone());
   } catch {
     try {
-      const bodyText = await request.clone().text().catch(() => null);
+      const bodyText = await request
+        .clone()
+        .text()
+        .catch(() => null);
       const write = serializeWrite({
         url: request.url,
         method: request.method,
@@ -169,15 +182,15 @@ async function handleWrite(request) {
       await queuePut(write);
       await requestSync();
       await broadcast({ type: 'write-queued', count: await queueCount() });
-      return new Response(
-        JSON.stringify({ queued: true, queuedId: write.id, offline: true }),
-        { status: 202, headers: { 'Content-Type': 'application/json' } },
-      );
+      return new Response(JSON.stringify({ queued: true, queuedId: write.id, offline: true }), {
+        status: 202,
+        headers: { 'Content-Type': 'application/json' },
+      });
     } catch {
-      return new Response(
-        JSON.stringify({ error: 'offline', queued: false }),
-        { status: 503, headers: { 'Content-Type': 'application/json' } },
-      );
+      return new Response(JSON.stringify({ error: 'offline', queued: false }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
   }
 }
@@ -207,7 +220,9 @@ async function requestSync() {
     if ('sync' in self.registration) {
       await self.registration.sync.register(SYNC_TAG);
     }
-  } catch { /* Background Sync unavailable — page online-listener covers it */ }
+  } catch {
+    /* Background Sync unavailable — page online-listener covers it */
+  }
 }
 
 /**
@@ -222,6 +237,21 @@ async function replayQueue() {
   writes.sort((a, b) => a.queuedAt - b.queuedAt);
 
   for (const write of writes) {
+    // Re-evaluate persisted entries under the current policy before replay.
+    // This retires anything queued by an older worker whose route matching was
+    // less strict (including alternate-case sample URLs and time-bound
+    // approval responses) without sending it.
+    if (!isQueuedWriteEligible(write, self.location.origin)) {
+      await queueDelete(write.id);
+      await broadcast({
+        type: 'write-dropped',
+        id: write.id,
+        url: write.url,
+        reason: 'non-replayable',
+      });
+      continue;
+    }
+
     let result;
     try {
       const res = await fetch(write.url, {

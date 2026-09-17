@@ -78,6 +78,38 @@ describe('OutlookMailConnector', () => {
     await expect(conn.connect()).rejects.toThrow();
   });
 
+  it('loads and saves delta links through the bound connector account', async () => {
+    const get = vi.fn(async () => null);
+    const save = vi.fn(async () => undefined);
+    const getForAccount = vi.fn(async () => 'BOUND-OLD');
+    const saveForAccount = vi.fn(async () => undefined);
+    const cursor: CursorStore = { get, save, getForAccount, saveForAccount };
+    fetchMock.mockResolvedValueOnce(res(200, { value: [gmsg()], '@odata.deltaLink': 'BOUND-NEW' }));
+    const accountId = '11111111-1111-4111-8111-111111111111';
+    const conn = new OutlookMailConnector(
+      'user-1', makeStubStore(VALID_TOKEN), cursor, accountId,
+    );
+
+    await conn.connect();
+    const [signal] = await conn.poll();
+
+    expect(getForAccount).toHaveBeenCalledWith(
+      'user-1', accountId, 'outlook', 'delta_link',
+    );
+    expect(saveForAccount).not.toHaveBeenCalled();
+    await conn.commitCursor();
+    expect(saveForAccount).toHaveBeenCalledWith(
+      'user-1', accountId, 'outlook', 'delta_link', 'BOUND-NEW',
+    );
+    expect(signal?.id).toContain(accountId);
+    expect(signal?.connectorEvidence).toMatchObject({
+      kind: 'account_signal', connectorAccountId: accountId,
+      provider: 'microsoft', source: 'outlook',
+    });
+    expect(get).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+  });
+
   it('bootstraps from a fresh inbox delta and emits one signal per message', async () => {
     fetchMock.mockResolvedValueOnce(
       res(200, { value: [gmsg({ id: 'a' }), gmsg({ id: 'b' })], '@odata.deltaLink': 'DELTA1' }),
@@ -89,6 +121,7 @@ describe('OutlookMailConnector', () => {
     conn.onSignal((s) => handlerHits.push(s.id));
 
     const signals = await conn.poll();
+    await conn.commitCursor();
 
     // First request hits the inbox delta endpoint.
     const [url] = fetchMock.mock.calls[0] as [string];
@@ -137,6 +170,7 @@ describe('OutlookMailConnector', () => {
     const conn = await connected(cursor);
 
     const signals = await conn.poll();
+    await conn.commitCursor();
     expect(signals.map((s) => s.data.messageId)).toEqual(['a', 'b']);
     expect((fetchMock.mock.calls[1] as [string])[0]).toBe('NEXT1');
     expect(cursor.map.get(CURSOR_KEY)).toBe('DELTA2');
@@ -148,6 +182,7 @@ describe('OutlookMailConnector', () => {
     const conn = await connected(cursor);
 
     const signals = await conn.poll();
+    await conn.commitCursor();
     // First request is the stored deltaLink, not a fresh bootstrap.
     expect((fetchMock.mock.calls[0] as [string])[0]).toBe('STORED_DELTA');
     expect(signals.map((s) => s.data.messageId)).toEqual(['c']);
@@ -162,6 +197,7 @@ describe('OutlookMailConnector', () => {
     const conn = await connected(cursor);
 
     const signals = await conn.poll();
+    await conn.commitCursor();
     expect((fetchMock.mock.calls[0] as [string])[0]).toBe('STALE_DELTA');
     // Second call is a FRESH delta bootstrap, not the stale link again.
     expect((fetchMock.mock.calls[1] as [string])[0]).toContain('/me/mailFolders/inbox/messages/delta');
@@ -182,6 +218,7 @@ describe('OutlookMailConnector', () => {
     );
     const conn = await connected();
     const signals = await conn.poll();
+    await conn.commitCursor();
     // Only the real message becomes a signal — not the deletion, not the dateless one.
     expect(signals.map((s) => s.data.messageId)).toEqual(['real']);
   });
@@ -193,6 +230,7 @@ describe('OutlookMailConnector', () => {
     const cursor = makeCursorStore();
     const conn = await connected(cursor);
     const signals = await conn.poll();
+    await conn.commitCursor();
     // MAX_PAGES_PER_POLL is 5 → 5 fetches, 5 signals, cursor at the 5th nextLink.
     expect(fetchMock.mock.calls.length).toBe(5);
     expect(signals).toHaveLength(5);
@@ -209,11 +247,36 @@ describe('OutlookMailConnector', () => {
     conn.onSignal((s) => hits.push(s.id));
 
     const signals = await conn.poll();
+    await conn.commitCursor();
     // 'a' was emitted once; the 410 stops the drain rather than restarting +
     // re-emitting it. The cursor advanced to NEXT1 so the next poll resumes.
     expect(signals.map((s) => s.data.messageId)).toEqual(['a']);
     expect(hits).toEqual(['sig_outlook_a']); // exactly once — no double-fire
     expect(cursor.map.get(CURSOR_KEY)).toBe('NEXT1');
+  });
+
+  it('replays mail in a new generation when downstream delivery is not acknowledged', async () => {
+    fetchMock
+      .mockResolvedValueOnce(res(200, {
+        value: [gmsg({ id: 'replay-me' })],
+        '@odata.deltaLink': 'UNCOMMITTED',
+      }))
+      .mockResolvedValueOnce(res(200, {
+        value: [gmsg({ id: 'replay-me' })],
+        '@odata.deltaLink': 'COMMITTED',
+      }));
+    const cursor = makeCursorStore();
+
+    const firstGeneration = await connected(cursor);
+    const first = await firstGeneration.poll();
+    await firstGeneration.disconnect();
+    const nextGeneration = await connected(cursor);
+    const replay = await nextGeneration.poll();
+    await nextGeneration.commitCursor();
+
+    expect(first.map((signal) => signal.data.messageId)).toEqual(['replay-me']);
+    expect(replay.map((signal) => signal.data.messageId)).toEqual(['replay-me']);
+    expect(cursor.map.get(CURSOR_KEY)).toBe('COMMITTED');
   });
 
   it('poll() throws before connect()', async () => {

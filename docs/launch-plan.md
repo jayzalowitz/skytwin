@@ -1,53 +1,58 @@
 # SkyTwin Launch Plan
 
-This document tracks the path from "code in a feature branch" to "grandma can download and use the app." It is updated as items close. Where a task has a hard external dependency (Apple Developer enrollment, Google verification review, etc.), that's called out so the dependency can be unblocked in parallel with the surrounding engineering work.
+This document tracks the path from the current `main` baseline to "grandma can download and use the app." It is updated as items close. Where a task has a hard external dependency (Apple Developer enrollment, Google verification review, etc.), that's called out so the dependency can be unblocked in parallel with the surrounding engineering work.
 
 The plan is intentionally specific about **what's done**, **what blocks launch**, **what improves launch**, and **what is explicitly NOT in scope for launch**. Don't accept tasks that creep into Tier 3 before Tier 1 ships.
 
 ---
 
-## Tier 0 — What's already shipped (in PR #350)
+## Current preview decision — sample only
 
-These are done in code and live on the `jayzalowitz/grandma-proof-install` branch. Verified locally on Darwin arm64 + by CI on Linux. Will reach users once the PR merges to `main`.
+The supported preview is the isolated, account-free sample. Google and Microsoft
+account connections are unavailable: no managed provider client ships, and
+operator/BYO account setup is not a supported workaround. Existing OAuth and connector components remain in source,
+but packaged mode fails closed before authorization, callback exchange,
+credential mutation/synchronization, connector startup, refresh, or direct
+provider credential use. Existing stored credentials and tokens are retained.
+
+Managed Google identity and Calendar are deferred. Before any real-account
+claim, operator/BYO must complete the shared client-generation, callback/session,
+capability-exact scope, connector isolation, secret-custody, and owner-bound
+architecture tracked in #703. Gmail remains separately optional after those
+gates; managed Gmail verification remains tracked in #351.
+
+---
+
+## Tier 0 — Current baseline on `main`
+
+These capabilities are present on `main`. Release support remains governed by the claim ledger and the Tier 1 gates below; code presence is not evidence that a public binary has cleared them.
 
 - **Native CRDB single-binary install** — drops the Docker Desktop dependency for the entire `install.sh` path. Hash-verified binary download for darwin-arm64, darwin-amd64, linux-amd64, linux-arm64, win32-amd64.
 - **Docker validation harness** — `bin/validate-installs` and a CI matrix that drives `install.sh` end-to-end against fresh Ubuntu 22.04 / Debian 12 / Fedora 40 containers.
 - **Electron desktop bundles CockroachDB + API + worker + web** — `pnpm deploy` produces self-contained app bundles; CockroachManager spawns the right per-platform binary from `<resourcesPath>/cockroach/<platform>/cockroach`. In-process migrations run via `apps/desktop/src/service-manager.ts`'s native ESM dynamic import (no child-process spawn, no asar visibility hairball).
 - **DATABASE_URL parsing fix** — every previous migration was silently landing on the wrong CRDB; `packages/db/src/connection.ts` now parses `DATABASE_URL` first.
 - **Migration cascade fixes** — 023 split into 023 (column add) + 057 (FK-chain dedupe + unique index); 046 stops using `crdb_internal.force_error()` which the bundled CRDB v23.2 blocks.
-- **Google OAuth PKCE primitives** — `@skytwin/connectors` supports both confidential and PKCE/public-client flows; bundled `BUNDLED_GOOGLE_CLIENT_ID` from the "SkyTwin Desktop" client registered in `skytwin-492700`.
-- **Tiered OAuth scope policy** — Calendar + identity through the bundled client (cheap verification path); Gmail through user-supplied credentials (no SkyTwin-side CASA assessment cost). `resolveRequestedScopes()` enforces the gate; 412 response from `/authorize?include=gmail` carries `help: '#/connect-gmail'` + `docs: 'https://jayzalowitz.github.io/skytwin/connect-gmail.html'`.
-- **In-app Gmail-setup wizard** at route `/#/connect-gmail` — five-step progress-bar wizard that opens GCP Console URLs in the user's existing browser, ends with paste-and-connect form.
-- **Dashboard Gmail follow-up CTA** — after Google OAuth completes, if scopes don't include Gmail, the dashboard renders a "Calendar connected — now hook up Gmail" card linking to the wizard.
-- **Public-web documentation** — `https://jayzalowitz.github.io/skytwin/{index,privacy,terms,connect-gmail,demo,deck}.html`. github.io is auto-verified for Google's brand-verification checks.
-- **OAuth consent screen branding configured** in GCP (`skytwin-492700`) — app name "SkyTwin", homepage/privacy/ToS URLs, `jayzalowitz.github.io` authorized domain, Save accepted. Publishing status switched from Testing to Production.
+- **Account-provider implementation inventory, currently disabled** — Google and Microsoft OAuth, connector, and action components remain available for architecture work, but the supported preview offers no account connection control and admits no old token or credential as authority. Disabled-mode filtering also covers retained briefing and live-digest history, capability audit and graph views, background token/changelog work, and filesystem execution plugins before import or dispatch. The proactive briefing route returns an empty briefing for every non-sample user before reading retained rows; the reserved fictional sample remains available, and only the exact unsupported source-development `experimental` opt-in restores the earlier account-backed behavior.
+- **Public-web documentation** — `https://jayzalowitz.github.io/skytwin/{index,privacy,terms,connect-gmail,demo,deck}.html` now describes the sample-only boundary. Public pages are not evidence of Google verification.
 - **Tracking issue [#351](https://github.com/jayzalowitz/skytwin/issues/351)** for the eventual Gmail restricted-scope CASA assessment.
 
 ---
 
 ## Tier 1 — Launch blockers (must ship before public download links go anywhere)
 
-### 1.1 Merge PR #350 to main
-**Dependency:** review pass. PR is at https://github.com/jayzalowitz/skytwin/pull/350.
+### 1.1 Finish the evidence-gated release train
+**Dependency:** reviewed release consumer plus current-run evidence producers.
 
-Until this merges:
-- GitHub Pages doesn't serve the privacy/ToS/connect-gmail pages (Pages is pointed at `main/docs`).
-- Brand verification can't be submitted (Google can't fetch the consent-screen URLs because they 404).
-- The bundled CRDB + Gmail-wizard fixes can't reach users.
+The release consumer must remain fail-closed while the remaining producer work lands. The native claim/platform matrix and exclusive evidence aggregator are scaffolded. The canonical packaged-sample verifier covers its three native matrix entries, the desktop-storage lane exercises the exact macOS archive across two owned launches and verifies loopback-only CockroachDB listeners plus user-data persistence, the macOS arm64 on-device lane loads its probe from the packaged API, binds immutable llama.cpp and GGUF bytes, and performs real inference in a network-deny sandbox without retaining prompt or response content, the artifact-verification lane covers one entry, the model-delivery lane verifies the maintained model recommendation plus its privately downloaded exact-ID Linux AppImage provenance, and the matrix-wired signing verifier implements the macOS and Windows checks while deliberately refusing Linux until package-format trust roots and methods exist. The artifact-verification lane stages the exact nine desktop release subjects, generates checksums, a subject-complete SPDX 2.3 document, canonical verification instructions, and source-bound GitHub attestations, then independently verifies those materials before producing its machine report. The remaining source scope is two verifier sources (two matrix reports), the Linux signing implementation, and signing/notarization proof. The `release-claims-ci` artifact producer is present in source, records frozen source-bound checks, and still requires evidence from a real tagged run. Each machine report must bind the exact successful native producer job, reviewed verifier source digest and command, release artifact, tag run and attempt, and structured observations. Signing and model-delivery evidence additionally reject carried-forward desktop jobs and require the upload action's exact artifact ID/digest plus artifact creation no earlier than the current-attempt upload step start and no later than its successful producer job completion. Because GitHub's artifact API is run-wide and exposes no direct artifact-to-attempt relation, this composite binding is the strongest public API evidence available and partial reruns must rerun the desktop producer and verifier together. Source availability is not artifact certification: the storage and on-device lanes still require passing tagged reports, macOS and Windows still require credentialed package jobs and protected signer pins, and the model lane still requires tagged-run evidence. The on-device source does not show that the runtime or model is bundled, establish a minimum hardware profile, or certify whole-application offline operation. See [`sample-release-evidence.md`](./sample-release-evidence.md). The authoritative completion state is `docs/beta-claim-ledger.json`; none of its stop-ship conditions may be waived informally.
 
-Nothing else in Tier 1 unblocks until this is done.
+### 1.2 Keep account connections outside the preview
+**Dependency:** #703 architecture series before any future enablement.
 
-### 1.2 Submit brand verification + Calendar sensitive-scope review
-**Dependency:** §1.1. **Owner:** SkyTwin team. **Time:** ~1–3 weeks of Google review.
-
-After Pages goes live:
-1. Click **Verify branding** on https://console.cloud.google.com/auth/branding?project=skytwin-492700.
-2. Upload a 120×120 PNG app logo (TODO — needs design pass; the SkyTwin star/twin glyph from the dashboard would work).
-3. Submit for verification covering the four scopes the bundled client requests: `calendar.readonly`, `calendar.events`, `email`, `profile`. (`openid` doesn't require review.)
-4. Paste the scope justifications from `docs/google-verification.md` § Scope justifications into the per-scope text fields.
-5. Upload the demo video — see §1.4.
-
-When this clears, the bundled flow shows the SkyTwin name + logo on the consent screen instead of the raw project-ID, and the "unverified app" warning goes away for Calendar usage.
+The release candidate must keep Google and Microsoft account access disabled
+and present the account-free sample instead. Managed Google identity/Calendar
+review is deferred. Do not submit or describe a Google review from this
+candidate: the real-account architecture, scope behavior, public disclosures,
+and exact artifact must first agree.
 
 ### 1.3 Code signing + notarization
 **Dependency:** purchase. **Owner:** SkyTwin team. **Time:** 1 day setup, certs renew annually.
@@ -57,42 +62,40 @@ The .dmg/.exe today are unsigned; macOS Gatekeeper and Windows SmartScreen show 
 Three purchases:
 - **Apple Developer Program** — $99/year. Sign up at https://developer.apple.com/programs/enroll/. Confirms the team identity, gives access to the Developer ID Application certificate used to sign + notarize macOS apps.
 - **Windows Code Signing cert** — EV (Extended Validation) is $300–600/year from DigiCert, Sectigo, or SSL.com. Required to skip Windows SmartScreen's reputation-warming period; OV (Organization Validation) is $100–200/year but builds reputation slowly (users see the warning until enough installs accrue).
-- **Linux: no certificate needed** — AppImage/deb/rpm signing exists but no OS-level "unsigned app" warning gates execution.
+- **Linux package trust is still required** — AppImage/deb/rpm do not share the macOS Gatekeeper warning model, but the public release gate still requires explicit package-format verification methods and pinned trust roots. The current signing verifier intentionally refuses Linux evidence until those are configured.
 
-**Pipeline note (corrected 2026-06-14):** there is no longer a separate `release.yml` — it was deleted in #356 in favour of a simpler softprops-based `release` job at the bottom of `.github/workflows/build.yml`, which runs on `v*` tag push, downloads the desktop/mobile artifacts the matrix jobs produce, and creates a **draft** GitHub Release. **Signing is not currently wired into any workflow** — the `desktop-mac`/`desktop-windows`/`desktop-linux` jobs in `build.yml` set `CSC_IDENTITY_AUTO_DISCOVERY: 'false'` and explicitly skip signing for CI. So acquiring the certs is necessary but *not sufficient*: once the certs exist, someone must (a) add the secrets to the repo (CSC_LINK + CSC_KEY_PASSWORD for macOS/Windows; APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID for notarization) **and** (b) wire those env vars into the three `package:*` steps in `build.yml` (or restore a dedicated signing release workflow). Until (b) lands, a tag-push produces *unsigned* draft-release artifacts. Tracked under #368/#359.
+**Pipeline note:** `.github/workflows/build.yml` is the sole permitted publisher. Its tag job is designed to verify release evidence, reject an existing release for the tag, create an unpublished prerelease draft with the canonical desktop assets and evidence manifest, verify that draft's exact asset digests, and publish it from the same job. Protected-environment approval, non-canceling per-tag serialization, and exclusive publisher credentials are the concurrency boundary; the post-publication check detects and attempts to recover from changes but is not an atomic transaction against other credentials. The signing verifier is already wired into the native evidence matrix, but the claim ledger remains blocked: package jobs still lack signing/notarization credentials, protected signer pins are not configured, no passing tagged-run evidence exists, and Linux trust policy remains deliberately unimplemented. Acquiring certificates is necessary but not sufficient; the credentialed package jobs and protected configuration must produce the required machine evidence. Tracked under #368/#359.
 
 Acceptance test: download the resulting .dmg from GitHub Releases on a fresh Mac the user has never seen SkyTwin on; double-click; verify it opens with no warnings.
 
 ### 1.4 Record the demo video
 **Dependency:** §1.3 (so the .dmg launches cleanly without OS warnings that would block a clean recording). **Owner:** SkyTwin team. **Time:** ~1 hour.
 
-Script lives in `docs/google-verification.md` § Demo video plan. Roughly 2–3 minutes covering install → sign in → consent screen (with all scopes named) → first signal in the Approvals queue → an action taken from the dashboard → the resulting effect visible in Gmail or Calendar's own UI.
-
-Upload as **unlisted YouTube**. Paste the URL into the Google verification submission form.
+Script lives in `docs/demo.md`. Record only the isolated sample: install,
+choose the account-free path, inspect fictional decisions and explanations, and
+show that simulated feedback has no connector, credential, persistence, or
+external-action path. This is release-demo material, not a Google verification
+submission.
 
 ### 1.5 Tag the first public release
 **Dependency:** §1.3 (so the artifacts that build are usable). **Owner:** SkyTwin team. **Time:** 5 minutes + ~15 minutes for the workflow to build all three platforms.
 
-```bash
-git checkout main && git pull
-git tag -a v0.6.57.0 -m "First public release"
-git push origin v0.6.57.0
-```
+Follow [`release-procedure.md`](./release-procedure.md) only after `VERSION`, the package metadata, and the ledger all authorize the same `v0.7.0-beta` release. The workflow rejects a tag whose commit is not already merged into the current `main` branch.
 
-The `release` job in `.github/workflows/build.yml` takes over: the `desktop-mac` / `desktop-windows` / `desktop-linux` matrix jobs build in parallel, and the `release` job (softprops, tag-only) attaches the .dmg, .zip, .exe, .AppImage, .deb, .rpm, and Android .apk to a **draft** GitHub Release. Two caveats from the 2026-06-14 audit: (1) the artifacts are **unsigned** until signing is wired per §1.3; (2) the release is created as a **draft** (publish it manually) and the electron-updater `latest*.yml` auto-update manifests are **not** generated yet — that's the remaining code half of #370.
+The `release` job in `.github/workflows/build.yml` takes over after the three desktop package jobs. The tag-bound CI path is implemented to generate and attach updater manifests, but no qualifying tagged release has independently proved or published them. It can publish only after the ledger is ready and current-run CI, machine, signing, model, checksum, provenance, and exact artifact-set evidence pass. It creates an unpublished draft, verifies every attached name and digest against the evidence manifest, and immediately publishes from the same controlled job. Do not publish a draft manually. Today the open stop-ship conditions intentionally prevent this path from reaching draft creation; the beta remains blocked.
 
 The full, step-by-step runbook (including these gaps and the clean-machine verification) lives in [`release-procedure.md`](./release-procedure.md).
 
-### 1.6 README rewrite: lead with download
+### 1.6 README download surface: promote only verified artifacts
 **Dependency:** §1.5. **Owner:** SkyTwin team. **Time:** 30 minutes.
 
-The current README leads with `curl … | bash`. After §1.5, the front door becomes:
+The README already exposes technical-preview download links. After §1.5, replace preview caveats only with the exact filenames and support language authorized by the verified release manifest:
 
 ```markdown
 ## Install
 
 [Download SkyTwin for macOS (.dmg)](.../releases/latest/download/SkyTwin-mac.dmg)
-[Download SkyTwin for Windows (.exe)](.../releases/latest/download/SkyTwin-Setup.exe)
+[Download SkyTwin for Windows (.exe)](.../releases/latest/download/SkyTwin-Setup-<app-version>.exe)
 [Download SkyTwin for Linux (.AppImage)](.../releases/latest/download/SkyTwin.AppImage)
 
 Or build from source: `curl -fsSL .../install.sh | bash`
@@ -105,39 +108,60 @@ This is the single biggest user-experience change in the launch. From "compile t
 ## Tier 2 — First-month polish (ship after Tier 1, before broad invite)
 
 ### 2.1 Auto-update channel — **code half done (Unreleased)**
-The electron-updater client plumbing is wired (`apps/desktop/src/auto-update.ts`, dead `.local` feed-URL removed under #370 in PR #453), and the **`latest*.yml` update manifests now ship with every GitHub Release** (the remaining code half of #370). electron-builder writes `latest-mac.yml` / `latest.yml` / `latest-linux.yml` into `dist-electron/` during packaging even under `--publish never` (that flag only suppresses the upload, not the manifest generation); `build.yml`'s three desktop jobs now collect those manifests as artifacts and the softprops `release` job attaches them alongside the installers. The `release` job also verifies the GitHub Releases endpoint is reachable (`curl -f`, fails on non-2xx) before publishing. `--publish never` on the package steps is unchanged. Remaining before this is end-to-end live: code signing (#368/#359) — electron-updater refuses an unsigned update payload, so the self-update path can't complete on a fresh box until signed binaries ship. Acceptance test (after signing): install one release on a fresh box, leave it sit, tag the next, confirm the installed app self-updates within ~6 hours (the `auto-update.ts` `DEFAULT_CHECK_INTERVAL_MS` default check interval).
+The electron-updater client plumbing is wired (`apps/desktop/src/auto-update.ts`, dead `.local` feed-URL removed under #370 in PR #453). The tagged `build.yml` path generates `latest-mac.yml` / `latest.yml` / `latest-linux.yml` during packaging (even with `--publish never`), collects them, and is designed to attach them alongside installers. This is source/CI capability, not evidence that the currently published technical-preview artifacts contain those manifests: the beta gate is blocked and no qualifying tagged release has been published. The `release` job also verifies the GitHub Releases endpoint is reachable (`curl -f`, fails on non-2xx) before publishing. Remaining before this is end-to-end live: code signing (#368/#359) — electron-updater refuses an unsigned update payload, so the self-update path can't complete on a fresh box until signed binaries ship. Acceptance test (after signing): install one release on a fresh box, leave it sit, tag the next, confirm the installed app self-updates within ~6 hours (the `auto-update.ts` `DEFAULT_CHECK_INTERVAL_MS` default check interval).
 
 ### 2.2 PKCE verifier store in DB — **done (Unreleased)**
 Shipped: migration `058-oauth-pkce-pending.sql` + `packages/db/src/repositories/oauth-pkce-pending-repository.ts`. `apps/api/src/routes/oauth.ts` now uses the DB-backed store; a desktop restart between `/authorize` and `/callback` no longer drops the verifier. `consume()` is a single `DELETE...RETURNING` so the replay-protection property survives the move off the in-memory Map. 5 new tests.
 
-### 2.3 Onboarding flow auto-routes through `/#/connect-gmail` — **done (Unreleased)**
-Shipped: `apps/api/src/routes/oauth.ts` accepts a whitelisted `?next=connect-gmail` parameter; the value is encoded into the HMAC-signed state and used to compose the post-OAuth redirect URL. `apps/web/public/js/pages/onboarding.js`'s "Continue with Google" button passes `next: 'connect-gmail'`. `apps/web/public/js/pages/connect-gmail.js` shows a "Calendar connected — now let's hook up Gmail" banner above the wizard when the user arrives via this deep-link. 5 new tests on the whitelist + HMAC coverage of the new tag.
+### 2.3 Historical Google onboarding implementation — **superseded for preview**
+The source previously routed onboarding through `/#/connect-gmail`. The
+sample-only boundary supersedes that current-looking flow: onboarding now offers
+the isolated sample and an unavailable Google state. The prior implementation
+remains history, not a supported preview path.
 
-### 2.4 Better error story when bundled client_id is unset — **done (Unreleased)**
-Shipped: `apps/api/src/routes/oauth.ts` tags its no-client_id 503 with `code: 'NO_GOOGLE_CLIENT_CONFIGURED'` + `help: '#/connect-gmail'`. `apps/web/public/js/api-client.js` plumbs structured `code`/`help`/`docs` fields through `ApiError`; 503s with a code use a new `kind: 'config-missing'`. The onboarding wizard detects the code and routes the user into the connect-gmail wizard (same five-step flow handles both BYO Gmail and "this fork has no bundled client"). The connect-gmail wizard's final OAuth call now uses `?newUser=true` when no userId is in localStorage, so brand-new onboarding users finish the flow without needing a pre-existing account.
+### 2.4 Typed account-connection unavailable state — **current preview**
+Google and Microsoft account routes return a stable disabled result before
+authorization, callback exchange, or persistence. The UI does not turn that
+result into a credential writer or first-use bypass; it keeps the user on the
+account-free sample path.
 
 ### 2.5 Telemetry-free crash reporting
-Sentry-style error reporting is at odds with the "nothing leaves your machine" privacy story, but **fully silent failures** are at odds with shipping a desktop app. The middle ground: an opt-in "send anonymized crash report" prompt that uploads a JSON payload with the exception, stack, and SkyTwin version (no user data) to a developer-controlled endpoint. Default off; if you opt in the prompt explains exactly what's sent.
+Automatic error reporting would expand SkyTwin's network and data-handling boundary, but **fully silent failures** are at odds with shipping a desktop app. The middle ground: an opt-in "send anonymized crash report" prompt that uploads a JSON payload with the exception, stack, and SkyTwin version (no user data) to a developer-controlled endpoint. Default off; if you opt in the prompt explains exactly what's sent.
 
-### 2.6 Demo / sample-profile mode polish — **partial (Unreleased)**
-Welcome-screen CTA is now a real `btn-outline btn-lg` card with an "or" divider above it instead of a tiny gray footer link (`apps/web/public/js/pages/onboarding.js` renderWelcome) — the alternative-path framing is now explicit and discoverable. The seed payload (Alex Thompson — twin profile + preferences + ~10 decisions across multiple domains + approvals + feedback events) is already rich enough to demo every dashboard surface; no seed changes were needed in this round.
+### 2.6 Demo / sample-profile mode polish — **interactive local sample complete in source; artifact verification pending (Unreleased)**
+Welcome-screen CTA is now a real `btn-outline btn-lg` card with an "or" divider above it instead of a tiny gray footer link (`apps/web/public/js/pages/onboarding.js` renderWelcome) — the alternative-path framing is explicit and discoverable. Packaged desktop provisions a minimal fictional **Sample User** only on its attested bundled CockroachDB child and opens it through a four-hour credential fixed to the reserved `is_demo` identity; this is separate from the richer Alex Thompson development seed. The explicit read allowlist supports dashboard, decision, and explanation browsing while excluding mutations, credentials, settings, search, SSE, paid inference, and execution; the development authentication bypass remains disabled. API readiness and worker writes are fenced to the exact packaged generation; normal pause stops the worker, and concurrent pause/resume or recovery cannot retain a partial generation. Connector cursors commit only after the API accepts every staged signal, while embedding completion is separately fenced to the exact active database lease token. Fictional packaged signals populate the browsing surfaces without relabeling an unrelated account at the reserved identity.
 
-Still rough and worth a separate design pass once first-week feedback lands: the in-dashboard tour banner is functional but generic ("Click around freely, then start your own when you're ready"), there's no "first 30 seconds" pointer steering users to the most interesting card, and the exit-tour flow is a single-click hard reset with no confirmation (acceptable because the tour data is fake — listed here so a future polish round doesn't re-discover it as an open question).
+Approve, reject, correct, reset, and learn interactions now run through a separate loopback-only simulation with a closed command catalog. The simulation evaluates the real policy and explanation logic, but keeps bounded state in memory and cannot call connectors, providers, credentials, execution adapters, or database mutation paths. Browser authority is tab-scoped in `sessionStorage`; real sign-in wins, exit/renewal races are generation-fenced, and the service worker applies the API's case-insensitive route semantics before bypassing all `/api/v1/demo` traffic. Requests to normal product routes also bypass offline persistence when they carry the sample bearer credential or EventSource query token. The worker reapplies current policy before sending any stored write, deleting entries that are no longer eligible. Source of truth: `apps/api/src/services/sample-simulation.ts`, `apps/web/public/js/sample-session.js`, `apps/web/public/js/pwa/sw-policy.js`, and `apps/web/public/sw.js`.
+
+The release-safety producer now inventories and reruns the v1 catalog's ten
+declared runtime entry paths on a tag, but its bounded report currently finds
+only six explanation-persistence boundaries. The final consumer now binds
+the exact four-file payload to the current-attempt GitHub artifact and reruns
+both independent verifiers before publishing its three safety sidecars. This
+reduces ambiguity around the release-evals blocker; the four disclosed gaps
+and absence of a tagged run mean it does not close the blocker or change the
+blocked launch decision.
+
+Still open under [#630](https://github.com/jayzalowitz/skytwin/issues/630): fresh packaged-artifact verification and final presentation polish. The in-dashboard tour banner is functional but generic ("Click around freely, then start your own when you're ready"), and there is no "first 30 seconds" pointer steering users to the most interesting proposal. The exit flow is intentionally single-click because the state is fictional and disposable.
 
 ---
 
 ## Tier 3 — Post-launch / strategic (don't start before Tier 1 + 2 land)
 
-### 3.1 Gmail restricted-scope verification
-Tracked in [#351](https://github.com/jayzalowitz/skytwin/issues/351). Annual ~$15k–$50k CASA assessment + Google review. Don't start until:
-- BYO Gmail friction is measurably hurting funnel conversion (instrument the wizard step-completion drop-off rate first).
-- SkyTwin has revenue that comfortably absorbs the recurring fee.
+### 3.1 Google real-account architecture and verification
+First complete #703's operator/BYO architecture gates. Intended real-account
+defaults are identity plus explicitly granted Calendar capabilities; Gmail is
+separately optional and explicitly requested. Google publishing status, tester
+restrictions, warnings, token expiry, user-data obligations, verification, and
+any assigned security assessment still apply. A BYO test is not managed-client
+approval. Managed Gmail work remains tracked in
+[#351](https://github.com/jayzalowitz/skytwin/issues/351).
 
 ### 3.2 Mobile app stores
 The mobile app exists (Expo, React Native) and the pairing flow works locally over mDNS. App Store + Play Store submissions are separate review processes with their own friction. Defer until desktop hits product-market fit signals.
 
 ### 3.3 Hosted SkyTwin
-The privacy story is "everything runs on your machine." A hosted variant is a separate product with a separate threat model. Don't conflate.
+The packaged default is local-first, while users can already opt into disclosed hosted reasoning, embedding, remote execution, and federation paths. A fully hosted SkyTwin deployment would be a separate product with a broader threat model and must not inherit claims that apply only to the packaged local default.
 
 ### 3.4 Slack, Notion, bank-feed connectors
 README hints at these. They each carry their own OAuth scope review (Slack workspace verification, Notion integration approval, Plaid for banks). Sequence them by feature value × verification cost. Banking via Plaid is the most expensive path; Slack and Notion are cheap. Notion next.
@@ -162,10 +186,10 @@ Recurring annual:
 
 One-time:
 - Logo design: $0 (use existing dashboard glyph) to ~$500 (commissioned)
-- Demo video editing: $0 (raw screen capture is fine for Google review) to ~$500 (professional cut for the homepage)
+- Account-free launch demo editing: $0 (raw screen capture is sufficient) to ~$500 (professional cut for the homepage)
 
 Deferred until §3.1 trigger:
-- CASA assessment: **$15k–$50k annually**
+- CASA assessment: **current authorized-lab quote required; annual revalidation applies**
 
 Total recurring annual cost to start: **$500–$1000** including domain.
 
@@ -173,6 +197,6 @@ Total recurring annual cost to start: **$500–$1000** including domain.
 
 ## How this plan was put together
 
-Each Tier 1 item was selected by asking: *"If we shipped without this, what would break for the user?"* If the answer is "the .dmg won't open at all" (§1.3), "the download link doesn't exist yet" (§1.5), or "Google blocks the OAuth flow" (§1.2), it's Tier 1. If the answer is "the experience is rougher than it could be" (§2.x), it's Tier 2. If the answer is "we'll know we needed this from telemetry once we have users" (§3.x), it's Tier 3 and shouldn't drain attention before we have those users.
+Each Tier 1 item was selected by asking: *"If we shipped without this, what would break for the user?"* If the answer is "the .dmg won't open at all" (§1.3), "the download link doesn't exist yet" (§1.5), or "the sample can escape its isolation boundary" (§1.2), it's Tier 1. If the answer is "the experience is rougher than it could be" (§2.x), it's Tier 2. If the answer is "we'll know we needed this from telemetry once we have users" (§3.x), it's Tier 3 and shouldn't drain attention before we have those users.
 
-The most common failure mode for plans like this is letting Tier 3 items (interesting strategic things) crowd out Tier 1 items (necessary boring things). The release pipeline (the `release` job in `.github/workflows/build.yml`) doesn't count as "release pipeline shipped" until §1.5 actually fires it on a tag. The OAuth wizard existing at `/#/connect-gmail` doesn't count as "Gmail working for users" until §1.2 clears the brand verification that makes Google's consent screen show the SkyTwin name. Build all the way to the user, then up.
+The most common failure mode for plans like this is letting Tier 3 items (interesting strategic things) crowd out Tier 1 items (necessary boring things). The release pipeline (the `release` job in `.github/workflows/build.yml`) doesn't count as "release pipeline shipped" until §1.5 actually fires it on a tag. OAuth and connector code existing in source does not count as supported account access; that requires the complete #703 architecture and applicable external requirements on the exact candidate. Build all the way to the user, then up.

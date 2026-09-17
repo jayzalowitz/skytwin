@@ -15,6 +15,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
 import type { Express } from 'express';
 
+const { MockActiveExecutionAdmissionError } = vi.hoisted(() => ({
+  MockActiveExecutionAdmissionError: class ActiveExecutionAdmissionError extends Error {
+    readonly code = 'active_execution_admission';
+    constructor(readonly userId: string, readonly activeAdmissions: number) {
+      super('active execution admission');
+    }
+  },
+}));
+
 const mockUserPurgeRepository = {
   purgeUser: vi.fn(),
 };
@@ -25,6 +34,7 @@ const mockUserRepository = {
 };
 
 vi.mock('@skytwin/db', () => ({
+  ActiveExecutionAdmissionError: MockActiveExecutionAdmissionError,
   userRepository: mockUserRepository,
   userPurgeRepository: mockUserPurgeRepository,
   // Both DB-adapter shims pulled in by TwinService.
@@ -256,6 +266,23 @@ describe('DELETE /users/:userId (#376)', () => {
     expect(status).toBe(404);
     expect(body['error']).toBe('user_not_found');
     expect(body['counts']).toEqual({ users: 0 });
+  });
+
+  it('409s without claiming deletion while an execution is active or ambiguous', async () => {
+    mockUserPurgeRepository.purgeUser.mockRejectedValue(
+      new MockActiveExecutionAdmissionError(USER_ID, 2),
+    );
+    const { status, body } = await request(
+      makeApp(),
+      'DELETE',
+      `/users/${USER_ID}?confirm=delete-my-data`,
+    );
+    expect(status).toBe(409);
+    expect(body).toMatchObject({
+      error: 'active_execution_admission',
+      activeAdmissions: 2,
+    });
+    expect(body['deleted']).toBeUndefined();
   });
 
   it('propagates a repository error via the express error pipeline', async () => {

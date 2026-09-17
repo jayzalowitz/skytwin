@@ -1,5 +1,7 @@
 import { Router } from 'express';
+import { loadConfig } from '@skytwin/config';
 import { connectorHealthRepository } from '@skytwin/db';
+import { isAccountBackedIntegrationIdentifier } from '@skytwin/shared-types';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
@@ -35,8 +37,12 @@ export function createConnectorsRouter(): Router {
         lastSuccessAt: string | null;
         lastFailureAt: string | null;
       }> = {};
+      const accountConnectionsAvailable = loadConfig().googleConnectionMode === 'experimental';
       let anyNeedsReauth = false;
       for (const row of rows) {
+        if (!accountConnectionsAvailable && isAccountBackedIntegrationIdentifier(row.connector_name)) {
+          continue;
+        }
         connectors[row.connector_name] = {
           status: row.status,
           errorCode: row.error_code,

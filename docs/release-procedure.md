@@ -1,6 +1,178 @@
 # Release Procedure
 
-How to cut a public SkyTwin release. This is the **current, accurate** flow as of 2026-06-14 — the old `.github/workflows/release.yml` was deleted in #356; **`.github/workflows/build.yml` is now the only publisher** (its `release` job). Source of truth: `.github/workflows/build.yml` (the `release:` job, `if: startsWith(github.ref, 'refs/tags/v')`).
+> **Beta truth gate:** [`beta-claim-ledger.json`](./beta-claim-ledger.json) is
+> the release-claim source of truth for `v0.7.0-beta`. Run `pnpm claims:check`
+> before cutting any candidate. Every release-producing `v*` tag additionally
+> runs a two-stage gate in CI. The preflight requires an exact ledger/tag/SHA
+> match, ready status, and synchronized versions before packaging. After
+> packaging, the release job requires a generated evidence manifest bound to
+> that same repository, tag, and SHA. It verifies required CI runs, jobs, and
+> artifact digests through the GitHub API, plus digest-bound machine reports and
+> artifact-verification material downloaded with the evidence artifact. The raw
+> reports, checksum inventory, SPDX SBOM, verification guide, and
+> cryptographically verified provenance bundles are also published as exact,
+> digest-verified release assets so the proof remains auditable after Actions
+> artifact retention expires. The job then rejects any
+> existing draft or public release for the tag, creates an unpublished draft,
+> verifies that draft by its numeric release ID, exact asset names, and GitHub
+> SHA-256 digests, and publishes it immediately from the same gated job. Evidence IDs
+> are deliberately not committed to this ledger: doing so would change the SHA
+> they attest and create an impossible hash cycle. The tag-bound release path is
+> implemented to generate the external manifest from current-run GitHub API
+> metadata and to generate/attach updater manifests;
+> no qualifying tagged release has independently proved or published those
+> manifests. Downstream
+> evidence-matrix jobs include the canonical three-platform packaged-sample
+> verifier with GitHub API discovery separated from package execution and a
+> strict allowlisted child environment. The artifact-verification lane also has
+> a tag-only material producer and independent verifier in source, but it has not
+> yet produced evidence from a tagged release run. The signing lane is wired
+> into the native matrix and has macOS and Windows verifier source, but the
+> package jobs are not credentialed, protected signer pins are not configured,
+> no passing tagged-run evidence exists, and Linux signing remains deliberately
+> blocked pending package-specific trust methods. The model-delivery lane has
+> a Linux verifier in source that independently observes the immutable model
+> repository metadata, exact LFS sibling, card license, revision-pinned LICENSE
+> bytes, delivery, stable file identity, and deletion. It also binds the
+> AppImage artifact to the exact workflow attempt through the upload action's
+> ID/digest outputs, an exact-ID download into a private lane directory, and the
+> exact-attempt start and producer/upload timeline, but
+> it likewise has no tagged release evidence. A macOS desktop-storage verifier
+> is present in source and observes contained CockroachDB persistence across two
+> owned packaged launches, but it has not produced tagged evidence. A macOS
+> arm64 on-device inference
+> verifier is also present in source; it runs the packaged API probe with exact
+> llama.cpp and GGUF byte identities inside a network-deny sandbox. Its nested
+> application archive is preflighted before extraction, and its sandbox
+> inheritance self-test requires a spawned child to fail both loopback and
+> external connections. It has not produced tagged evidence. The CI result
+> producer is present in source but has
+> not run on a release tag. The other three machine reports, including Linux
+> signing, are still absent.
+> The final gate therefore fails closed and the ledger remains blocked until the
+> complete proof pipeline ships.
+
+The historical files in `docs/screenshots/` are listed in the ledger as
+`prohibited` stale assets. Keep them for audit provenance, but do not link,
+embed, upload, or describe them as evidence for a candidate. Only a newly
+captured and re-audited replacement may enter release or launch materials.
+
+The supported beta topology is one non-demo human owner per installation.
+Installation credentials are shared configuration, so multi-owner local installs
+and hosted service deployments are outside this release procedure.
+
+Internal source candidates are a separate, non-public evaluation mechanism.
+They use an exact commit archive, contain no packaged application artifacts,
+and have no tag, GitHub Release, upload, or publication capability. See
+[`internal-source-candidates.md`](./internal-source-candidates.md). Creating one
+does not satisfy or bypass any claim-ledger, signing, evidence, or protected
+environment requirement below.
+
+The intended post-build contract is explicit: the tagged `build.yml` run
+must produce `release-claims-ci` and `release-evidence` artifacts. The former
+is emitted only for a real `push` of a `v*` tag by the `release-claim-ci` job;
+manual workflow runs never enter the publisher. The latter
+contains the canonical `reports/<claim-id>[.<platform>].json` results for every required machine claim
+and an `artifact-verification/` directory containing the exact `SHA256SUMS`,
+`release.spdx.json`, `VERIFY.md`, and digest-named provenance bundles.
+The CI artifact contains `result.json`, the verified adversarial report and
+checksum, and the bounded release-safety sidecar. `result.json` is bound to the
+repository, source commit, actual ref, event, run ID and attempt, plus the
+ledger, harness, and frozen-command source digests. Its checks are frozen argv arrays launched
+without a shell and record observed exit codes. Before and after every command,
+the harness requires `HEAD` to equal the triggering commit, compares every
+tracked path and executable/symlink mode with the content-addressed `HEAD`
+tree, rejects skip-worktree, assume-unchanged, linked source/runtime files,
+and non-ignored untracked changes, and revalidates the captured Node and pnpm
+bundle identities. Git replacement, configuration, fsmonitor, and alternate
+index inputs cannot substitute for that tree comparison. The account-free
+claim runs the ledger's exact focused API, worker, shared-classifier,
+execution-router, and desktop test paths, not a broad suite whose success
+could outlive those assertions. The final checker hashes and validates the
+downloaded file as well as its GitHub artifact metadata.
+
+The safety sidecar is produced and independently verified before upload. Its
+producer first revalidates the captured Node and pnpm entry points and runs them
+in a closed environment under a no-profile shell. The step has a 15-minute
+ceiling and every mapped test subprocess has a 60-second hard-kill timeout.
+The final publication consumer binds the downloaded artifact's exact four-file
+inventory to its GitHub artifact ID/digest, current run and attempt, successful
+producer job, and upload chronology. It re-runs the adversarial and
+release-safety verifiers from the exact tracked source checkout while allowing
+only generated outputs, then publishes the three safety sidecars. The checker
+emits the digest of the exact manifest bytes it read, and the final publisher
+requires that digest after draft creation. The consumer deliberately does not
+re-download and independently hash the artifact archive itself; it relies on
+the pinned GitHub download action, GitHub's artifact API digest, and exact local
+member hashes. Until an immutable tag run passes this path, the current 10/10
+cataloged safety result and 6/10 explanation-boundary result leave
+`safety.explanation-coverage` limited and the release blocked.
+
+The CI-result producer runs on a fresh GitHub-hosted runner. Its filesystem
+checks reject synchronous source, runtime, output-directory, symlink, and
+hardlink substitutions, while the final consumer independently binds the
+uploaded artifact digest and report digest. A deliberately detached process
+running as the same runner principal is outside this in-process verifier's
+containment boundary; preventing that actor is the responsibility of reviewed
+tag source, branch protection, pinned actions, and the fresh single-job runner,
+not a claim that same-user processes are sandboxed from one another.
+Each report is created only after its subject release artifact is uploaded, so
+it can record the upload action's immutable artifact ID, name, digest, platform,
+artifact kind, subject filename, and subject SHA-256. Reports use schema version
+1, identify `release-machine-verifier` as their generator, bind the canonical
+successful claim/platform job and reviewed verifier path/command/source digest,
+and contain the exact uniquely named passing checks with structured assertion,
+measurement, and exit-code observations. For model delivery, the report also
+records the exact workflow-attempt start, successful AppImage producer job
+start/completion, upload step start/completion, active verifier job, and
+artifact creation time. GitHub's artifact API exposes the run but not the
+producing job or attempt; the upload action's current-attempt output ID/digest
+plus the ordered attempt-start → producer-start → upload-start → artifact-created
+→ producer-completed timeline are therefore all required, with upload completion
+also bounded by producer completion. Artifact creation may appear one second
+after upload-step completion because GitHub exposes whole-second timestamps; it
+must never fall after producer completion. This rejects both prior-attempt
+artifacts and carried-forward jobs that GitHub relabels with the current attempt.
+The license check reads the immutable Hugging Face metadata
+endpoint, validates repository/revision, card license and exact LFS sibling,
+then hashes the revision-pinned LICENSE bytes into the report. A later
+aggregation step uploads those reports as the separate `release-evidence`
+artifact. After
+downloading artifacts, the final job runs
+`scripts/release-claims/generate-evidence-manifest.mjs`, which queries the
+current run's jobs and artifacts through GitHub's API and writes
+`.release-evidence/manifest.json`. The manifest is not placed inside the
+artifact whose digest it records, so there is no self-referential hash. The
+checker then binds the current run to the tag-push ref and release commit,
+verifies both the evidence artifact and each subject release artifact through
+GitHub's API, hashes each local report, downloaded subject, and verification
+sidecar, and rejects unexpected claim/kind entries. It requires the checksum
+and SPDX inventories to cover every canonical subject. The SBOM must satisfy
+the required SPDX 2.3 document, creation, package, file, identifier, timestamp,
+checksum, relationship-vocabulary, and package-verification-code contract before
+subject coverage counts. `VERIFY.md` must equal a
+generated canonical guide containing working checksum commands and one exact
+`gh attestation verify` command per subject, bound to the repository, digest
+bundle, `build.yml` signer workflow, tag ref, source SHA, and SLSA provenance
+predicate. The checker then executes the same cryptographic verification for
+each subject. This lets proof be generated after packaging without changing
+the source SHA it attests.
+One CI result and twelve machine reports — thirteen durable report files total —
+plus the checksum inventory, SPDX SBOM, verification guide, provenance bundles,
+and, once the ledger is ready, the generated manifest is attached to the GitHub Release. Wildcards are used
+only for the manifest-validated verification directory and package outputs; the
+controlled publisher rejects missing, extra, duplicate, or digest-changed assets.
+
+Quantified claims carry additional applicability evidence. The three native
+signing reports must collectively enumerate every installer and desktop archive
+subject in the release asset inventory. Each report covers only its platform and
+records every subject digest and passing OS signature result; the macOS report
+also requires a passing notarization result. The verified-model report must enumerate
+the recommended model artifact with its source, disclosed license, published
+SHA-256, passing digest verification, and passing deletion check. Omitting one
+of these subjects fails the final gate.
+
+How to cut a public SkyTwin release. This is the **current, accurate** flow as of 2026-09-14 — the old `.github/workflows/release.yml` was deleted in #356; **`.github/workflows/build.yml` is now the only publisher** (its `release` job). Source of truth: `.github/workflows/build.yml` (the `release:` job, `if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')`).
 
 Pairs with [`launch-plan.md`](./launch-plan.md) (what blocks the *first* public launch) and [`launch-readiness-report.md`](./launch-readiness-report.md) (current blocker status).
 
@@ -11,14 +183,20 @@ Pairs with [`launch-plan.md`](./launch-plan.md) (what blocks the *first* public 
 ```bash
 # from an up-to-date main
 git checkout main && git pull
-# VERSION already holds the version you're releasing (bump it in a PR first if not)
-git tag -a "v$(cat VERSION)" -m "Release v$(cat VERSION)"
-git push origin "v$(cat VERSION)"
-# build.yml builds all platforms, then its `release` job creates a DRAFT GitHub Release.
-# Review the draft, then publish it manually.
+# VERSION/package metadata normalize to the ledger target (bump in a PR first)
+RELEASE_TAG="$(node -p 'require("./docs/beta-claim-ledger.json").release.targetVersion')"
+git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
+git push origin "$RELEASE_TAG"
+# build.yml builds, verifies an unpublished draft, and publishes it automatically.
 ```
 
-That's the mechanical flow. Read the rest before the **first** public release — there are two gaps (signing, auto-update manifests) you must close first, or accept.
+That's the mechanical flow. Read the rest before the **first** public release.
+Every open stop-ship condition in the claim ledger must be closed with its
+required evidence; none may be accepted as an informal exception. Signing and
+clean-artifact verification remain release gates. Google and Microsoft account
+connections are outside this account-free release; provider review and any
+operator/BYO account work are deferred post-launch concerns, not onboarding
+constraints for this candidate.
 
 ---
 
@@ -26,43 +204,201 @@ That's the mechanical flow. Read the rest before the **first** public release �
 
 `build.yml` triggers on `push: tags: ['v*']`. The relevant jobs:
 
-1. **`test`** + **`changes`** — gate the build (the desktop/mobile jobs `needs: [test, changes]`). The eval suite is a **separate** workflow (`.github/workflows/evals.yml`) and does **not** run on `v*` tag pushes, so don't assume evals ran as part of cutting a release.
+1. **`test`** + **`changes`** — gate the build (the desktop/mobile jobs `needs: [test, changes]`). The general eval workflow remains separate, but a `v*` tag now reruns the exact v1 adversarial catalog, independently verifies it, and adds a bounded release-safety sidecar to `release-claims-ci`. The final publication verifier consumes and independently re-verifies that exact sidecar, but it still discloses four explanation-coverage gaps and therefore does not close the release-evals stop-ship.
 2. **`desktop-mac` / `desktop-windows` / `desktop-linux`** — each job first runs `.github/scripts/derive-app-version.sh` (exports `APP_VERSION`; see [Version bumps](#version-bumps)), then `pnpm --filter skytwin-desktop run package:<os> --publish never "--config.extraMetadata.version=${APP_VERSION}"`. `--publish never` is deliberate: these jobs only *build + validate* packageability and upload the artifacts; they do not publish (see the comments in `build.yml`). `--config.extraMetadata.version` is what stamps the real version onto the artifacts and the `latest*.yml` manifests.
 3. **`mobile-android` / `mobile-ios`** — Android `.apk` + an unsigned iOS simulator `.app` zip.
-4. **`release`** (`needs:` all five build jobs) — first verifies the GitHub Releases endpoint is reachable (`curl -f https://github.com/<repo>/releases/latest`, fails the job on non-2xx — #370 AC#2), then downloads every artifact and runs `softprops/action-gh-release@v3` with **`draft: true`** + `generate_release_notes: true`, attaching: `.dmg`, `.zip` (mac), `.exe` (Windows NSIS), `.AppImage` / `.deb` / `.rpm` (Linux), `.apk` (Android), the iOS simulator zip, **and the electron-updater manifests `latest-mac.yml` / `latest.yml` / `latest-linux.yml`** (#370).
+4. **`release`** (`needs:` `test`, the three desktop jobs, and the verified evidence aggregator) — when the ledger is ready, verifies the evidence contract, creates an unpublished prerelease draft containing only the canonical desktop artifacts, update manifests, one CI result plus twelve machine reports (thirteen durable report files total), the three adversarial/release-safety sidecars, checksum/SBOM/instruction/provenance sidecars, and the evidence manifest, then runs `publish-verified-draft.mjs`. That script consumes the creator action's numeric release ID and the checker's exact manifest digest, requires the exact expected asset-name/digest set, independently dereferences the release tag to the triggering commit, and proves that commit is an ancestor of the current `main` branch before it changes the draft to public. The open stop-ship conditions currently prevent this path from creating a draft or publishing those assets.
 
-The release is created as a **draft**. Nothing is public until a human opens the draft in GitHub Releases and clicks **Publish**.
+Do not publish drafts manually. If exact verification fails, the draft remains private for diagnosis; delete it before retrying the tag workflow.
+
+The repository's `release-publication` GitHub Environment is part of this
+boundary. **As of 2026-09-14 it is protected** (environment ID `21922257437`):
+`ilblackdragon` is the required reviewer, self-review is prevented, and
+administrator bypass is disabled. The `Protect version tags` repository ruleset
+(ID `23359316`) covers `refs/tags/v*` creation, update, deletion, and
+non-fast-forward changes, with the repository administrator role as its explicit
+bypass actor. The environment's sole deployment policy is the exact
+`v0.7.0-beta` tag (policy ID `59983025`), which the release verifier also
+requires for this claim ledger.
+The workflow verifies that at least one reviewer is required, self-review and
+administrator bypass are disabled, custom deployment policies are enabled, and
+a tag policy matches the release tag. It fails before release mutation if those
+invariants drift or GitHub auto-creates an unprotected environment. Operators
+must separately compare the exact identities and ruleset details recorded above.
+The release job has only `contents: write`, `actions: read`, and
+`attestations: read`, serializes
+publication per tag without cancellation, and scans the authenticated release
+inventory immediately before draft creation so the upload action cannot reuse a
+draft or mutate an existing public release. It re-fetches by release ID and
+revalidates the published metadata, tag target, and complete digest set. If
+publication or confirmation is ambiguous, it never repeats the publish request:
+it reconciles by ID and uses only the idempotent transition back to draft.
+This is fail-safe detection and recovery, not an atomic GitHub transaction:
+credentials outside this protected workflow could still race the bounded interval
+between the absence check, draft creation, and confirmation. Repository access
+controls and exclusive release-publisher permissions remain part of the boundary.
+
+The tag-only artifact-integrity job is the sole provenance producer. It uses a
+pinned attestation action and grants only `contents: read`, `actions: read`,
+`attestations: write`, `artifact-metadata: write`, and `id-token: write`; the
+publisher retains read-only attestation access. It generates the exact sidecars
+above, but source availability alone cannot move the ledger to ready. A tagged
+clean run must still produce the immutable report and materials, and platform
+signing/notarization remains a separate stop-ship.
+
+For macOS, the signing report requires the DMG's own Developer ID signer and
+team to match its contained app, binds both signed bundle version keys, and
+checks the ZIP member inventory and declared expanded-size ceiling, extracts on
+a fully allocated fixed-capacity HFS+ image with allocation and
+filesystem-metadata headroom, requires a separate host free-space reserve both
+before and after allocating that image, rejects AppleDouble `__MACOSX`
+resource-fork entries rather than admitting files outside the canonical app
+root, and checks extracted link containment before trusting the contained app.
+For Windows, extraction runs on an attached
+5,511 MiB fixed-capacity VHDX rather than the runner filesystem. The verifier
+formats NTFS with 4 KiB clusters and confirms that allocation unit before use;
+the capacity covers the enforced 4 GiB nested-content ceiling, worst-case
+100,000-member allocation slack, and filesystem headroom while retaining a
+separate 2 GiB host reserve. The report binds the Authenticode and version
+metadata of both the NSIS installer and its exact contained `SkyTwin.exe`; a
+correctly signed but stale wrapper is not acceptable. Because the pinned
+electron-builder 26.15.3 converts the three-field application version to
+Windows' four-field ProductVersion, a `0.7.0` application must report
+ProductVersion `0.7.0.0`; FileVersion is checked independently as four numeric
+fields.
+Both platforms verify native tools only against a private digest-bound staged
+copy. The producer then downloads the uploaded report by its exact artifact ID
+and checks the downloaded report bytes against the verifier-emitted SHA-256;
+an attempt-specific sidecar retains that source report digest separately from
+the artifact service's Actions archive digest, plus the source artifact ID,
+run ID, run attempt, attempt start, and desktop producer/upload observations.
+The desktop upload actions also expose their exact artifact IDs and archive
+digests as job outputs. The verifier resolves the complete exact-attempt job
+inventory and rejects a desktop producer or upload step whose timestamps
+predate that attempt, even when GitHub relabels a carried-forward successful
+job with the current `run_attempt`. Aggregation resolves the exact source report
+IDs from the sidecars; manifest generation and publication revalidate the
+source-report and desktop artifacts, successful jobs, upload steps, and
+producer-job creation windows through the API. A partial rerun that carries a
+package job forward therefore cannot satisfy signing evidence: rerun the
+desktop producer and verifier together.
+
+GitHub's public Actions artifact API is run-wide and does not expose a direct
+artifact-to-job or artifact-to-attempt relation. The strongest available
+binding combines the upload action's exact ID/digest outputs, attempt-specific
+report names, exact-attempt job and step identity, and an artifact creation time
+no earlier than the successful upload step start and no later than its producer
+job completion.
+Every persisted Actions timestamp is required to use GitHub's canonical
+whole-second UTC form (`YYYY-MM-DDTHH:MM:SSZ`). The service's second-level
+quantization can report artifact creation in the second after the upload
+step's completion, so upload completion is not used as the upper bound. The
+accepted creation interval is inclusive from upload-step start through producer
+job completion; that whole-second tolerance is an explicit hosted API
+limitation, not proof of a stronger native relation. These controls fail closed
+against stale-attempt reuse and mutations within the workflow's processes and
+handoff windows; arbitrary same-user control of the hosted runner itself
+remains outside the evidence threat boundary.
+
+The fixed VHDX sizing is designed for the standard `windows-2025` runner, but a
+real hosted signing run is still required before the signing stop-ship can be
+closed.
+
+The native machine-evidence matrix and exclusive aggregator are scaffolded.
+The packaged-sample verifier implements three of the twelve matrix reports; see
+[`sample-release-evidence.md`](./sample-release-evidence.md). The artifact lane
+and model-delivery lanes implement one more each, and the signing source
+implements macOS and Windows while failing closed on Linux until package-format
+methods and trust roots exist. The desktop-storage lane implements its macOS
+report with two owned packaged launches, contained user-data storage,
+loopback-only CockroachDB listeners, and restart persistence. The on-device lane
+implements the macOS arm64 report by loading an artifact-contained API probe,
+acquiring immutable digest-pinned llama.cpp and GGUF inputs, and performing real
+inference inside a macOS sandbox that denies all network operations. The
+artifact-controlled nested archive must pass bounded member, path, type,
+expanded-size, and compression-ratio checks before extraction; the canonical
+probe and runtime binary must also pass lexical non-symlink inspection before
+canonicalization. Two
+verifier sources (two matrix reports) and the Linux signing implementation are
+absent today.
+The `release-claims-ci` producer now records the frozen source-check commands
+and uploads its result on tag pushes,
+but that report does not resolve any external stop-ship condition. The
+signing matrix entries cannot pass until credentialed package jobs produce
+signed artifacts, protected operator configuration supplies the expected
+signer pins, and the tagged run records passing native evidence. Machine
+reports must come from the exact successful claim/platform job in the recorded
+attempt, start no earlier than that attempt, and carry the canonical verifier
+step, reviewed verifier path, command, source digest, and structured
+observations; the release job independently checks those bindings against the
+current GitHub run and exact attempt. The artifact lane's SPDX producer emits
+the required 2.3 document and exact package-to-file coverage. Until the remaining
+producers and external gates land, publication stays blocked by design.
+
+The on-device verifier keeps acquisition outside the measured inference
+boundary: it observes the pinned upstream release/tag identities and downloads
+the exact runtime and model before entering the sandbox. The actual packaged
+probe and its llama.cpp child then run with a closed environment and a
+`deny network*` profile. A sandboxed Node leader spawns the child used for the
+self-test, which must be denied both a verifier-owned loopback listener and a
+literal external address; this proves the inheritance path used when the
+packaged Node probe launches llama.cpp.
+The report stores byte identities, execution facts, response size and hashes,
+and observed runner hardware, but no prompt, response, token, or transient
+download URL. Neither the model nor llama.cpp runtime is bundled in the desktop
+artifact, and one macOS arm64 runner observation does not establish a minimum
+hardware profile, other platforms, or whole-application offline operation.
+Landing verifier source therefore leaves the claim limited and publication
+blocked until an immutable tagged clean-machine report passes the final
+consumer.
 
 ---
 
 ## Pre-flight before the FIRST public release
 
-Two known gaps (both tracked; see the launch-readiness report). Until they close, a tag-push still produces a *usable but unsigned* draft release with no auto-update.
+The ledger's stop-ship conditions keep the tag job from reaching draft creation until signing, update manifests, and the other required evidence are complete.
 
 ### 1. Code signing is NOT wired (#368 / #359)
 
 The desktop package jobs set `CSC_IDENTITY_AUTO_DISCOVERY: 'false'` and skip signing for CI. Acquiring the Apple Developer + Windows EV certs is necessary but **not sufficient** — after the certs exist you must also wire the secrets into the three `package:*` steps in `build.yml`:
 
-- macOS notarization: `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`, plus `CSC_LINK` + `CSC_KEY_PASSWORD`, and flip `CSC_IDENTITY_AUTO_DISCOVERY` on.
+- macOS notarization: `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`,
+  `APPLE_TEAM_ID`, plus `CSC_LINK` + `CSC_KEY_PASSWORD`, and flip
+  `CSC_IDENTITY_AUTO_DISCOVERY` on. The checked-in `dmg.sign: true` setting also
+  signs the outer disk image; do not remove it or treat a signed contained app
+  as equivalent. The credentialed workflow must then submit and staple that
+  final DMG after packaging; this post-package notarization step is not wired
+  today.
 - Windows: `CSC_LINK` + `CSC_KEY_PASSWORD` (the EV cert).
 
 Until then, macOS Gatekeeper / Windows SmartScreen warn on first launch (the README documents the right-click→Open / More-info→Run-anyway bypass).
 
-### 2. Auto-update manifests now ship — but the path is live only after signing (#370)
+### 2. Auto-update manifests are generated by the tagged path — but the path is live only after signing (#370)
 
-`electron-updater` is wired client-side (`apps/desktop/src/auto-update.ts`), and the `release` job **now attaches the `latest-mac.yml` / `latest.yml` / `latest-linux.yml` manifests** electron-updater polls (the remaining code half of #370 — electron-builder generates them under `--publish never`, and the three desktop jobs collect them as artifacts). So an installed app *can* discover the next version. The **user-facing update surface now exists too**: `AutoUpdateController.start()` subscribes to electron-updater's lifecycle events and the dashboard shows a bottom banner (downloading → "Update ready to install" with a Restart-to-update button), plus a "Check for Updates…" menu item for an on-demand poll. A second, separately-fatal half of this is also fixed: the manifests used to be stamped with the frozen `0.3.0` placeholder, so *discovery* could never succeed no matter what was attached. CI now injects a derived version (see [How the desktop app version is derived](#how-the-desktop-app-version-is-derived)).
+`electron-updater` is wired client-side (`apps/desktop/src/auto-update.ts`), and the tagged `release` job is designed to attach the `latest-mac.yml` / `latest.yml` / `latest-linux.yml` manifests electron-updater polls (electron-builder generates them under `--publish never`, and the three desktop jobs collect them as artifacts). This describes the release path, not the currently published technical-preview assets: the beta gate is blocked and no qualifying tagged release is published. The **user-facing update surface now exists too**: `AutoUpdateController.start()` subscribes to electron-updater's lifecycle events and the dashboard shows a bottom banner (downloading → "Update ready to install" with a Restart-to-update button), plus a "Check for Updates…" menu item for an on-demand poll. A second, separately-fatal half of this is also fixed: the manifests used to be stamped with the frozen `0.3.0` placeholder, so *discovery* could never succeed no matter what was attached. CI now injects a derived version (see [How the desktop app version is derived](#how-the-desktop-app-version-is-derived)).
 
-The remaining catch: electron-updater verifies the downloaded update's signature and **refuses an unsigned payload** (fails safe). Until code signing lands (gap 1 / #368 / #359), the banner surfaces "downloading" but the install step can't complete on an unsigned build. The manifests shipping early is harmless — verify with `gh release view <tag> --json assets` that all three `latest*.yml` are attached, and that the asset filenames carry the derived version (e.g. `SkyTwin-0.6.10100-arm64.dmg`), not `0.3.0`.
+The remaining catch: electron-updater verifies the downloaded update's signature and **refuses an unsigned payload** (fails safe). Until code signing lands (gap 1 / #368 / #359), the banner surfaces "downloading" but the install step can't complete on an unsigned build. Once a qualifying release exists, verify with `gh release view <tag> --json assets` that all three `latest*.yml` are attached, and that the asset filenames carry the derived version (e.g. `SkyTwin-0.6.10100-arm64.dmg`), not `0.3.0`.
 
-### 3. Google OAuth verification (#351)
+### 3. Account connections are deferred from this release
 
-Independent of the build: until Google's restricted-scope review clears, the bundled OAuth consent screen shows the unverified-app warning. Does not block cutting a build; does affect the Gmail connect experience. Tracked separately.
+The supported `v0.7.0-beta` candidate is an account-free sample. It ships no
+supported Google or Microsoft connection path, and neither Google verification
+nor an operator/BYO OAuth client is part of its launch procedure. The exact
+`SKYTWIN_GOOGLE_CONNECTION_MODE=experimental` source-development opt-in can
+exercise retained provider implementations, but that unsupported path is not
+release evidence and must not be enabled in packaged artifacts.
+
+Future managed Google work, including applicable brand, sensitive-scope, Gmail,
+and security-assessment requirements, remains tracked separately in #351 and the
+post-launch account architecture plan. Microsoft and any operator/BYO flow must
+clear the same reviewed authorization, callback, ownership, capability, and
+secret-custody boundaries before a later release can support them.
 
 ---
 
 ## Version bumps
 
-`VERSION` is the four-part scheme (e.g. `0.6.58.0`). Bump it **in a PR** (not directly on main) before tagging. The tag must match `v$(cat VERSION)`. CHANGELOG `[Unreleased]` entries roll into a dated `## [X.Y.Z.W]` section as part of (or just before) the release PR.
+`VERSION` is the four-part repository/package scheme (e.g. `0.7.0.0`). Bump it **in a PR** (not directly on main) before tagging. The tag must exactly equal the claim ledger's `release.targetVersion`; for this beta, `v0.7.0-beta` intentionally normalizes to repository version `0.7.0.0`. CHANGELOG `[Unreleased]` entries roll into a dated release section as part of (or just before) the release PR.
 
 ### How the desktop app version is derived
 
@@ -96,19 +432,63 @@ The desktop app unpacks `<resources>/embedded/apps.tar.gz` into `<userData>/embe
 
 ---
 
-## Verifying a published release
+## Verifying the draft before publication
 
-After publishing the draft:
+Before the gated workflow can publish, its evidence producers must exercise the
+candidate artifacts on clean machines and record digest-bound evidence for every
+item below. The packaged-sample verifier covers the rendered sample surface and
+HTTP portions of items 1 and 2 as documented in
+[`sample-release-evidence.md`](./sample-release-evidence.md);
+items 3–5 still require separate lifecycle evidence. A populated dashboard
+alone is not sufficient:
+
+1. The app reaches the fictional sample dashboard within 60 seconds with `SKYTWIN_DEV_AUTH_BYPASS` unset. `GET /api/v1/demo/info` reports availability before `POST /api/v1/demo/session` returns a credential fixed to the reserved sample user and a four-hour expiry.
+2. That credential can read a sample decision and its explanation, but receives an authorization denial for mutations, settings, credential/configuration changes, search, connector invocation, MCP/tool execution, paid or inference-bearing endpoints, SSE, and a request for any other user. Connector status and capability provenance/metrics reads may remain available. Minting a second session returns a distinct credential; the automated demo-session tests must also prove expired and tampered credentials are rejected.
+3. Provisioning succeeds only against the CockroachDB child attested to the app's canonical data directory. Repeat the first-launch attempt with an inherited or unrelated loopback `DATABASE_URL` and confirm the app refuses to initialize, migrate, seed, or route services to it.
+4. The API proves authenticated readiness for its exact spawn before web or worker become ready, and the worker's durable generation authority is active only for that generation.
+5. Verify normal tray pause stops the worker and suppresses delayed replacement while an exact ready API/web generation may remain available. Then pause once during startup and once during restart backoff; confirm the newer pause cancels recovery and contains any partial or failed generation. Resume must reuse the exact ready API/web generation when safe or otherwise rebuild API → durable authority → authenticated readiness → web, then start the worker. API or database authority loss must revoke and contain the generation, while an isolated web or worker crash may recover inside the still-ready API generation.
+
+Only after those reports and every other ledger gate pass may the controlled
+workflow create and publish its verified draft. After it publishes, verify the
+public download target resolves:
 
 ```bash
-# the download links the README points at must resolve
 curl -fsSLI https://github.com/jayzalowitz/skytwin/releases/latest >/dev/null && echo "latest release reachable"
 ```
 
-Then a clean-machine smoke test: download the `.dmg` / `.exe` on a box that has never seen SkyTwin, install, and confirm it reaches a populated dashboard (sample-profile path) within 60s. Once signing + auto-update manifests land (gaps 1 + 2), also verify the unsigned-warning is gone and that installing release N then tagging N+1 self-updates within the ~6-hour poll window (the `auto-update.ts` `DEFAULT_CHECK_INTERVAL_MS` default).
+Once `sample.packaged-account-free` has its required machine evidence, confirm
+the installed candidate reaches its populated sample within the release
+contract's latency target. After signing and update evidence land, verify the
+unsigned warning is
+gone and that installing release N then tagging N+1 self-updates within the
+configured poll window (`DEFAULT_CHECK_INTERVAL_MS` in `auto-update.ts`).
+Confirm all three `latest*.yml` assets point at the signed N+1 artifacts.
 
 ---
 
-## Rollback
+## Upgrade, backup, and recovery
 
-A bad release is rolled back by deleting/unpublishing the GitHub Release and the tag; no users are affected until a release is **published** (drafts are private). If a published release regressed, cut the next patch tag with the fix — electron-updater (once manifests ship) will pull users forward.
+Database migrations are forward-only. Before upgrading an existing profile,
+export an encrypted `.stbk` archive with the same build that currently owns the
+data. The backup command reads its passphrase only from the environment:
+
+```bash
+SKYTWIN_BACKUP_PASSPHRASE='<long unique passphrase>' \
+  pnpm --filter @skytwin/db backup export \
+  --user '<user UUID>' --out 'skytwin-before-upgrade.stbk'
+```
+
+Store the archive and passphrase separately. The archive intentionally excludes
+OAuth and credential-vault secrets, so restored connectors require
+reauthorization. A restore targets a fresh install and accepts only backup
+schema versions supported by that build. Source of truth:
+[`backup-cli.ts`](../packages/db/src/bin/backup-cli.ts) and
+[`backup.ts`](../packages/db/src/backup/backup.ts).
+
+If a published release regresses, preserve its tag, assets, evidence manifest,
+and attestations for audit. Do not delete the tag, mutate the release, or install
+an older binary over a database that newer migrations may have changed. Stop
+the affected build, fix the regression, and publish a higher signed patch
+version through this same evidence gate. Verify the backup before the upgrade
+and use restore only into a clean supported installation; SkyTwin does not claim
+an in-place database downgrade path.

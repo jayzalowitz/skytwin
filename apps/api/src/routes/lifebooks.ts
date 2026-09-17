@@ -1,19 +1,17 @@
 import { Router } from 'express';
 import {
-  aiProviderRepository,
   lifebookRepository,
   mempalaceRepository,
   provenanceRepository,
 } from '@skytwin/db';
 import type { LifebookImportance } from '@skytwin/db';
-import { LlmClient } from '@skytwin/llm-client';
-import type { ProviderEntry } from '@skytwin/llm-client';
-import type { AIProviderName } from '@skytwin/shared-types';
+import type { LlmClient } from '@skytwin/llm-client';
 import { runPrompt } from '@skytwin/policy-prompts';
 import { createLogger } from '@skytwin/core';
 import { getMemoryPortForUser } from '../memory-setup.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
+import { resolveUserLlmClient } from '../lib/user-llm-client.js';
 
 const log = createLogger('api:lifebooks');
 
@@ -598,17 +596,10 @@ export function createLifebooksRouter(): Router {
       let llmClient: LlmClient | null = null;
       let providerLookupFailed = false;
       try {
-        const rows = await aiProviderRepository.getEnabledForUser(userId);
-        if (rows.length > 0) {
-          const providers: ProviderEntry[] = rows.map(
-            (r: { provider: string; api_key: string; model: string; base_url: string | null }) => ({
-              name: r.provider as AIProviderName,
-              apiKey: r.api_key,
-              model: r.model,
-              baseUrl: r.base_url ?? undefined,
-            }),
-          );
-          llmClient = new LlmClient(providers, userId);
+        const resolution = await resolveUserLlmClient(userId);
+        llmClient = resolution.client;
+        if (resolution.state === 'policy_blocked' || resolution.state === 'confirmation_required') {
+          providerLookupFailed = true;
         }
       } catch (err) {
         providerLookupFailed = true;
@@ -645,6 +636,7 @@ export function createLifebooksRouter(): Router {
           },
           user: { userId },
           llmClient,
+          invocationKind: 'interactive',
         });
 
         if (result.fellBackToDeterministic) {

@@ -7,18 +7,31 @@ import {
   approvalRepository,
   decisionRepository,
   decisionRepositoryAdapter,
+  executionAdmissionRepository,
+  executionRepository,
   feedbackRepository,
   mempalaceRepository,
   memoryActionOpportunityRepository,
-  oauthRepository,
   userRepository,
   TwinRepositoryAdapter,
   PatternRepositoryAdapter,
   policyRepositoryAdapter,
-  withTransaction,
+  getPolicyAuthorityRevision,
+  gmailArchiveRuntimeRepositories,
+} from '@skytwin/db';
+import type {
+  RespondGmailArchiveApprovalInput,
+  RespondGmailArchiveApprovalResult,
 } from '@skytwin/db';
 import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
+import type { PolicyDecision } from '@skytwin/policy-engine';
+import { RiskAssessor } from '@skytwin/decision-engine';
+import {
+  AmbiguousExecutionError,
+  NoRequestExecutionError,
+} from '@skytwin/execution-router';
+import type { ExecutionRouter, PreparedExecution } from '@skytwin/execution-router';
 import type {
   FeedbackEvent,
   CandidateAction,
@@ -26,7 +39,13 @@ import type {
   MemoryActionLoopReport,
   MemoryActionOpportunityStatus,
 } from '@skytwin/shared-types';
-import { ConfidenceLevel, TrustTier } from '@skytwin/shared-types';
+import {
+  ConfidenceLevel,
+  GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA,
+  normalizeAdapterOutput,
+  normalizeExecutionError,
+  TrustTier,
+} from '@skytwin/shared-types';
 import { readAutonomy } from '../cost-gate.js';
 import { isValidUserId as isValidUuid } from '../middleware/validate-uuid.js';
 import { getExecutionRouter } from '../execution-setup.js';
@@ -38,13 +57,93 @@ import { createLogger } from '@skytwin/core';
 import { getMemoryPortForUser } from '../memory-setup.js';
 import { applyDraftEditOverride } from './draft-edit-merge.js';
 import {
+  matchesApprovalActionSnapshot,
+  serializeApprovalCandidate,
+} from './approval-candidate.js';
+import {
   annotateEmailAttributionPreview,
   isOutboundEmailAction,
   prepareEmailActionForExecution,
 } from '../email-attribution.js';
-import { isReservedGmailArchiveApproval } from './gmail-archive-approval.js';
+import { classifyGmailArchiveApproval } from './gmail-archive-approval.js';
 
 const log = createLogger('api:approvals');
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const GMAIL_ARCHIVE_ACTION_KEYS = [
+  'actionType',
+  'confidence',
+  'costZeroIntent',
+  'decisionId',
+  'description',
+  'domain',
+  'estimatedCostCents',
+  'id',
+  'parameters',
+  'provenance',
+  'reasoning',
+  'reversible',
+] as const;
+const GMAIL_ARCHIVE_PARAMETER_KEYS = ['messageRefId', 'operation', 'schema'] as const;
+
+function ownDataSnapshot(
+  value: unknown,
+  expectedKeys: readonly string[],
+): Record<string, unknown> | null {
+  try {
+    if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        Object.getPrototypeOf(value) !== Object.prototype ||
+        Object.getOwnPropertySymbols(value).length !== 0) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const names = Object.getOwnPropertyNames(descriptors).sort();
+    const expectedNames = [...expectedKeys].sort();
+    if (names.length !== expectedKeys.length ||
+        names.some((name, index) => name !== expectedNames[index])) return null;
+    const snapshot: Record<string, unknown> = {};
+    for (const name of names) {
+      const descriptor = descriptors[name];
+      if (!descriptor || descriptor.enumerable !== true ||
+          !Object.prototype.hasOwnProperty.call(descriptor, 'value')) return null;
+      snapshot[name] = descriptor.value;
+    }
+    return snapshot;
+  } catch {
+    return null;
+  }
+}
+
+/** Positive authority for entering the dedicated archive response lifecycle. */
+function isCanonicalGmailArchiveApproval(value: unknown): boolean {
+  const action = ownDataSnapshot(value, GMAIL_ARCHIVE_ACTION_KEYS);
+  if (!action || typeof action['id'] !== 'string' || !UUID.test(action['id']) ||
+      typeof action['decisionId'] !== 'string' || !UUID.test(action['decisionId']) ||
+      action['actionType'] !== 'archive_email' || action['domain'] !== 'email' ||
+      typeof action['description'] !== 'string' || action['description'].trim().length === 0 ||
+      action['estimatedCostCents'] !== 0 || action['costZeroIntent'] !== 'verified_zero' ||
+      action['reversible'] !== true || action['confidence'] !== 'moderate' ||
+      typeof action['reasoning'] !== 'string' || action['reasoning'].trim().length === 0 ||
+      action['provenance'] !== 'untrusted_external') return false;
+  const parameters = ownDataSnapshot(action['parameters'], GMAIL_ARCHIVE_PARAMETER_KEYS);
+  return parameters !== null &&
+    parameters['schema'] === GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA &&
+    typeof parameters['messageRefId'] === 'string' && UUID.test(parameters['messageRefId']) &&
+    parameters['operation'] === 'archive';
+}
+
+async function bestEffortApprovalLedger(
+  label: string,
+  write: () => Promise<unknown>,
+  context: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await write();
+  } catch (err) {
+    log.error(`Failed to ${label}; durable admission remains non-replayable`, {
+      ...context,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
 function parseCostZeroIntent(value: unknown): CandidateAction['costZeroIntent'] {
   if (value === undefined) return undefined;
@@ -56,6 +155,13 @@ function parseActionProvenance(value: unknown): ActionProvenance | undefined {
     return value;
   }
   return undefined;
+}
+
+function executionIsPaused(
+  user: Awaited<ReturnType<typeof userRepository.findById>>,
+  evaluator: PolicyEvaluator,
+): boolean {
+  return Boolean(readAutonomy(user).paused) || evaluator.isGloballyPaused();
 }
 
 interface ApprovalMemoryLedgerInput {
@@ -147,7 +253,9 @@ function approvalMemoryStatus(
   executionResult?: { status: string } | null,
 ): MemoryActionOpportunityStatus {
   if (action === 'reject') return 'skipped';
-  return executionResult?.status === 'completed' ? 'auto_executed' : 'execution_failed';
+  if (executionResult?.status === 'completed') return 'auto_executed';
+  if (executionResult?.status === 'ambiguous') return 'execution_ambiguous';
+  return 'execution_failed';
 }
 
 function approvalMemoryCopy(input: {
@@ -175,22 +283,35 @@ function approvalMemoryCopy(input: {
       nextStep: 'Monitor feedback and keep the pattern available for future opportunities.',
     };
   }
+  if (input.status === 'execution_ambiguous') {
+    return {
+      summary: `User approved this memory action, but its execution outcome is unresolved: ${input.actionLabel}.`,
+      nextStep: 'Reconcile the adapter result before considering another execution.',
+    };
+  }
   return {
     summary:
       `User approved this memory action, but execution failed: ${input.error ?? 'adapter or persistence failure'}.`,
-    nextStep: 'Fix adapter health or credentials; the memory action loop can retry after the cooldown.',
+    nextStep: 'Reconcile this admitted failure before creating a new opportunity.',
   };
 }
 
 /**
  * Create the approvals handling router.
  */
-export function createApprovalsRouter(): Router {
+export interface ApprovalsRouterDependencies {
+  gmailArchiveApprovalResponder?: {
+    respond(input: RespondGmailArchiveApprovalInput): Promise<RespondGmailArchiveApprovalResult>;
+  };
+}
+
+export function createApprovalsRouter(
+  dependencies: ApprovalsRouterDependencies = {},
+): Router {
   const router = Router();
   bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
   const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
-  const policyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
   const getRouter = () => getExecutionRouter();
 
   /**
@@ -375,30 +496,128 @@ export function createApprovalsRouter(): Router {
         return;
       }
 
-      // Verify ownership before mutating state
-      const existing = await approvalRepository.findById(requestId);
+      const preflightRecorder = (
+        executionAdmissionRepository as Partial<typeof executionAdmissionRepository>
+      ).recordApprovalPreflightNonAction;
+      // Production requires sessionAuth (or its explicit localhost bypass)
+      // before any approval lookup. The sole test-only exception identifies
+      // the immutable v1 harness by its deliberately closed pre-feature DB
+      // mock; the v2 reserved harness exercises the real recorder boundary.
+      const immutableV1Harness = process.env['NODE_ENV'] === 'test' &&
+        !preflightRecorder &&
+        Object.keys(executionAdmissionRepository).length === 1 &&
+        typeof executionAdmissionRepository.admitApprovalExecution === 'function';
+      const authenticatedOwner = req.authenticatedUserId ??
+        (req.developmentAuthBypassed === true || immutableV1Harness ? body.userId : undefined);
+      if (req.authenticatedUserId && req.authenticatedUserId !== body.userId) {
+        res.status(403).json({ error: 'You can only respond to your own approval requests.' });
+        return;
+      }
+      if (!authenticatedOwner) {
+        res.status(401).json({
+          error: 'Authentication required',
+          code: 'APPROVAL_AUTH_REQUIRED',
+        });
+        return;
+      }
+
+      // Read once to select the reserved workflow. The dedicated repository's
+      // transition is itself owner-scoped and revalidates the full canonical
+      // graph atomically before recording consent.
+      const existing = await approvalRepository.findById(requestId, authenticatedOwner);
       if (!existing) {
         res.status(404).json({ error: 'Approval request not found' });
         return;
       }
-      if (existing.user_id !== body.userId) {
-        res.status(403).json({ error: 'You can only respond to your own approval requests.' });
+
+      // Broad classification is the quarantine boundary: archive and invalid
+      // shapes cannot enter generic confirmation, feedback, policy, credential,
+      // routing, barrier, SSE, or execution paths.
+      const gmailArchiveClassification = classifyGmailArchiveApproval(existing.candidate_action);
+      if (gmailArchiveClassification.kind !== 'other') {
+        if (body.userId !== authenticatedOwner || existing.user_id !== authenticatedOwner) {
+          res.status(403).json({
+            error: 'You can only respond to your own approval requests.',
+            code: 'GMAIL_ARCHIVE_APPROVAL_FORBIDDEN',
+          });
+          return;
+        }
+        if (gmailArchiveClassification.kind === 'invalid' ||
+            !isCanonicalGmailArchiveApproval(existing.candidate_action)) {
+          res.status(409).json({
+            error: 'This Inbox approval cannot be processed because its persisted proposal is invalid.',
+            code: 'GMAIL_ARCHIVE_APPROVAL_INVALID_STATE',
+            requestId,
+          });
+          return;
+        }
+
+        const responseResult = await (
+          dependencies.gmailArchiveApprovalResponder ??
+          gmailArchiveRuntimeRepositories.approvalResponse
+        ).respond({
+          approvalId: requestId,
+          userId: authenticatedOwner,
+          action: body.action,
+          ...(body.reason === undefined ? {} : { reason: body.reason }),
+        });
+        if (!responseResult.ok) {
+          if (responseResult.error === 'invalid_input') {
+            res.status(400).json({
+              error: 'The approval response is invalid.',
+              code: 'GMAIL_ARCHIVE_APPROVAL_INVALID_REQUEST',
+              requestId,
+            });
+            return;
+          }
+          if (responseResult.error === 'not_found') {
+            res.status(404).json({
+              error: 'Approval request not found',
+              code: 'GMAIL_ARCHIVE_APPROVAL_NOT_FOUND',
+              requestId,
+            });
+            return;
+          }
+          if (responseResult.error === 'not_pending_or_expired') {
+            res.status(409).json({
+              error: 'Approval request is no longer pending or has expired.',
+              code: 'GMAIL_ARCHIVE_APPROVAL_NOT_PENDING_OR_EXPIRED',
+              requestId,
+            });
+            return;
+          }
+          res.status(409).json({
+            error: 'This approval was already resolved with a different response.',
+            code: 'GMAIL_ARCHIVE_APPROVAL_RESPONSE_CONFLICT',
+            requestId,
+          });
+          return;
+        }
+
+        const approval = responseResult.response.approval;
+        res.json({
+          workflow: 'gmail_archive',
+          status: 'approval_recorded',
+          requestId,
+          action: body.action,
+          reason: body.reason ?? null,
+          approval: {
+            id: approval.id,
+            status: approval.status,
+            respondedAt: approval.responded_at,
+          },
+          execution: null,
+          replayed: !responseResult.created,
+          processedAt: approval.responded_at,
+        });
         return;
       }
 
-      // This bounded Inbox workflow remains proposal-only. Keep its approval
-      // rows out of the generic responder even if the feature flag changes or
-      // a partially migrated row carries malformed reserved parameters. The
-      // dedicated lifecycle will later own the atomic consent-to-admission
-      // transition; until then no response, feedback, token lookup, routing,
-      // or external call is permitted here.
-      if (isReservedGmailArchiveApproval(existing.candidate_action)) {
-        res.status(409).json({
-          error: 'gmail_archive_execution_not_enabled',
-          message: 'This Inbox proposal cannot be acted on in the current build.',
-          approvalId: existing.id,
-          requestId,
-        });
+      // Preserve generic behavior for ordinary actions. Production ownership
+      // middleware already binds authenticated requests; direct test/dev mounts
+      // still retain this row/body owner check.
+      if (existing.user_id !== body.userId) {
+        res.status(403).json({ error: 'You can only respond to your own approval requests.' });
         return;
       }
 
@@ -451,6 +670,14 @@ export function createApprovalsRouter(): Router {
         ReturnType<typeof decisionRepositoryAdapter.getRiskAssessment>
       > = null;
       let preflightCandidateId: string | null = null;
+      let approvedCandidateAction: CandidateAction | null = null;
+      let approvedSourceRisk: ReturnType<RiskAssessor['assess']> | null = null;
+      let approvedRiskAssessment: ReturnType<RiskAssessor['assess']> | null = null;
+      let approvedPolicyResult: PolicyDecision | null = null;
+      let approvedPreparedExecution: PreparedExecution | null = null;
+      let approvedExecutionRouter: ExecutionRouter | null = null;
+      let approvedActionSnapshot: Record<string, unknown> | null = null;
+      let approvedOutcomeSnapshot: Record<string, unknown> | null = null;
       if (body.action === 'approve') {
         const preStoredAction = (existing.candidate_action ?? {}) as Record<string, unknown>;
         const preStoredId = preStoredAction['id'];
@@ -478,6 +705,129 @@ export function createApprovalsRouter(): Router {
           });
           return;
         }
+
+        // Construct the exact eventual action before consuming the approval.
+        // Editing a draft and converting it to a send changes both parameters
+        // and reversibility, so the original draft risk is source integrity,
+        // never execution-time authority.
+        approvedCandidateAction = {
+          id: preflightCandidateId!,
+          decisionId: existing.decision_id,
+          actionType: (preStoredAction['actionType'] as string) ?? 'unknown',
+          description: (preStoredAction['description'] as string) ?? '',
+          domain: (preStoredAction['domain'] as string) ?? 'general',
+          parameters: { ...((preStoredAction['parameters'] as Record<string, unknown>) ?? {}) },
+          estimatedCostCents: (preStoredAction['estimatedCostCents'] as number) ?? 0,
+          costZeroIntent: parseCostZeroIntent(preStoredAction['costZeroIntent']),
+          reversible: (preStoredAction['reversible'] as boolean) ?? true,
+          confidence: (preStoredAction['confidence'] as ConfidenceLevel) ?? ConfidenceLevel.LOW,
+          reasoning: (preStoredAction['reasoning'] as string) ?? '',
+          provenance: parseActionProvenance(preStoredAction['provenance']),
+        };
+        applyDraftEditOverride(approvedCandidateAction, body.editedBody);
+        const currentUser = await userRepository.findById(body.userId);
+        prepareEmailActionForExecution(approvedCandidateAction, currentUser);
+        approvedSourceRisk = new RiskAssessor().assess(approvedCandidateAction);
+        approvedExecutionRouter = await getRouter();
+        approvedPreparedExecution = await approvedExecutionRouter.prepareExecution(
+          approvedCandidateAction,
+          approvedSourceRisk,
+          body.userId,
+          {
+            approved: true,
+            streaming: false,
+            ironclawChannel: currentUser?.ironclaw_channel ?? undefined,
+          },
+        );
+        approvedRiskAssessment = approvedPreparedExecution.riskAssessment;
+        const currentPolicies = await policyRepositoryAdapter.getAllPolicies(body.userId);
+        const approvedPolicyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
+        approvedPolicyResult = await approvedPolicyEvaluator.evaluate(
+          approvedCandidateAction,
+          currentPolicies,
+          currentUser?.trust_tier as TrustTier ?? TrustTier.OBSERVER,
+          approvedRiskAssessment,
+          readAutonomy(currentUser),
+        );
+        approvedActionSnapshot = {
+          decisionId: existing.decision_id,
+          ...serializeApprovalCandidate(
+            approvedCandidateAction,
+            approvedCandidateAction.parameters,
+          ),
+        };
+        const preflightPaused = executionIsPaused(currentUser, approvedPolicyEvaluator);
+        const preflightDualMismatch = approvedPolicyResult.confirmationLevel === 'dual' &&
+          existing.confirmation_level !== 'dual';
+        if (!approvedPolicyResult.allowed || preflightPaused || preflightDualMismatch) {
+          const disposition = preflightPaused
+            ? 'execution_paused' as const
+            : preflightDualMismatch
+              ? 'dual_confirmation_required' as const
+              : 'policy_denied' as const;
+          const denialReason = preflightPaused
+            ? 'Execution paused by user or operator policy.'
+            : preflightDualMismatch
+              ? 'The exact prepared action now requires dual confirmation.'
+              : approvedPolicyResult.reason;
+          // The immutable v1 adversarial harness intentionally exposes a
+          // closed pre-feature repository mock. Keep that historical harness
+          // executable in tests; every production composition must expose the
+          // recorder and fails closed if the package boundary ever drifts.
+          if (!preflightRecorder && process.env['NODE_ENV'] !== 'test') {
+            throw new Error('Approval preflight non-action recorder is unavailable.');
+          }
+          const preflightEvidence = preflightRecorder
+            ? await preflightRecorder({
+              userId: body.userId,
+              approvalId: existing.id,
+              decisionId: existing.decision_id,
+              actionId: approvedCandidateAction.id,
+              adapterName: approvedPreparedExecution.adapterName,
+              disposition,
+              reason: denialReason,
+              sourceActionSnapshot: preStoredAction,
+              sourceRiskSnapshot: preflightRiskAssessment as unknown as Record<string, unknown>,
+              actionSnapshot: approvedActionSnapshot,
+              riskSnapshot: approvedRiskAssessment as unknown as Record<string, unknown>,
+              policySnapshot: {
+                ...approvedPolicyResult,
+                effectiveAllowed: false,
+                executionPaused: preflightPaused,
+                confirmationLevelMismatch: preflightDualMismatch,
+                denialReason,
+              },
+            })
+            : { explanationId: 'immutable-v1-harness', evidence: {} };
+          if (!preflightEvidence) {
+            throw new Error('Approval preflight non-action evidence could not be persisted.');
+          }
+        }
+        if (!approvedPolicyResult.allowed || preflightPaused) {
+          res.status(403).json({
+            error: 'Action blocked by current policy.',
+            reason: preflightPaused
+              ? 'Execution paused by user or operator policy.'
+              : approvedPolicyResult.reason,
+            requestId,
+          });
+          return;
+        }
+        if (preflightDualMismatch) {
+          res.status(409).json({
+            error: 'confirmation_level_changed',
+            message: 'The edited action now requires two confirmations. Re-trigger it for review.',
+            requestId,
+          });
+          return;
+        }
+        approvedOutcomeSnapshot = {
+          decisionId: existing.decision_id,
+          selectedAction: approvedActionSnapshot,
+          autoExecute: true,
+          requiresApproval: false,
+          reasoning: `User approved the exact action after current policy evaluation. ${approvedPolicyResult.reason}`,
+        };
       }
 
       // Atomically update only if still pending (prevents double-execution)
@@ -592,234 +942,334 @@ export function createApprovalsRouter(): Router {
       let executionResult: { status: string; planId?: string; adapterUsed?: unknown; error?: string } | null = null;
       if (body.action === 'approve') {
         const storedAction = approval.candidate_action as Record<string, unknown>;
-        // Preserve the original candidate id so the persisted
-        // RiskAssessment lookup below can find the assessment the
-        // decision-maker actually computed for THIS candidate (#371).
-        // Pre-fix, this generated a fresh UUID and the lookup always
-        // missed, forcing the synthetic LOW assessment fabrication that
-        // is the bug. Fall back to a fresh UUID only if the stored id
-        // is missing or non-UUID (e.g. legacy rows from before this
-        // PR or in-memory candidate ids like "cand_123_archive" that
-        // never persisted an assessment).
-        const storedId = storedAction['id'];
-        const originalCandidateId = typeof storedId === 'string' && isValidUuid(storedId)
-          ? storedId
-          : null;
-        const candidateAction: CandidateAction = {
-          id: originalCandidateId ?? crypto.randomUUID(),
-          decisionId: approval.decision_id,
-          actionType: (storedAction['actionType'] as string) ?? 'unknown',
-          description: (storedAction['description'] as string) ?? '',
-          domain: (storedAction['domain'] as string) ?? 'general',
-          parameters: (storedAction['parameters'] as Record<string, unknown>) ?? {},
-          estimatedCostCents: (storedAction['estimatedCostCents'] as number) ?? 0,
-          costZeroIntent: parseCostZeroIntent(storedAction['costZeroIntent']),
-          reversible: (storedAction['reversible'] as boolean) ?? true,
-          confidence: (storedAction['confidence'] as ConfidenceLevel) ?? ConfidenceLevel.LOW,
-          reasoning: (storedAction['reasoning'] as string) ?? '',
-          provenance: parseActionProvenance(storedAction['provenance']),
-        };
+        const candidateAction = approvedCandidateAction!;
+        const actionSnapshot = approvedActionSnapshot!;
+        const outcomeSnapshot = approvedOutcomeSnapshot!;
 
-        // #303: draft-email edit-before-approve. The dashboard
-        // textarea is the source of truth for what the user actually
-        // wants to send. `applyDraftEditOverride` decides whether to
-        // overwrite `parameters.draftBody` (only fires for
-        // `draft_email` actions with a non-whitespace string).
-        // The original stored body stays in
-        // `approval.candidate_action.parameters.draftBody` for the
-        // audit trail; only the in-flight `candidateAction` is
-        // mutated.
-        applyDraftEditOverride(candidateAction, body.editedBody);
-
-        // Run policy check even on approved actions (spend limits, domain
-        // restrictions still apply). That claim was previously false: this
-        // call passed only three arguments, dropping both the risk
-        // assessment and the autonomy settings, so the per-action spend cap
-        // and the domain allow/block lists never ran and risk-keyed policy
-        // rules matched nothing. Both are supplied below.
-        const user = await userRepository.findById(body.userId);
-        const userTier = user?.trust_tier as TrustTier ?? TrustTier.OBSERVER;
-        prepareEmailActionForExecution(candidateAction, user);
-        if (user?.ironclaw_channel) {
-          candidateAction.parameters['ironclawChannel'] = user.ironclaw_channel;
-        }
-        const policies = await policyRepositoryAdapter.getAllPolicies();
-        const policyResult = await policyEvaluator.evaluate(
-          candidateAction,
-          policies,
-          userTier,
-          // Guaranteed non-null on the approve path (the preflight 409'd
-          // above if it was missing), but `?? undefined` keeps the call
-          // total rather than asserting twice.
-          preflightRiskAssessment ?? undefined,
-          readAutonomy(user),
-        );
-
-        if (policyResult && !policyResult.allowed) {
-          await markMemoryOpportunityFromApproval({
-            approval,
-            action: body.action,
-            overrideStatus: 'blocked_by_policy',
-            policyReason: policyResult.reason ?? 'Policy check failed',
-            reason: body.reason,
-          });
-          res.status(403).json({
-            error: 'Action blocked by policy even after approval.',
-            reason: policyResult.reason ?? 'Policy check failed',
-            requestId,
-          });
-          return;
-        }
-
-        // Inject OAuth token if available
-        const tokenRow = await oauthRepository.getToken(body.userId, 'google');
-        if (tokenRow) {
-          candidateAction.parameters['accessToken'] = tokenRow.access_token;
-        }
-
-        // Use the RiskAssessment we already verified at preflight (#371,
-        // Copilot review on PR #417). The preflight ran BEFORE
-        // approvalRepository.respond() so by the time we get here on the
-        // approve path, preflightRiskAssessment is guaranteed non-null.
-        // Pre-fix this constructed a synthetic LOW-on-every-dimension
-        // assessment under the "user clicked approve = LOW risk"
-        // fallacy — wrong, because a user can approve a HIGH-tier
-        // financial-impact action and the risk dimensions don't move.
-        // Non-null assertion is safe because the early 409 already
-        // returned for the null case before any state mutation.
-        const riskAssessment = preflightRiskAssessment!;
-
+        let admissionAttempted = false;
+        let observedTerminal = false;
+        let admittedAuthority: {
+          userId: string;
+          decisionId: string;
+          actionId: string;
+          executionPlanId: string;
+          adapterName: string;
+          steps: Array<{ type: string; status: string }>;
+          riskSnapshot: Record<string, unknown>;
+          policySnapshot: Record<string, unknown>;
+          actionSnapshot: Record<string, unknown>;
+          outcomeSnapshot: Record<string, unknown>;
+        } | null = null;
         try {
-          const executionRouter = await getRouter();
-          // Approved-execution path: a human moved this through the approval
-          // flow (and, for dual-confirmation actions, clicked twice — the
-          // confirm-token check above enforces the count). Pass
-          // `{ approved: true }` so the router's injection-guard backstop
-          // lets the action through; the human already supplied the
-          // confirmation the guard demanded.
-          const result = await executionRouter.executeWithRouting(
-            candidateAction,
-            riskAssessment,
-            body.userId,
-            { approved: true },
-          );
-
-          // Persist execution plan + result atomically
-          const savedPlan = await withTransaction(async (client) => {
-            const planResult = await client.query(
-              `INSERT INTO execution_plans (id, decision_id, action_id, status, steps, created_at)
-               VALUES (gen_random_uuid(), $1, NULL, $2, $3, now())
-               RETURNING *`,
-              [
-                approval.decision_id,
-                result.status === 'completed' ? 'completed' : 'failed',
-                JSON.stringify(result.output?.['stepsCompleted']
-                  ? [{ type: candidateAction.actionType, status: result.status }]
-                  : []),
-              ],
+          const executionRouter = approvedExecutionRouter!;
+          executionAttempt: {
+            const admissionUser = await userRepository.findById(body.userId);
+            const prepared = approvedPreparedExecution!;
+            const admissionRisk = prepared.riskAssessment;
+            const admissionPolicies = await policyRepositoryAdapter.getAllPolicies(body.userId);
+            const admissionPolicyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
+            const admissionPolicy = await admissionPolicyEvaluator.evaluate(
+              candidateAction,
+              admissionPolicies,
+              admissionUser?.trust_tier as TrustTier ?? TrustTier.OBSERVER,
+              admissionRisk,
+              readAutonomy(admissionUser),
             );
-            const plan = planResult.rows[0];
-            if (!plan) throw new Error('Failed to persist execution plan');
-
-            await client.query(
-              `INSERT INTO execution_results (id, plan_id, success, outputs, error, rollback_available, completed_at)
-               VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, now())`,
-              [
-                plan.id,
-                result.status === 'completed',
-                JSON.stringify(result.output ?? {}),
-                result.error ?? null,
-                candidateAction.reversible,
-              ],
-            );
-
-            // #324: link the decision's outcome to the plan we just
-            // created. Same-transaction guarantee: either both the
-            // plan + linkage land, or neither do. "Latest plan wins"
-            // — overwrite the outcome's FK on every new plan to
-            // match the migration 055 backfill (which picks the
-            // latest plan per decision) and the
-            // `executionRepository.getByDecisionId` read semantics
-            // (`ORDER BY created_at DESC LIMIT 1`).
-            //
-            // NOTE: this UPDATE duplicates the one in
-            // `executionRepository.createPlan`. Any new write site for
-            // execution_plans MUST either call `createPlan` (which
-            // does the UPDATE internally) or repeat this block with
-            // the same `WHERE decision_id = $2` predicate. Future
-            // refactor: route both approvals.ts inserts through
-            // `createPlan` to eliminate the duplication.
-            await client.query(
-              `UPDATE decision_outcomes
-                 SET execution_plan_id = $1
-               WHERE decision_id = $2`,
-              [plan.id, approval.decision_id],
-            );
-
-            return plan;
-          });
-
-          executionResult = {
-            status: result.status,
-            planId: savedPlan.id,
-            adapterUsed: result.output?.['adapter_used'] ?? 'unknown',
-          };
-
-          // Record post-execution spend tagged with the action's
-          // registry source (#323 AC#3). Only on success — a failed
-          // approved execution shouldn't charge the per-app budget.
-          // Best-effort: the helper swallows its own errors so a ledger
-          // write can't break the approval response. The spend cap was
-          // re-checked by the policy evaluation above before execution.
-          if (result.status === 'completed') {
-            await recordMcpActionSpend({
+            const admissionPaused = executionIsPaused(admissionUser, admissionPolicyEvaluator);
+            const admissionDualMismatch = admissionPolicy.confirmationLevel === 'dual' &&
+              approval.confirmation_level !== 'dual';
+            if (!admissionPolicy.allowed || admissionPaused || admissionDualMismatch) {
+              const denialReason = admissionPaused
+                ? 'Execution is paused by current user or operator policy.'
+                : admissionDualMismatch
+                  ? 'The exact prepared action now requires dual confirmation.'
+                  : admissionPolicy.reason;
+              const denial = await executionAdmissionRepository.recordPolicyDenial({
+                scope: 'approval',
+                userId: body.userId,
+                decisionId: approval.decision_id,
+                actionId: candidateAction.id,
+                approvalId: approval.id,
+                adapterName: prepared.adapterName,
+                actionSnapshot,
+                riskSnapshot: admissionRisk as unknown as Record<string, unknown>,
+                policySnapshot: {
+                  ...admissionPolicy,
+                  allowed: false,
+                  dispatchDenied: true,
+                  denialReason,
+                },
+                reason: denialReason,
+              });
+              if (!denial) {
+                throw new Error('Approved execution denial evidence could not be persisted.');
+              }
+              executionResult = {
+                status: 'blocked',
+                error: denialReason,
+              };
+              break executionAttempt;
+            }
+            const admissionOutcomeSnapshot = {
+              ...outcomeSnapshot,
+              reasoning: `User approved the exact action after current policy evaluation. ${admissionPolicy.reason}`,
+            };
+            const admissionAuthority = {
               userId: body.userId,
               decisionId: approval.decision_id,
-              action: candidateAction,
+              actionId: candidateAction.id,
+              executionPlanId: prepared.planId,
+              adapterName: prepared.adapterName,
+              steps: [{ type: candidateAction.actionType, status: 'pending' }],
+              riskSnapshot: admissionRisk as unknown as Record<string, unknown>,
+              policySnapshot: admissionPolicy as unknown as Record<string, unknown>,
+              actionSnapshot,
+              outcomeSnapshot: admissionOutcomeSnapshot,
+            };
+            admittedAuthority = admissionAuthority;
+            admissionAttempted = true;
+            const admission = await executionAdmissionRepository.admitApprovalExecution({
+              ...admissionAuthority,
+              approvalId: approval.id,
+              sourceRiskSnapshot: preflightRiskAssessment as unknown as Record<string, unknown>,
+              preEffectExplanation: {
+                whatHappened: 'SkyTwin admitted the exact user-approved action after current policy and risk evaluation.',
+                evidenceUsed: [{ approvalId: approval.id, action: actionSnapshot }],
+                preferencesInvoked: [],
+                confidenceReasoning: admissionRisk.reasoning,
+                actionRationale: candidateAction.reasoning,
+                escalationRationale: null,
+                correctionGuidance: 'Review the approved action snapshot and terminal adapter observation.',
+              },
+              memoryOpportunityId: memoryOpportunityIdFromAction(storedAction) ?? undefined,
             });
+            if (!admission.created) {
+              const recordedStatus = admission.barrier.status;
+              executionResult = {
+                status: recordedStatus === 'completed' || recordedStatus === 'failed'
+                  ? recordedStatus
+                  : 'ambiguous',
+                planId: admission.plan.id,
+                adapterUsed: admission.barrier.observed_result['adapterUsed'],
+                ...(recordedStatus === 'failed'
+                  ? { error: 'Execution failed' }
+                  : recordedStatus === 'completed'
+                    ? {}
+                    : { error: 'Execution outcome requires reconciliation' }),
+              };
+              log.warn('Duplicate approved execution was suppressed by durable admission', {
+                requestId,
+                executionPlanId: admission.plan.id,
+                admissionStatus: recordedStatus,
+              });
+              break executionAttempt;
+            }
+
+            const dispatchUser = await userRepository.findById(body.userId);
+            const dispatchPolicyRevision = await getPolicyAuthorityRevision();
+            const dispatchPolicies = await policyRepositoryAdapter.getAllPolicies(body.userId);
+            const dispatchPolicyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
+            const dispatchPolicy = await dispatchPolicyEvaluator.evaluate(
+              candidateAction,
+              dispatchPolicies,
+              dispatchUser?.trust_tier as TrustTier ?? TrustTier.OBSERVER,
+              admissionRisk,
+              readAutonomy(dispatchUser),
+            );
+            if (!matchesApprovalActionSnapshot(candidateAction, actionSnapshot) ||
+                !dispatchPolicy.allowed ||
+                executionIsPaused(dispatchUser, dispatchPolicyEvaluator) ||
+                dispatchPolicy.requiresApproval !== admissionPolicy.requiresApproval ||
+                !await executionAdmissionRepository.isDispatchable(admission, {
+                  ...admissionAuthority,
+                  policySnapshot: dispatchPolicy as unknown as Record<string, unknown>,
+                })) {
+              try {
+                await executionAdmissionRepository.failBeforeDispatch({
+                  admission,
+                  userId: body.userId,
+                  error: 'Execution authority was revoked before router invocation.',
+                });
+                executionResult = {
+                  status: 'failed',
+                  planId: admission.plan.id,
+                  error: 'Execution authority was revoked before dispatch',
+                };
+              } catch {
+                executionResult = {
+                  status: 'ambiguous',
+                  planId: admission.plan.id,
+                  error: 'Execution authority could not be reconciled before dispatch',
+                };
+              }
+              break executionAttempt;
+            }
+
+            let result: Awaited<ReturnType<typeof executionRouter.executePrepared>>;
+            try {
+              // Approved-execution path: a human moved this through the approval
+              // flow (and, for dual-confirmation actions, clicked twice — the
+              // confirm-token check above enforces the count). Pass
+              // `{ approved: true }` so the router's injection-guard backstop
+              // lets the action through; the human already supplied the
+              // confirmation the guard demanded.
+              result = await executionRouter.executePrepared(
+                prepared,
+                {
+                  ...candidateAction,
+                  parameters: {
+                    ...candidateAction.parameters,
+                    executionPlanId: admission.plan.id,
+                    credentialAuthorityRevision: dispatchUser?.execution_authority_revision,
+                    credentialPolicyAuthorityRevision: dispatchPolicyRevision,
+                    dispatchAuthorityId: admission.barrier.id,
+                    dispatchAuthorityUpdatedAt: admission.barrier.updated_at.toISOString(),
+                  },
+                },
+                admissionRisk,
+                body.userId,
+                {
+                  approved: true,
+                  ironclawChannel: dispatchUser?.ironclaw_channel ?? undefined,
+                },
+              );
+              if (result.status !== 'completed' && result.status !== 'failed') {
+                throw new AmbiguousExecutionError(
+                  `Approved execution returned non-terminal status ${result.status}`,
+                );
+              }
+            } catch (dispatchError) {
+              const errMsg = normalizeExecutionError(dispatchError);
+              if (dispatchError instanceof NoRequestExecutionError) {
+                try {
+                  await executionAdmissionRepository.failBeforeDispatch({
+                    admission,
+                    userId: body.userId,
+                    error: errMsg,
+                  });
+                  executionResult = {
+                    status: 'failed',
+                    planId: admission.plan.id,
+                    error: 'Execution was refused before request start',
+                  };
+                } catch {
+                  executionResult = {
+                    status: 'ambiguous',
+                    planId: admission.plan.id,
+                    error: 'Execution outcome requires reconciliation',
+                  };
+                }
+                break executionAttempt;
+              }
+              await bestEffortApprovalLedger('record ambiguous approved execution admission', () =>
+                executionAdmissionRepository.observeTerminal({
+                  id: admission.barrier.id,
+                  userId: body.userId,
+                  status: 'ambiguous',
+                  result: { planId: admission.plan.id, error: errMsg },
+                }), { requestId, executionPlanId: admission.plan.id });
+              executionResult = {
+                status: 'ambiguous',
+                planId: admission.plan.id,
+                error: 'Execution outcome requires reconciliation',
+              };
+              break executionAttempt;
+            }
+
+            const terminalStatus: 'completed' | 'failed' = result.status;
+            const safeOutput = normalizeAdapterOutput(result.output ?? {});
+            const safeError = result.error
+              ? normalizeExecutionError(result.error)
+              : undefined;
+            const adapterUsed = safeOutput['adapter_used'] ?? 'unknown';
+            // Preserve the explicit adapter result before any persistence whose
+            // commit response can be lost. No later catch may rewrite it.
+            executionResult = {
+              status: terminalStatus,
+              planId: admission.plan.id,
+              adapterUsed,
+              ...(result.status === 'failed' ? { error: safeError ?? 'Execution failed' } : {}),
+            };
+            observedTerminal = true;
+            await bestEffortApprovalLedger('record terminal approved execution admission', () =>
+              executionAdmissionRepository.observeTerminal({
+                id: admission.barrier.id,
+                userId: body.userId,
+                status: terminalStatus,
+                result: {
+                  planId: admission.plan.id,
+                  adapterPlanId: result.planId,
+                  adapterUsed,
+                  status: terminalStatus,
+                  output: safeOutput,
+                  error: safeError ?? null,
+                },
+              }), { requestId, executionPlanId: admission.plan.id });
+            await bestEffortApprovalLedger('finalize admitted approved execution plan', () =>
+              executionRepository.finalizeAdmittedPlan({
+                userId: body.userId,
+                decisionId: approval.decision_id,
+                actionId: candidateAction.id,
+                planId: admission.plan.id,
+                status: terminalStatus,
+                success: terminalStatus === 'completed',
+                outputs: { ...safeOutput, adapter_plan_id: result.planId },
+                error: safeError,
+                rollbackAvailable: typeof safeOutput['rollback_available'] === 'boolean'
+                  ? safeOutput['rollback_available']
+                  : candidateAction.reversible,
+              }), { requestId, executionPlanId: admission.plan.id });
+
+            // Record post-execution spend tagged with the action's
+            // registry source (#323 AC#3). Only on success — a failed
+            // approved execution shouldn't charge the per-app budget.
+            // Best-effort: the helper swallows its own errors so a ledger
+            // write can't break the approval response. The spend cap was
+            // re-checked by the policy evaluation above before execution.
+            if (result.status === 'completed') {
+              await recordMcpActionSpend({
+                userId: body.userId,
+                decisionId: approval.decision_id,
+                action: candidateAction,
+              });
+            }
           }
         } catch (execError) {
-          // Execution failed after approval was recorded. Log the failure and persist
-          // a failed plan so the approval isn't silently orphaned with no execution record.
-          const errMsg = execError instanceof Error ? execError.message : String(execError);
-          log.error(`Execution failed for approval ${requestId}`, { error: errMsg, stack: execError instanceof Error ? execError.stack : undefined });
-
-          try {
-            const failedPlan = await withTransaction(async (client) => {
-              const planResult = await client.query(
-                `INSERT INTO execution_plans (id, decision_id, action_id, status, steps, created_at)
-                 VALUES (gen_random_uuid(), $1, NULL, 'failed', $2, now())
-                 RETURNING *`,
-                [approval.decision_id, JSON.stringify([{ type: candidateAction.actionType, status: 'error' }])],
-              );
-              const plan = planResult.rows[0];
-              if (!plan) throw new Error('Failed to persist failed execution plan');
-              await client.query(
-                `INSERT INTO execution_results (id, plan_id, success, outputs, error, rollback_available, completed_at)
-                 VALUES (gen_random_uuid(), $1, false, '{}', $2, $3, now())`,
-                [plan.id, errMsg, candidateAction.reversible],
-              );
-              // #324: link even failed plans so the outcome's
-              // `execution_plan_id` is populated. The rollback site
-              // still reads `success` from `execution_results` before
-              // attempting rollback, so a failed plan link doesn't
-              // accidentally trigger rollback of nothing. "Latest
-              // plan wins" — overwrite to match backfill + read
-              // semantics; same duplication note as the success path
-              // applies.
-              await client.query(
-                `UPDATE decision_outcomes
-                   SET execution_plan_id = $1
-                 WHERE decision_id = $2`,
-                [plan.id, approval.decision_id],
-              );
-              return plan;
+          const errMsg = normalizeExecutionError(execError);
+          if (observedTerminal) {
+            log.error('Known approved execution result needs secondary-ledger reconciliation', {
+              requestId,
+              error: errMsg,
             });
-
-            executionResult = { status: 'failed', planId: failedPlan.id, error: 'Execution failed' };
-          } catch (persistError) {
-            log.error('Failed to persist execution failure record', { error: persistError instanceof Error ? persistError.message : String(persistError), stack: persistError instanceof Error ? persistError.stack : undefined });
-            executionResult = { status: 'failed', error: 'Execution failed' };
+          } else if (admissionAttempted) {
+            // A lost admission commit response is indistinguishable from a
+            // durable in-progress barrier. Fail closed and never dispatch or
+            // fabricate a failed recovery plan.
+            log.warn(`Approved execution admission is ambiguous for ${requestId}`, { error: errMsg });
+            const memoryOpportunityId = memoryOpportunityIdFromAction(storedAction);
+            const recovered = admittedAuthority ? await executionAdmissionRepository.findByScope(
+              body.userId,
+              memoryOpportunityId ? 'memory' : 'approval',
+              memoryOpportunityId ?? approval.id,
+              admittedAuthority,
+            ).catch(() => null) : null;
+            const recoveredStatus = recovered?.barrier.status;
+            executionResult = recovered &&
+              (recoveredStatus === 'completed' || recoveredStatus === 'failed')
+              ? {
+                  status: recoveredStatus,
+                  planId: recovered.plan.id,
+                  adapterUsed: recovered.barrier.observed_result['adapterUsed'],
+                  ...(recoveredStatus === 'failed' ? { error: 'Execution failed' } : {}),
+                }
+              : {
+                  status: 'ambiguous',
+                  planId: recovered?.plan.id,
+                  error: 'Execution outcome requires reconciliation',
+                };
+          } else {
+            log.error(`Execution failed for approval ${requestId}`, { error: errMsg, stack: execError instanceof Error ? execError.stack : undefined });
+            executionResult = { status: 'failed', error: 'Execution failed before admission' };
           }
         } finally {
           // Always strip sensitive credentials, even on error paths
@@ -831,6 +1281,10 @@ export function createApprovalsRouter(): Router {
         approval,
         action: body.action,
         executionResult,
+        ...(executionResult?.status === 'blocked' ? {
+          overrideStatus: 'blocked_by_policy' as const,
+          policyReason: executionResult.error,
+        } : {}),
         reason: body.reason,
       });
 

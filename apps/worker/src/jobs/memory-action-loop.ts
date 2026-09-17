@@ -17,26 +17,33 @@ import {
   TaskActionHandler,
   type IronClawAdapter,
 } from '@skytwin/ironclaw-adapter';
+import { workerCredentialKeyCache } from '../credential-key-cache.js';
 import { PolicyEvaluator, type PolicyDecision } from '@skytwin/policy-engine';
 import {
   AdapterRegistry,
+  AmbiguousExecutionError,
   DIRECT_TRUST_PROFILE,
   ExecutionRouter,
   IRONCLAW_TRUST_PROFILE,
   NoAdapterError,
+  NoRequestExecutionError,
   OPENCLAW_SKILLS,
   OPENCLAW_TRUST_PROFILE,
   OpenClawAdapter,
 } from '@skytwin/execution-router';
 import {
   approvalRepository,
+  accessLogRepository,
   credentialRequirementRepository,
   decisionRepository,
   decisionRepositoryAdapter,
+  executionAdmissionRepository,
+  executionDispatchLeaseRepository,
   executionRepository,
   explanationRepository,
   memoryActionOpportunityRepository,
   policyRepositoryAdapter,
+  getPolicyAuthorityRevision,
   serviceCredentialRepository,
   skillGapRepository,
   userRepository,
@@ -47,6 +54,9 @@ import {
   classifyActionSeverity,
   ConfidenceLevel,
   isPassiveAwarenessShape,
+  isAccountBackedIntegration,
+  normalizeAdapterOutput,
+  normalizeExecutionError,
   parseAutonomySettings,
   RiskTier,
   SituationType,
@@ -68,6 +78,8 @@ import {
   getUsersWithRecentMemory,
   type DailyMemorySuggestionBundle,
 } from './memory-suggestions.js';
+import { requireJobAdmission, runAdmitted } from './job-admission.js';
+import { createWorkerExecutionAdmissionGuard } from '../execution-account-boundary.js';
 
 const log = createLogger('worker:memory-action-loop');
 
@@ -97,6 +109,7 @@ export interface MemoryActionLoopSummary {
   blocked: number;
   learningNeeded: number;
   executionFailed: number;
+  executionAmbiguous: number;
   skipped: number;
   reports: MemoryActionLoopReport[];
 }
@@ -108,16 +121,16 @@ export interface MemoryActionLoopJobDeps {
   now?: Date;
   fetchBundle?: (userId: string, maxSuggestions: number) => Promise<DailyMemorySuggestionBundle>;
   policyEvaluator?: Pick<PolicyEvaluator, 'evaluate'>;
-  loadPolicies?: () => Promise<ActionPolicy[]>;
-  getExecutionRouter?: () => Promise<Pick<ExecutionRouter, 'route' | 'executeWithRouting'>>;
+  loadPolicies?: (userId: string) => Promise<ActionPolicy[]>;
+  getExecutionRouter?: () => Promise<Pick<ExecutionRouter, 'prepareExecution' | 'executePrepared'>>;
+  signal?: AbortSignal;
 }
 
 let workerExecutionRouter: ExecutionRouter | null = null;
 
-export async function runMemoryActionLoopJob(
-  deps: MemoryActionLoopJobDeps = {},
-): Promise<MemoryActionLoopSummary> {
-  const userIds = deps.userIds ?? await getMemoryActionLoopUserIds();
+export async function runMemoryActionLoopJob(deps: MemoryActionLoopJobDeps = {}): Promise<MemoryActionLoopSummary> {
+  requireJobAdmission(deps.signal);
+  const userIds = deps.userIds ?? (await runAdmitted(deps.signal, getMemoryActionLoopUserIds));
   const summary: MemoryActionLoopSummary = {
     users: userIds.length,
     opportunitiesUpserted: 0,
@@ -128,6 +141,7 @@ export async function runMemoryActionLoopJob(
     blocked: 0,
     learningNeeded: 0,
     executionFailed: 0,
+    executionAmbiguous: 0,
     skipped: 0,
     reports: [],
   };
@@ -138,9 +152,11 @@ export async function runMemoryActionLoopJob(
   const fetchBundle = deps.fetchBundle ?? fetchDailyMemorySuggestionBundle;
 
   for (const userId of userIds) {
+    requireJobAdmission(deps.signal);
     try {
-      const bundle = await fetchBundle(userId, maxSuggestions);
+      const bundle = await runAdmitted(deps.signal, () => fetchBundle(userId, maxSuggestions));
       for (const suggestion of bundle.suggestions) {
+        requireJobAdmission(deps.signal);
         const provenance = resolveSuggestionProvenance(suggestion, bundle.pagesById);
         await memoryActionOpportunityRepository.upsertFromSuggestion({
           userId,
@@ -148,6 +164,7 @@ export async function runMemoryActionLoopJob(
           suggestion,
           provenance,
         });
+        requireJobAdmission(deps.signal);
         summary.opportunitiesUpserted++;
       }
 
@@ -157,7 +174,9 @@ export async function runMemoryActionLoopJob(
       });
 
       for (const opportunity of due) {
+        requireJobAdmission(deps.signal);
         const report = await processOpportunity(userId, opportunity, deps);
+        requireJobAdmission(deps.signal);
         if (!report) {
           summary.skipped++;
           continue;
@@ -170,8 +189,10 @@ export async function runMemoryActionLoopJob(
         else if (report.status === 'blocked_by_policy') summary.blocked++;
         else if (report.status === 'learning_needed') summary.learningNeeded++;
         else if (report.status === 'execution_failed') summary.executionFailed++;
+        else if (report.status === 'execution_ambiguous') summary.executionAmbiguous++;
       }
     } catch (err) {
+      requireJobAdmission(deps.signal);
       log.warn('Memory action loop failed for user; continuing', {
         userId,
         error: err instanceof Error ? err.message : String(err),
@@ -198,17 +219,22 @@ async function processOpportunity(
   opportunity: MemoryActionOpportunitySnapshot,
   deps: MemoryActionLoopJobDeps,
 ): Promise<MemoryActionLoopReport | null> {
+  requireJobAdmission(deps.signal);
   const attempted = opportunity;
 
-  const user = await userRepository.findById(userId);
+  const user = await runAdmitted(deps.signal, () => userRepository.findById(userId));
   if (!user) {
     const report = buildReport(attempted, 'skipped', 'User no longer exists.', 'No action taken.', deps.now);
-    await memoryActionOpportunityRepository.markStatus({ id: attempted.id, status: 'skipped', report });
+    await memoryActionOpportunityRepository.markStatus({
+      id: attempted.id,
+      status: 'skipped',
+      report,
+    });
     return report;
   }
 
-  const decision = await createDecisionForOpportunity(userId, attempted);
-  const candidate = buildCandidateForOpportunity(attempted, decision.id, user.ironclaw_channel ?? undefined);
+  const decision = await runAdmitted(deps.signal, () => createDecisionForOpportunity(userId, attempted));
+  const candidate = buildCandidateForOpportunity(attempted, decision.id);
   const riskAssessment = new RiskAssessor().assess(candidate);
 
   await decisionRepository.addCandidateAction({
@@ -216,7 +242,11 @@ async function processOpportunity(
     decisionId: candidate.decisionId,
     actionType: candidate.actionType,
     description: candidate.description,
-    parameters: { ...candidate.parameters, domain: candidate.domain, costZeroIntent: candidate.costZeroIntent },
+    parameters: {
+      ...candidate.parameters,
+      domain: candidate.domain,
+      costZeroIntent: candidate.costZeroIntent,
+    },
     predictedUserPreference: candidate.confidence,
     riskAssessment: { reasoning: candidate.reasoning },
     reversible: candidate.reversible,
@@ -237,7 +267,10 @@ async function processOpportunity(
       `SkyTwin found a memory opportunity but no known runtime skill is ready for ${attempted.actionType}.`,
       attempted.actionPlan.learnTarget ?? `Teach OpenClaw or install an MCP capability for ${attempted.actionType}.`,
       deps.now,
-      { decisionId: decision.id, routeReason: attempted.actionPlan.adapterRationale },
+      {
+        decisionId: decision.id,
+        routeReason: attempted.actionPlan.adapterRationale,
+      },
     );
     await memoryActionOpportunityRepository.markStatus({
       id: attempted.id,
@@ -251,7 +284,9 @@ async function processOpportunity(
   }
 
   const policyEvaluator = deps.policyEvaluator ?? new PolicyEvaluator(policyRepositoryAdapter);
-  const policies = deps.loadPolicies ? await deps.loadPolicies() : await policyRepositoryAdapter.getEnabledPolicies();
+  const policies = deps.loadPolicies
+    ? await deps.loadPolicies(userId)
+    : await policyRepositoryAdapter.getEnabledPolicies(userId);
   const policyDecision = await policyEvaluator.evaluate(
     candidate,
     policies,
@@ -259,6 +294,7 @@ async function processOpportunity(
     riskAssessment,
     readAutonomy(user.autonomy_settings),
   );
+  requireJobAdmission(deps.signal);
 
   if (!policyDecision.allowed) {
     await recordOutcomeAndExplanation(candidate, riskAssessment, {
@@ -338,7 +374,7 @@ async function processOpportunity(
     return report;
   }
 
-  return executeAllowedOpportunity(userId, attempted, candidate, riskAssessment, deps, policyDecision);
+  return executeAllowedOpportunity(userId, attempted, candidate, riskAssessment, deps);
 }
 
 async function executeAllowedOpportunity(
@@ -347,75 +383,515 @@ async function executeAllowedOpportunity(
   candidate: CandidateAction,
   riskAssessment: RiskAssessment,
   deps: MemoryActionLoopJobDeps,
-  policyDecision: PolicyDecision,
 ): Promise<MemoryActionLoopReport> {
+  requireJobAdmission(deps.signal);
   const getRouter = deps.getExecutionRouter ?? getWorkerExecutionRouter;
+  let prepared: Awaited<ReturnType<ExecutionRouter['prepareExecution']>>;
+  let admissionAttempted = false;
+  const admittedSteps = [{ type: candidate.actionType, status: 'pending' }];
+  const actionSnapshot = serializeCandidate(candidate);
+  let admissionAuthority: {
+    userId: string;
+    decisionId: string;
+    actionId: string;
+    executionPlanId: string;
+    adapterName: string;
+    steps: typeof admittedSteps;
+    riskSnapshot: Record<string, unknown>;
+    policySnapshot: Record<string, unknown>;
+    actionSnapshot: Record<string, unknown>;
+    outcomeSnapshot: Record<string, unknown>;
+  } | null = null;
+
+  let currentAuthorityRevision: string | null = null;
+  let currentPolicyAuthorityRevision: string | null = null;
+  let currentIronclawChannel: string | null = null;
+  const evaluateCurrentPolicy = async (executionRisk: RiskAssessment): Promise<PolicyDecision> => {
+    currentAuthorityRevision = null;
+    currentPolicyAuthorityRevision = null;
+    currentIronclawChannel = null;
+    const currentUser = await userRepository.findById(userId);
+    if (!currentUser) {
+      return {
+        allowed: false,
+        requiresApproval: true,
+        reason: 'Execution owner no longer exists.',
+      };
+    }
+    currentAuthorityRevision = currentUser.execution_authority_revision;
+    currentIronclawChannel = currentUser.ironclaw_channel;
+    currentPolicyAuthorityRevision = await getPolicyAuthorityRevision();
+    const evaluator = deps.policyEvaluator ?? new PolicyEvaluator(policyRepositoryAdapter);
+    const policies = deps.loadPolicies
+      ? await deps.loadPolicies(userId)
+      : await policyRepositoryAdapter.getEnabledPolicies(userId);
+    return evaluator.evaluate(
+      candidate,
+      policies,
+      parseTrustTier(currentUser.trust_tier),
+      executionRisk,
+      readAutonomy(currentUser.autonomy_settings),
+    );
+  };
   try {
-    const router = await getRouter();
-    const routing = await router.route(candidate, riskAssessment, userId);
-    const result = await router.executeWithRouting(candidate, riskAssessment, userId);
-    const adapterName = adapterUsedFromResult(result.output) ?? routing.selectedAdapter;
-    await recordOutcomeAndExplanation(candidate, riskAssessment, {
-      autoExecuted: result.status === 'completed',
+    const router = await runAdmitted(deps.signal, getRouter);
+    if (!('prepareExecution' in router) || !('executePrepared' in router)) {
+      throw new NoRequestExecutionError('Execution router does not support exact prepared authority.');
+    }
+    const preparationUser = await runAdmitted(deps.signal, () => userRepository.findById(userId));
+    prepared = await runAdmitted(deps.signal, () =>
+      router.prepareExecution(candidate, riskAssessment, userId, {
+        streaming: false,
+        ironclawChannel: preparationUser?.ironclaw_channel ?? undefined,
+      }),
+    );
+    const executionRisk = prepared.riskAssessment;
+    const routing = prepared.routingDecision;
+    const admissionPolicy = await runAdmitted(deps.signal, () => evaluateCurrentPolicy(executionRisk));
+    if (!admissionPolicy.allowed) {
+      await recordOutcomeAndExplanation(candidate, executionRisk, {
+        autoExecuted: false,
+        requiresApproval: false,
+        reason: admissionPolicy.reason,
+        policyDecision: admissionPolicy,
+      });
+      const report = buildReport(
+        opportunity,
+        'blocked_by_policy',
+        `Policy blocked the prepared ${prepared.adapterName} path: ${admissionPolicy.reason}`,
+        'Update policy/autonomy settings or ignore this opportunity.',
+        deps.now,
+        {
+          decisionId: candidate.decisionId,
+          adapterName: prepared.adapterName,
+          policyReason: admissionPolicy.reason,
+          routeReason: routing.reasoning,
+        },
+      );
+      await memoryActionOpportunityRepository.markStatus({
+        id: opportunity.id,
+        status: 'blocked_by_policy',
+        report,
+        decisionId: candidate.decisionId,
+        adapterName: prepared.adapterName,
+        policyReason: admissionPolicy.reason,
+        routeReason: routing.reasoning,
+        nextStep: report.nextStep,
+      });
+      return report;
+    }
+    if (admissionPolicy.requiresApproval) {
+      await recordOutcomeAndExplanation(candidate, executionRisk, {
+        autoExecuted: false,
+        requiresApproval: true,
+        reason: admissionPolicy.reason,
+        policyDecision: admissionPolicy,
+      });
+      const approval = await approvalRepository.create({
+        userId,
+        decisionId: candidate.decisionId,
+        candidateAction: serializeCandidate(candidate),
+        reason: admissionPolicy.reason,
+        urgency: 'normal',
+        confirmationLevel: admissionPolicy.confirmationLevel ?? 'single',
+      });
+      const report = buildReport(
+        opportunity,
+        'queued_approval',
+        `The selected ${prepared.adapterName} path requires approval: ${admissionPolicy.reason}`,
+        'Review the approval request before this exact action is prepared again.',
+        deps.now,
+        {
+          decisionId: candidate.decisionId,
+          approvalRequestId: approval.row.id,
+          adapterName: prepared.adapterName,
+          policyReason: admissionPolicy.reason,
+          routeReason: routing.reasoning,
+        },
+      );
+      await memoryActionOpportunityRepository.markStatus({
+        id: opportunity.id,
+        status: 'queued_approval',
+        report,
+        decisionId: candidate.decisionId,
+        approvalRequestId: approval.row.id,
+        adapterName: prepared.adapterName,
+        policyReason: admissionPolicy.reason,
+        routeReason: routing.reasoning,
+        nextStep: report.nextStep,
+      });
+      return report;
+    }
+    const admittedReport = buildReport(
+      opportunity,
+      'execution_ambiguous',
+      'Execution was admitted and is awaiting a terminal adapter result.',
+      'Reconcile the admitted execution before considering another attempt.',
+      deps.now,
+      {
+        decisionId: candidate.decisionId,
+        adapterName: routing.selectedAdapter,
+        routeReason: routing.reasoning,
+      },
+    );
+    const preEffectReason = `Admitted after policy evaluation and before adapter dispatch. ${admissionPolicy.reason}`;
+    const outcomeSnapshot = {
+      decisionId: candidate.decisionId,
+      selectedAction: actionSnapshot,
+      autoExecute: true,
       requiresApproval: false,
-      reason: result.status === 'completed'
-        ? `Auto-executed after policy passed. ${policyDecision.reason}`
-        : `Execution did not complete. ${result.error ?? 'Unknown adapter failure.'}`,
-    });
-    const plan = await executionRepository.createPlan({
+      reasoning: preEffectReason,
+    };
+    admissionAuthority = {
+      userId,
       decisionId: candidate.decisionId,
       actionId: candidate.id,
-      status: result.status === 'completed' ? 'completed' : 'failed',
-      steps: [{ type: candidate.actionType, status: result.status, adapterPlanId: result.planId }],
-    });
-    await executionRepository.createResult({
-      planId: plan.id,
-      success: result.status === 'completed',
-      outputs: { ...(result.output ?? {}), adapter_plan_id: result.planId },
-      error: result.error,
-      rollbackAvailable: candidate.reversible,
-    });
+      executionPlanId: prepared.planId,
+      adapterName: prepared.adapterName,
+      steps: admittedSteps,
+      riskSnapshot: executionRisk as unknown as Record<string, unknown>,
+      policySnapshot: admissionPolicy as unknown as Record<string, unknown>,
+      actionSnapshot,
+      outcomeSnapshot,
+    };
+    admissionAttempted = true;
+    const admission = await runAdmitted(deps.signal, () =>
+      executionAdmissionRepository.admitMemoryExecution({
+        ...admissionAuthority!,
+        opportunityId: opportunity.id,
+        sourceRiskSnapshot: riskAssessment as unknown as Record<string, unknown>,
+        preEffectOutcome: {
+          explanation: preEffectReason,
+          confidence: riskTierToConfidence(executionRisk.overallTier),
+        },
+        preEffectExplanation: {
+          whatHappened: 'SkyTwin admitted a memory-derived action after policy evaluation and before adapter dispatch.',
+          evidenceUsed: [
+            {
+              memoryRefs: candidate.parameters['memoryRefs'],
+              sourceRefs: candidate.parameters['sourceRefs'],
+              opportunityId: opportunity.id,
+            },
+          ],
+          preferencesInvoked: [],
+          confidenceReasoning: executionRisk.reasoning,
+          actionRationale: candidate.reasoning,
+          escalationRationale: null,
+          correctionGuidance:
+            'Review the durable admission and its terminal observation. Hide the underlying memory if this opportunity should not resurface.',
+        },
+        report: admittedReport,
+      }),
+    );
+    if (!admission.created) {
+      return reportForExistingAdmission(opportunity, admission, deps.now);
+    }
+    const dispatchPolicy = await runAdmitted(deps.signal, () => evaluateCurrentPolicy(executionRisk));
+    const actionUnchanged = JSON.stringify(serializeCandidate(candidate)) === JSON.stringify(actionSnapshot);
+    const dispatchable =
+      actionUnchanged && dispatchPolicy.allowed && !dispatchPolicy.requiresApproval
+        ? await runAdmitted(deps.signal, () =>
+            executionAdmissionRepository.isDispatchable(admission, {
+              ...admissionAuthority!,
+              policySnapshot: dispatchPolicy as unknown as Record<string, unknown>,
+            }),
+          )
+        : false;
+    if (!dispatchable) {
+      try {
+        await runAdmitted(deps.signal, () =>
+          executionAdmissionRepository.failBeforeDispatch({
+            admission,
+            userId,
+            error: 'Execution owner or admitted graph was revoked before router invocation.',
+          }),
+        );
+      } catch {
+        throw new AmbiguousExecutionError('Execution owner or admitted graph could not be reconciled before dispatch.');
+      }
+      const report = buildReport(
+        opportunity,
+        'execution_failed',
+        'Current authority no longer permits this admitted action.',
+        'Review current policy and pause state before creating another opportunity.',
+        deps.now,
+        {
+          decisionId: candidate.decisionId,
+          executionPlanId: admission.plan.id,
+          adapterName: routing.selectedAdapter,
+          routeReason: 'Execution was refused before router invocation.',
+        },
+      );
+      await bestEffortMemoryLedger('record pre-dispatch memory refusal', () =>
+        memoryActionOpportunityRepository.markStatus({
+          id: opportunity.id,
+          status: 'execution_failed',
+          report,
+          decisionId: candidate.decisionId,
+          executionPlanId: admission.plan.id,
+          adapterName: routing.selectedAdapter,
+          routeReason: 'Execution was refused before router invocation.',
+          nextStep: report.nextStep,
+        }),
+      );
+      return report;
+    }
 
-    const status: MemoryActionOpportunityStatus =
-      result.status === 'completed' ? 'auto_executed' : 'execution_failed';
+    let result: Awaited<ReturnType<typeof router.executePrepared>>;
+    try {
+      // This is the account-affecting boundary. Do not begin execution after
+      // revocation; adapters also share the generation abort signal.
+      result = await runAdmitted(deps.signal, () =>
+        router.executePrepared(
+          prepared,
+          {
+            ...candidate,
+            parameters: {
+              ...candidate.parameters,
+              executionPlanId: admission.plan.id,
+              credentialAuthorityRevision: currentAuthorityRevision,
+              credentialPolicyAuthorityRevision: currentPolicyAuthorityRevision,
+              dispatchAuthorityId: admission.barrier.id,
+              dispatchAuthorityUpdatedAt: admission.barrier.updated_at.toISOString(),
+            },
+          },
+          executionRisk,
+          userId,
+          {
+            ironclawChannel: currentIronclawChannel ?? undefined,
+          },
+        ),
+      );
+      if (result.status !== 'completed' && result.status !== 'failed') {
+        throw new AmbiguousExecutionError(`Memory action execution returned non-terminal status ${result.status}`);
+      }
+    } catch (err) {
+      const message = normalizeExecutionError(err);
+      if (err instanceof NoRequestExecutionError) {
+        try {
+          await executionAdmissionRepository.failBeforeDispatch({
+            admission,
+            userId,
+            error: message,
+          });
+        } catch {
+          const report = buildReport(
+            opportunity,
+            'execution_ambiguous',
+            'Execution refusal could not be durably reconciled.',
+            'Reconcile the admission before considering another execution.',
+            deps.now,
+            {
+              decisionId: candidate.decisionId,
+              executionPlanId: admission.plan.id,
+              adapterName: routing.selectedAdapter,
+              routeReason: message,
+            },
+          );
+          await bestEffortMemoryLedger('freeze unreconciled memory refusal', () =>
+            memoryActionOpportunityRepository.markStatus({
+              id: opportunity.id,
+              status: 'execution_ambiguous',
+              report,
+              decisionId: candidate.decisionId,
+              executionPlanId: admission.plan.id,
+              adapterName: routing.selectedAdapter,
+              routeReason: message,
+              nextStep: report.nextStep,
+            }),
+          );
+          return report;
+        }
+        const report = buildReport(
+          opportunity,
+          'execution_failed',
+          `Execution was refused before request start: ${message}`,
+          'Review current authority before creating another opportunity.',
+          deps.now,
+          {
+            decisionId: candidate.decisionId,
+            executionPlanId: admission.plan.id,
+            adapterName: routing.selectedAdapter,
+            routeReason: message,
+          },
+        );
+        await bestEffortMemoryLedger('record pre-request memory refusal', () =>
+          memoryActionOpportunityRepository.markStatus({
+            id: opportunity.id,
+            status: 'execution_failed',
+            report,
+            decisionId: candidate.decisionId,
+            executionPlanId: admission.plan.id,
+            adapterName: routing.selectedAdapter,
+            routeReason: message,
+            nextStep: report.nextStep,
+          }),
+        );
+        return report;
+      }
+      await bestEffortMemoryLedger('record ambiguous execution admission', () =>
+        executionAdmissionRepository.observeTerminal({
+          id: admission.barrier.id,
+          userId,
+          status: 'ambiguous',
+          result: { planId: admission.plan.id, error: message },
+        }),
+      );
+      const report = buildReport(
+        opportunity,
+        'execution_ambiguous',
+        `Execution outcome is unresolved and must be reconciled: ${message}`,
+        'Reconcile the adapter result before considering another execution.',
+        deps.now,
+        {
+          decisionId: candidate.decisionId,
+          executionPlanId: admission.plan.id,
+          adapterName: routing.selectedAdapter,
+          routeReason: message,
+        },
+      );
+      await bestEffortMemoryLedger('update ambiguous memory opportunity', () =>
+        memoryActionOpportunityRepository.markStatus({
+          id: opportunity.id,
+          status: 'execution_ambiguous',
+          report,
+          decisionId: candidate.decisionId,
+          executionPlanId: admission.plan.id,
+          adapterName: routing.selectedAdapter,
+          routeReason: message,
+          nextStep: report.nextStep,
+        }),
+      );
+      return report;
+    }
+
+    const terminalStatus: 'completed' | 'failed' = result.status;
+    const safeOutput = normalizeAdapterOutput(result.output ?? {});
+    const safeError = result.error ? normalizeExecutionError(result.error) : undefined;
+    const adapterName = adapterUsedFromResult(safeOutput) ?? routing.selectedAdapter;
+    const observed = {
+      planId: admission.plan.id,
+      adapterPlanId: result.planId,
+      adapterName,
+      status: terminalStatus,
+      output: safeOutput,
+      error: safeError ?? null,
+    };
+    // This is the primary terminal observation. Every write below it is a
+    // repairable projection and must never change this known adapter result.
+    await bestEffortMemoryLedger('record terminal execution admission', () =>
+      executionAdmissionRepository.observeTerminal({
+        id: admission.barrier.id,
+        userId,
+        status: terminalStatus,
+        result: observed,
+      }),
+    );
+    await bestEffortMemoryLedger('finalize admitted execution plan', () =>
+      executionRepository.finalizeAdmittedPlan({
+        userId,
+        decisionId: candidate.decisionId,
+        actionId: candidate.id,
+        planId: admission.plan.id,
+        status: terminalStatus,
+        success: terminalStatus === 'completed',
+        outputs: { ...safeOutput, adapter_plan_id: result.planId },
+        error: safeError,
+        rollbackAvailable:
+          typeof safeOutput['rollback_available'] === 'boolean'
+            ? safeOutput['rollback_available']
+            : candidate.reversible,
+      }),
+    );
+
+    const status: MemoryActionOpportunityStatus = result.status === 'completed' ? 'auto_executed' : 'execution_failed';
     const report = buildReport(
       opportunity,
       status,
       result.status === 'completed'
         ? `SkyTwin executed this memory action through ${adapterName}.`
-        : `SkyTwin tried ${adapterName}, but execution failed: ${result.error ?? 'unknown error'}.`,
+        : `SkyTwin tried ${adapterName}, but execution failed: ${safeError ?? 'unknown error'}.`,
       result.status === 'completed'
         ? 'Monitor feedback and keep the memory pattern available for future opportunities.'
-        : 'Retry after adapter health or credentials are fixed.',
+        : 'Reconcile this admitted failure before creating a new opportunity.',
       deps.now,
       {
         decisionId: candidate.decisionId,
-        executionPlanId: plan.id,
+        executionPlanId: admission.plan.id,
         adapterName,
         routeReason: routing.reasoning,
       },
     );
-    await memoryActionOpportunityRepository.markStatus({
-      id: opportunity.id,
-      status,
-      report,
-      decisionId: candidate.decisionId,
-      executionPlanId: plan.id,
-      adapterName,
-      routeReason: routing.reasoning,
-      nextStep: report.nextStep,
-    });
+    await bestEffortMemoryLedger('update terminal memory opportunity', () =>
+      memoryActionOpportunityRepository.markStatus({
+        id: opportunity.id,
+        status,
+        report,
+        decisionId: candidate.decisionId,
+        executionPlanId: admission.plan.id,
+        adapterName,
+        routeReason: routing.reasoning,
+        nextStep: report.nextStep,
+      }),
+    );
     return report;
   } catch (err) {
+    if (admissionAttempted) {
+      const message = normalizeExecutionError(err);
+      const recovered = admissionAuthority
+        ? await executionAdmissionRepository
+            .findByScope(userId, 'memory', opportunity.id, {
+              ...admissionAuthority,
+            })
+            .catch(() => null)
+        : null;
+      if (recovered) {
+        return reportForExistingAdmission(opportunity, recovered, deps.now);
+      }
+      const report = buildReport(
+        opportunity,
+        'execution_ambiguous',
+        `Execution admission could not be confirmed: ${message}`,
+        'Reconcile durable admission state before considering another execution.',
+        deps.now,
+        {
+          decisionId: candidate.decisionId,
+          routeReason: message,
+        },
+      );
+      await bestEffortMemoryLedger('freeze uncertain memory admission', () =>
+        memoryActionOpportunityRepository.markStatus({
+          id: opportunity.id,
+          status: 'execution_ambiguous',
+          report,
+          decisionId: candidate.decisionId,
+          routeReason: message,
+          nextStep: report.nextStep,
+        }),
+      );
+      return report;
+    }
+    requireJobAdmission(deps.signal);
     const isGap = err instanceof NoAdapterError;
+    const isAmbiguous = err instanceof AmbiguousExecutionError;
     await recordOutcomeAndExplanation(candidate, riskAssessment, {
-      autoExecuted: false,
+      // `autoExecuted` records that the autonomous dispatch path was taken,
+      // not a claim of remote success. The explanation below carries the
+      // unresolved terminal truth explicitly.
+      autoExecuted: isAmbiguous,
       requiresApproval: false,
+      executionAmbiguous: isAmbiguous,
       reason: isGap
         ? err.message
-        : `Execution failed before completion: ${err instanceof Error ? err.message : String(err)}`,
+        : isAmbiguous
+          ? `Execution outcome requires reconciliation: ${err.message}`
+          : `Execution failed before completion: ${err instanceof Error ? err.message : String(err)}`,
     });
-    const status: MemoryActionOpportunityStatus = isGap ? 'learning_needed' : 'execution_failed';
+    const status: MemoryActionOpportunityStatus = isGap
+      ? 'learning_needed'
+      : isAmbiguous
+        ? 'execution_ambiguous'
+        : 'execution_failed';
     if (isGap) {
       await logMemorySkillGap(userId, opportunity, candidate.decisionId, err.message);
     }
@@ -424,10 +900,14 @@ async function executeAllowedOpportunity(
       status,
       isGap
         ? `No configured adapter can handle ${candidate.actionType} yet.`
-        : `Execution failed before completion: ${err instanceof Error ? err.message : String(err)}`,
+        : isAmbiguous
+          ? `Execution outcome is unresolved and must be reconciled: ${err.message}`
+          : `Execution failed before completion: ${err instanceof Error ? err.message : String(err)}`,
       isGap
         ? `Connect or teach an OpenClaw/IronClaw skill for ${candidate.actionType}, then retry.`
-        : 'Retry after the adapter error is resolved.',
+        : isAmbiguous
+          ? 'Reconcile the adapter result before considering another execution.'
+          : 'Retry after the adapter error is resolved.',
       deps.now,
       {
         decisionId: candidate.decisionId,
@@ -443,6 +923,45 @@ async function executeAllowedOpportunity(
       nextStep: report.nextStep,
     });
     return report;
+  }
+}
+
+function reportForExistingAdmission(
+  opportunity: MemoryActionOpportunitySnapshot,
+  admission: Awaited<ReturnType<typeof executionAdmissionRepository.admitMemoryExecution>>,
+  now?: Date,
+): MemoryActionLoopReport {
+  const completed = admission.barrier.status === 'completed';
+  const failed = admission.barrier.status === 'failed';
+  return buildReport(
+    opportunity,
+    completed ? 'auto_executed' : failed ? 'execution_failed' : 'execution_ambiguous',
+    completed
+      ? 'This memory action already completed; the duplicate attempt was suppressed.'
+      : failed
+        ? 'This memory action already returned an explicit failure; the duplicate attempt was suppressed.'
+        : 'A prior execution admission exists; the duplicate attempt was suppressed.',
+    completed
+      ? 'No action required.'
+      : failed
+        ? 'Resolve the reported failure before creating a new opportunity.'
+        : 'Reconcile the admitted execution before creating another opportunity.',
+    now,
+    {
+      decisionId: admission.barrier.decision_id,
+      executionPlanId: admission.plan.id,
+      routeReason: `Execution admission is ${admission.barrier.status}; automatic replay is disabled.`,
+    },
+  );
+}
+
+async function bestEffortMemoryLedger(label: string, write: () => Promise<unknown>): Promise<void> {
+  try {
+    await write();
+  } catch (err) {
+    log.error(`Failed to ${label}; durable admission remains non-replayable`, {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
@@ -466,11 +985,10 @@ async function logMemorySkillGap(
         opportunity.title,
         opportunity.actionPlan.learnTarget ?? opportunity.actionPlan.adapterRationale,
         routeReason,
-      ].filter(Boolean).join(' — '),
-      attemptedAdapters: [
-        opportunity.actionPlan.primaryAdapter,
-        ...opportunity.actionPlan.fallbackAdapters,
-      ],
+      ]
+        .filter(Boolean)
+        .join(' — '),
+      attemptedAdapters: [opportunity.actionPlan.primaryAdapter, ...opportunity.actionPlan.fallbackAdapters],
       userId,
       decisionId,
     });
@@ -484,10 +1002,7 @@ async function logMemorySkillGap(
   }
 }
 
-async function createDecisionForOpportunity(
-  userId: string,
-  opportunity: MemoryActionOpportunitySnapshot,
-) {
+async function createDecisionForOpportunity(userId: string, opportunity: MemoryActionOpportunitySnapshot) {
   const signalId = `memory-action-loop:${opportunity.id}:${opportunity.attemptCount}`;
   const { row } = await decisionRepository.create({
     userId,
@@ -521,7 +1036,6 @@ async function createDecisionForOpportunity(
 function buildCandidateForOpportunity(
   opportunity: MemoryActionOpportunitySnapshot,
   decisionId: string,
-  ironclawChannel?: string,
 ): CandidateAction {
   const actionType = opportunity.actionType;
   const parameters: Record<string, unknown> = {
@@ -534,8 +1048,6 @@ function buildCandidateForOpportunity(
     opportunityId: opportunity.id,
     actionPlan: opportunity.actionPlan,
   };
-  if (ironclawChannel) parameters['ironclawChannel'] = ironclawChannel;
-
   if (actionType === 'create_task' || actionType === 'set_reminder') {
     parameters['description'] = opportunity.reason;
     parameters['priority'] = opportunity.novelty === 'connection' ? 'high' : 'medium';
@@ -555,14 +1067,10 @@ function buildCandidateForOpportunity(
     domain: inferDomain(actionType),
     parameters,
     estimatedCostCents: 0,
-    costZeroIntent: VERIFIED_ZERO_MEMORY_ACTION_TYPES.has(actionType)
-      ? 'verified_zero'
-      : 'unknown',
+    costZeroIntent: VERIFIED_ZERO_MEMORY_ACTION_TYPES.has(actionType) ? 'verified_zero' : 'unknown',
     reversible: inferReversible(actionType),
     confidence: confidenceLevel(opportunity.confidence),
-    reasoning:
-      `Memory action loop selected this from ${opportunity.novelty} memory evidence. ` +
-      opportunity.reason,
+    reasoning: `Memory action loop selected this from ${opportunity.novelty} memory evidence. ` + opportunity.reason,
     provenance: opportunity.provenance,
   };
 }
@@ -592,7 +1100,10 @@ function buildCandidateForOpportunity(
  * ingest gate, which likewise disposes awareness items regardless of pause.
  */
 export function isAwarenessOnlyMemoryAction(
-  candidate: Pick<CandidateAction, 'actionType' | 'reversible' | 'estimatedCostCents' | 'costZeroIntent' | 'provenance'>,
+  candidate: Pick<
+    CandidateAction,
+    'actionType' | 'reversible' | 'estimatedCostCents' | 'costZeroIntent' | 'provenance'
+  >,
   policyDecision: Pick<PolicyDecision, 'confirmationLevel'>,
 ): boolean {
   if (policyDecision.confirmationLevel) return false;
@@ -645,6 +1156,7 @@ async function recordOutcomeAndExplanation(
   outcome: {
     autoExecuted: boolean;
     requiresApproval: boolean;
+    executionAmbiguous?: boolean;
     reason: string;
     policyDecision?: PolicyDecision;
   },
@@ -660,11 +1172,13 @@ async function recordOutcomeAndExplanation(
   });
   await explanationRepository.create({
     decisionId: candidate.decisionId,
-    whatHappened: outcome.autoExecuted
-      ? 'SkyTwin executed a memory-derived action opportunity.'
-      : outcome.requiresApproval
-        ? 'SkyTwin prepared a memory-derived action and queued it for approval.'
-        : 'SkyTwin evaluated a memory-derived action and did not execute it.',
+    whatHappened: outcome.executionAmbiguous
+      ? 'SkyTwin dispatched a memory-derived action, but terminal confirmation was unavailable.'
+      : outcome.autoExecuted
+        ? 'SkyTwin executed a memory-derived action opportunity.'
+        : outcome.requiresApproval
+          ? 'SkyTwin prepared a memory-derived action and queued it for approval.'
+          : 'SkyTwin evaluated a memory-derived action and did not execute it.',
     evidenceUsed: [
       {
         memoryRefs: candidate.parameters['memoryRefs'],
@@ -689,7 +1203,7 @@ function serializeCandidate(candidate: CandidateAction): Record<string, unknown>
     actionType: candidate.actionType,
     description: candidate.description,
     domain: candidate.domain,
-    parameters: candidate.parameters,
+    parameters: structuredClone(candidate.parameters),
     estimatedCostCents: candidate.estimatedCostCents,
     costZeroIntent: candidate.costZeroIntent,
     reversible: candidate.reversible,
@@ -708,14 +1222,8 @@ function resolveSuggestionProvenance(
     .filter((page): page is DailyMemorySuggestionPage => Boolean(page))
     .map((page) => {
       const meta = page.metadata ?? {};
-      const source =
-        typeof meta['signalSource'] === 'string'
-          ? meta['signalSource']
-          : page.source;
-      const authoringTier =
-        typeof meta['authoringTier'] === 'string'
-          ? meta['authoringTier']
-          : undefined;
+      const source = typeof meta['signalSource'] === 'string' ? meta['signalSource'] : page.source;
+      const authoringTier = typeof meta['authoringTier'] === 'string' ? meta['authoringTier'] : undefined;
       return resolveActionProvenance(source, authoringTier);
     });
   if (provenances.length === 0) return 'untrusted_external';
@@ -779,7 +1287,11 @@ async function createWorkerExecutionRouter(): Promise<ExecutionRouter> {
   }
 
   const handlerRegistry = new ActionHandlerRegistry();
-  const credentialProvider = new DbCredentialProvider();
+  const credentialProvider = new DbCredentialProvider(
+    workerCredentialKeyCache,
+    { recordAccess: (input) => accessLogRepository.record(input) },
+    'worker',
+  );
   handlerRegistry.register(new EmailActionHandler(credentialProvider));
   handlerRegistry.register(new CalendarActionHandler(credentialProvider));
   handlerRegistry.register(new FinanceActionHandler());
@@ -798,6 +1310,15 @@ async function createWorkerExecutionRouter(): Promise<ExecutionRouter> {
         apiUrl: openclawApiUrl,
         apiKey: openclawCreds['api_key'] || config.openclawApiKey || undefined,
         onCredentialNeeded: async (req) => {
+          if (
+            config.googleConnectionMode !== 'experimental' &&
+            isAccountBackedIntegration({
+              adapter: 'openclaw',
+              integration: req.integration,
+              skills: req.skills,
+            })
+          )
+            return;
           for (const field of req.fields) {
             await credentialRequirementRepository.register({
               adapter: 'openclaw',
@@ -819,7 +1340,11 @@ async function createWorkerExecutionRouter(): Promise<ExecutionRouter> {
     );
   }
 
-  return new ExecutionRouter(registry);
+  return new ExecutionRouter(
+    registry,
+    executionDispatchLeaseRepository,
+    createWorkerExecutionAdmissionGuard(config.googleConnectionMode),
+  );
 }
 
 async function getStoredCredentials(service: string): Promise<Record<string, string>> {
@@ -844,16 +1369,15 @@ function readAutonomy(raw: unknown): AutonomySettings {
 }
 
 function parseTrustTier(value: string): TrustTier {
-  return Object.values(TrustTier).includes(value as TrustTier)
-    ? value as TrustTier
-    : TrustTier.OBSERVER;
+  return Object.values(TrustTier).includes(value as TrustTier) ? (value as TrustTier) : TrustTier.OBSERVER;
 }
 
 function inferDomain(actionType: string): string {
   const lower = actionType.toLowerCase();
   if (lower.includes('email') || lower.includes('reply')) return 'email';
   if (lower.includes('calendar') || lower.includes('meeting') || lower.includes('invite')) return 'calendar';
-  if (lower.includes('transaction') || lower.includes('expense') || lower.includes('budget') || lower.includes('fund')) return 'finance';
+  if (lower.includes('transaction') || lower.includes('expense') || lower.includes('budget') || lower.includes('fund'))
+    return 'finance';
   if (lower.includes('task') || lower.includes('reminder')) return 'tasks';
   if (lower.includes('document') || lower.includes('note') || lower.includes('file')) return 'documents';
   if (lower.includes('social') || lower.includes('post') || lower.includes('mention')) return 'social';
@@ -879,24 +1403,15 @@ function inferReversible(actionType: string): boolean {
   if (classifyActionSeverity({ actionType }) !== 'none') return false;
   const lower = actionType.toLowerCase();
   if (isOutboundEmailActionType(lower)) return false;
-  return ![
-    'pay_',
-    'transfer_',
-    'place_order',
-    'book_travel',
-    'book_appointment',
-    'schedule_social_post',
-  ].some((marker) => lower.includes(marker));
+  return !['pay_', 'transfer_', 'place_order', 'book_travel', 'book_appointment', 'schedule_social_post'].some(
+    (marker) => lower.includes(marker),
+  );
 }
 
 function isOutboundEmailActionType(actionType: string): boolean {
-  return [
-    'draft_email',
-    'reply_email',
-    'send_reply',
-    'send_email',
-    'forward_email',
-  ].some((marker) => actionType.includes(marker));
+  return ['draft_email', 'reply_email', 'send_reply', 'send_email', 'forward_email'].some((marker) =>
+    actionType.includes(marker),
+  );
 }
 
 function confidenceLevel(confidence: number): ConfidenceLevel {

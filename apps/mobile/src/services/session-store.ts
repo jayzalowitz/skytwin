@@ -1,4 +1,5 @@
 import * as SecureStore from 'expo-secure-store';
+import { clearPendingAssistantRequestStrict } from './assistant-request-store';
 
 const KEY_TOKEN = 'skytwin_session_token';
 const KEY_BASE_URL = 'skytwin_base_url';
@@ -43,6 +44,8 @@ export async function getSession(): Promise<Session | null> {
  * Clear the stored session. Returns the user to the pairing flow.
  */
 export async function clearSession(): Promise<void> {
+  const userId = await SecureStore.getItemAsync(KEY_USER_ID);
+  await clearPendingAssistantRequestStrict(userId);
   await SecureStore.deleteItemAsync(KEY_TOKEN);
   await SecureStore.deleteItemAsync(KEY_BASE_URL);
   await SecureStore.deleteItemAsync(KEY_USER_ID);

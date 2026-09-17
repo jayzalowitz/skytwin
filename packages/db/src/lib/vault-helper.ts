@@ -37,6 +37,8 @@ const MIN_PACKED_LENGTH = IV_LENGTH + TAG_LENGTH;
 export interface VaultKeyProvider {
   /** Return the cached 32-byte key for userId, or null when the vault is locked. */
   get(userId: string): Buffer | null;
+  /** Durable vault generation under which the cached key was authorized. */
+  getGeneration?(userId: string): string | null;
 }
 
 /**

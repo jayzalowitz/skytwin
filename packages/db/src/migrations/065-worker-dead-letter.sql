@@ -42,6 +42,7 @@ CREATE INDEX IF NOT EXISTS worker_dead_letter_pending_idx
     ON worker_dead_letter (dead_lettered_at DESC)
     WHERE status = 'pending';
 
--- Supports the per-job-name filter the admin endpoint accepts.
-CREATE INDEX IF NOT EXISTS worker_dead_letter_job_idx
-    ON worker_dead_letter (job_name, dead_lettered_at DESC);
+-- Do not create the historical job_name index here. The migration runner
+-- replays every numbered migration on startup, while migration 081 removes
+-- job_name and installs the bounded job_code index. Recreating the legacy
+-- index during a later replay would fail before migration 081 can run.

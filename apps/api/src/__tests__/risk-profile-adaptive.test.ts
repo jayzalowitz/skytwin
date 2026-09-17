@@ -7,11 +7,7 @@ import type { Express } from 'express';
 
 // ── Factory mock ──────────────────────────────────────────────────────────────
 const { mockGetLlmClient } = vi.hoisted(() => ({ mockGetLlmClient: vi.fn() }));
-vi.mock('../lib/llm-client-factory.js', () => ({
-  getLlmClientFromConfig: mockGetLlmClient,
-  getLlmClientFromConfigFresh: vi.fn().mockReturnValue(null),
-  _resetLlmClientCache: vi.fn(),
-}));
+vi.mock('../lib/user-llm-client.js', () => ({ buildUserLlmClient: mockGetLlmClient }));
 
 // ── DB mocks ──────────────────────────────────────────────────────────────────
 const { mockRiskProfileRepository } = vi.hoisted(() => ({

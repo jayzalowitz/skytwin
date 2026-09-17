@@ -81,6 +81,17 @@ function createAutonomySettings(
 // ── Tests ─────────────────────────────────────────────────────────
 
 describe('PolicyEvaluator', () => {
+  describe('policy ownership', () => {
+    it('loads enabled policies for only the requested owner', async () => {
+      const repo = createMockPolicyRepository();
+      const evaluator = new PolicyEvaluator(repo as never);
+
+      await evaluator.loadPolicies('user-1');
+
+      expect(repo.getEnabledPolicies).toHaveBeenCalledWith('user-1');
+    });
+  });
+
   describe('Kill switch (#379)', () => {
     it('escalates every action when globallyPaused (operator env var)', async () => {
       const repo = createMockPolicyRepository();

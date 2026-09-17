@@ -17,7 +17,7 @@
  */
 
 import { fetchJSON, escapeHtml, renderApiError, wireApiRetry } from '../api-client.js';
-import { KEY_USER_ID } from '../storage-keys.js';
+import { getEffectiveUserId } from '../sample-session.js';
 
 const API = '/api';
 
@@ -31,7 +31,7 @@ const RANGES = [
 let _activityListenerWired = false;
 
 function getCurrentUserId() {
-  return localStorage.getItem(KEY_USER_ID) || '';
+  return getEffectiveUserId();
 }
 
 function getCurrentHash() {
@@ -165,7 +165,7 @@ export async function renderActivity(container, userId) {
         <span class="card-title">What's been happening</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 0.75rem;">
-        Every signal that came in, every decision your twin made, and every yes/no you gave it — newest first.
+        Recorded signals, decisions, and yes/no feedback from supported paths — newest first.
       </div>
       ${renderRangeChips(hours)}
     </div>

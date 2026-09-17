@@ -2,7 +2,7 @@
 
 ## Architecture Overview
 
-SkyTwin is a TypeScript monorepo managed by pnpm workspaces and built with Turborepo. The system follows a pipeline architecture: events flow in, get interpreted, pass through decision and policy engines, and either auto-execute via IronClaw or escalate to the user.
+SkyTwin is a TypeScript monorepo managed by pnpm workspaces and built with Turborepo. The system follows a pipeline architecture: events flow in, get interpreted, pass through decision and policy engines, and either enter an explicitly admitted adapter path or escalate to the user.
 
 ### Repository Structure
 
@@ -24,7 +24,7 @@ skytwin/
     twin-model/      # Twin profile management and preference learning
     decision-engine/ # Event interpretation and action selection
     policy-engine/   # Safety constraints, trust tiers, spend limits
-    ironclaw-adapter/# IronClaw HTTP adapter (HMAC-SHA256 auth, retries, circuit breaker)
+    ironclaw-adapter/# IronClaw adapter plus quarantined Gmail mutation/observation primitives
     execution-router/# Adapter selection, fallback chains, risk modifiers, skill gap detection, plugin discovery
     llm-client/      # Unified LLM client — provider chain, circuit breakers, SSRF-safe URL validation
     explanations/    # Human-readable explanation generation
@@ -36,6 +36,7 @@ skytwin/
     memory-hybrid/   # Composes two MemoryPort impls with routing + dual-write
     memory-mempalace/ # MemPalaceMemoryPort adapter (legacy backend, selectable)
     mempalace/       # Legacy memory system: episodic memory, knowledge graph, 4-layer retrieval
+    near-confidential/ # Fail-closed NEAR verification contract; no transport admitted
 
   docs/              # Architecture and design documentation
   planning/          # Milestone and issue tracking documents
@@ -45,8 +46,8 @@ skytwin/
 
 | Component | Technology | Rationale |
 |-----------|-----------|-----------|
-| Language | TypeScript 5.4+, strict mode | Type safety across the entire pipeline |
-| Runtime | Node.js >= 20 | LTS, native ESM, good async performance |
+| Language | TypeScript 6.0+, strict mode | Type safety across the entire pipeline |
+| Runtime | Node.js >= 20.19.4 | LTS, native ESM, good async performance |
 | Package manager | pnpm 9 | Fast, disk-efficient, excellent workspace support |
 | Monorepo tooling | Turborepo 2 | Dependency-aware build orchestration, caching |
 | Database | CockroachDB 23.2 | Distributed SQL, serializable transactions, resilient |
@@ -94,7 +95,7 @@ PASS              FAIL/REQUIRES_APPROVAL
   |-- convert to     |-- persist to CockroachDB
   |   ExecutionPlan   |-- notify user via preferred channel
   |-- execute         |-- await response
-  |-- receive result  |-- on approval: re-enter pipeline at IronClaw
+  |-- receive result  |-- on approval: enter the action-specific continuation
   |                   |-- on rejection: record feedback
   v                   v
 [Explanation Layer]   [Explanation Layer]
@@ -109,6 +110,13 @@ PASS              FAIL/REQUIRES_APPROVAL
   |-- record FeedbackEvent
 ```
 
+This is the generic supported-action flow, not permission to route every action
+through an interchangeable adapter. In particular, the default-off Gmail
+archive experiment records owner-bound consent and returns `execution: null`.
+Its caller kernel, recovery worker, and feedback projection are not composed
+into runtime, and it cannot fall through to IronClaw, OpenClaw, or Direct
+execution.
+
 ### Event Lifecycle
 
 1. **Ingestion:** Raw event arrives, gets normalized into internal format with standard metadata (timestamp, source, domain, raw payload).
@@ -117,7 +125,7 @@ PASS              FAIL/REQUIRES_APPROVAL
 4. **Candidacy:** Engine generates `CandidateAction[]`, each with parameters, risk assessment, reversibility flag, cost estimate, and predicted user preference.
 5. **Selection:** Engine selects the best candidate and determines whether auto-execution is allowed (producing a `DecisionOutcome`).
 6. **Policy gate:** Policy engine evaluates the selected action. Pass, deny, or require approval.
-7. **Execution or escalation:** Either hand off to IronClaw or create an approval request.
+7. **Execution or escalation:** Either enter the action's admitted adapter path or create an approval request. Approval is consent, not universal dispatch authority; quarantined actions such as Gmail archive stop at their dedicated non-executing response boundary in current source.
 8. **Explanation:** Generate and persist an explanation record regardless of outcome.
 9. **Feedback:** When the user responds (approval, rejection, edit, undo), update the twin model and record the feedback event.
 
@@ -175,7 +183,7 @@ DecisionOutcome
 ExecutionPlan → sent to IronClaw
 ExecutionResult → received from IronClaw
 
-ExplanationRecord → persisted for every decision
+ExplanationRecord → persisted by supported decision paths; release-wide coverage remains a beta gate
 FeedbackEvent → user response, feeds back to twin
 ```
 
@@ -280,18 +288,33 @@ Apps:
   web             → depends on shared-types, api client
   desktop         → depends on api client (Electron shell)
   mobile          → depends on api client (React Native + Expo)
+  idle-miner-runner → depends on idle-miner, core (desktop-managed child)
   openclaw-bridge → depends on llm-client (bridges OpenClaw to local Ollama)
+  twin-mcp-server → depends on db, shared-types (read-only external MCP surface)
 ```
 
 ## API Endpoints
 
-> **Note:** routes verified against `apps/api/src/index.ts` post-Tier-2-polish. Most live under `/api/...` (no `/v1/` prefix); the `/api/v1/...` namespace is reserved today for the Ask, Briefings, and Skill-Gaps routers that pre-dated the API consolidation. New routes go under `/api/...` unless they explicitly version a public contract.
+> **Note:** routes verified against `apps/api/src/index.ts` post-Tier-2-polish. Most live under `/api/...` (no `/v1/` prefix). Ask, Briefings, Skill-Gaps, and the account-free Sample API retain explicit `/api/v1/...` contracts; new routes otherwise go under `/api/...` unless they deliberately version a public contract.
+
+### Account-free Sample API (`apps/api/src/routes/demo.ts`)
+
+```
+GET    /api/v1/demo/info                          # Public availability check; no sample credential required
+POST   /api/v1/demo/session                       # Public mint route for a four-hour credential fixed to the sample identity
+GET    /api/v1/demo/recipes                       # Public static fictional recipes; independent of sample-session authority
+POST   /api/v1/demo/preview                       # Public optional rate-limited preview; separately kill-switchable
+```
+
+The sample credential is a distinct principal, not a user session. `apps/api/src/auth/demo-session.ts` permits only `GET`/`HEAD` requests on an explicit route allowlist bound to the reserved `is_demo` user. Mutations, settings, credentials, search, long-lived SSE, cross-user reads, and execution remain outside that authority. The database marker is revalidated on every request, so occupying the reserved UUID with a non-sample account fails closed.
 
 ### Decision + Events + Approvals API (`apps/api/src/routes/{decisions,events,approvals}.ts`)
 
 ```
 GET    /api/decisions/:userId                      # List decisions for a user
 GET    /api/decisions/:decisionId/explanation      # Get the ExplanationRecord
+GET    /api/decisions/:decisionId/receipt          # Get latest owner-scoped receipt metadata, when present
+DELETE /api/decisions/:decisionId/receipt          # Atomically delete the full owner-scoped receipt batch
 
 POST   /api/events/ingest                          # Worker submits a signal for processing
 GET    /api/events/stream/:userId                  # SSE stream for live updates
@@ -300,6 +323,19 @@ GET    /api/approvals/:userId/pending              # Pending approvals waiting o
 GET    /api/approvals/:userId/history              # Recently-resolved approvals
 POST   /api/approvals/:requestId/respond           # Approve / reject / dual-confirm
 ```
+
+The receipt GET route exposes only the latest signed structured metadata row,
+not the canonical logical/provider-neutral verification bundle; DELETE removes
+the complete owner-scoped batch. A successfully finalized decision-event attempt
+atomically persists receipts for its completed model calls before approval or
+external execution, using either a configured recorder identity or an ephemeral
+process-local one. If an attempt stops after its decision row is durable but
+before receipt finalization, re-ingestion returns a recovery-required response
+without inference or side effects; availability-preserving recovery requires a
+future durable provisional trace journal or atomic-restart design. Other
+application clients, product bundle export, and a receipt detail UI remain
+uncovered. Receipt free-form strings must not contain source content or secrets,
+and local rows are not application-level encrypted.
 
 ### User API (`apps/api/src/routes/users.ts`)
 
@@ -427,6 +463,32 @@ The worker uses a simple polling loop against CockroachDB:
 
 CockroachDB's serializable transactions ensure that concurrent workers won't double-process jobs. This is simpler than introducing a message broker at MVP stage, and CockroachDB handles the contention well.
 
+### Packaged Worker and Recovery Authority
+
+Packaged startup establishes one generation in order: an attested bundled database, an API child with a fresh in-memory instance proof, authenticated readiness for that exact child, web, then a worker carrying a separate unpersisted secret. Before worker spawn, the desktop manager registers that secret's hash in `worker_generation_authority`; the worker presents the capability and write transactions lock and validate the active row. Revocation is therefore a durable commit boundary even when an already-started provider request returns late.
+
+```
+attested DB → API spawn → exact authenticated readiness → web
+                         → durable worker authority → worker
+
+web/worker crash → bounded replacement inside the ready API generation
+API/DB authority loss → revoke worker authority → contain dependents
+normal pause → stop worker + suppress replacement → safe reuse or ordered rebuild on resume
+pause during recovery → cancel recovery → contain partial generation
+```
+
+Connector polling stages its remote cursor and advances the durable cursor only after every signal has been accepted by the API. A failed forward leaves the cursor unchanged so the next generation can replay without skipping mail or calendar changes.
+
+```
+staged cursor → forward all signals → exact generation still active → commit cursor
+lease token → compute embedding → atomic page update + exact-lease completion
+                           ↘ expiry/reclaim rejects stale completion
+```
+
+API or database authority loss revokes the worker generation and contains dependent services. An isolated web or worker crash retains the ready API generation and uses bounded, generation-scoped recovery. Normal tray pause stops the worker and suppresses delayed replacement while an exact ready API/web generation may remain available. A concurrent or newer pause cancels resume/recovery and contains a partial or failed generation. Resume reuses exact ready API/web when safe or reconstructs the ordered generation when it is not, then starts the worker. Stale cleanup is identity-checked so it cannot terminate a healthy successor.
+
+Embedding backfill has a second fencing boundary. A claim returns the exact five-minute lease timestamp as a token; completion requires that still-active token and commits the page embedding plus job completion atomically. An expired lease can be reclaimed, late completion is rejected, and the third abandoned or failed attempt becomes terminal instead of retrying forever.
+
 ### Retry Strategy
 
 - Event processing: 3 retries with exponential backoff (1s, 5s, 25s)
@@ -528,7 +590,10 @@ Integration tests run against the Docker CockroachDB instance from `docker-compo
 
 ### Eval Tests
 
-Scenario-based tests that evaluate decision quality. See [evals.md](./evals.md). These are not pass/fail unit tests -- they produce metrics that are tracked over time:
+`EvalRunner` scenarios evaluate decision quality and produce metrics that are
+tracked over time. Separately, the current eval CLI runs a pass/fail adversarial
+source-checkout catalog; its structural counts mean cataloged scenario presence,
+not release readiness or typed runtime observations. See [evals.md](./evals.md).
 
 - Interruption rate across scenario sets
 - False autonomy rate
@@ -551,8 +616,8 @@ pnpm --filter @skytwin/twin-model test -- --watch
 # Run integration tests (requires running CockroachDB)
 pnpm test:integration
 
-# Run eval suite
-pnpm --filter @skytwin/evals run evals
+# Generate adversarial source-checkout evidence
+pnpm eval:adversarial
 ```
 
 ## Local Development Setup

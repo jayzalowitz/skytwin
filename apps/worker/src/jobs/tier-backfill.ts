@@ -9,6 +9,7 @@ import {
   splitAddressList,
   type AuthoringTier,
 } from '@skytwin/connectors';
+import { requireJobAdmission, runAdmitted } from './job-admission.js';
 
 const log = createLogger('tier-backfill');
 
@@ -41,6 +42,7 @@ export interface TierBackfillOptions {
   batchSize?: number;
   /** When set, only backfill pages owned by this user. Default: all users. */
   userId?: string | null;
+  signal?: AbortSignal;
 }
 
 export interface TierBackfillSummary {
@@ -61,6 +63,7 @@ export interface TierBackfillSummary {
 export async function runTierBackfillJob(
   opts: TierBackfillOptions = {},
 ): Promise<TierBackfillSummary> {
+  requireJobAdmission(opts.signal);
   const batchSize = opts.batchSize ?? 200;
   const scope = opts.userId ?? null;
 
@@ -78,7 +81,7 @@ export async function runTierBackfillJob(
     signal_data: Record<string, unknown>;
   }>;
   try {
-    pages = await findPagesMissingAuthoringTier(scope, batchSize);
+    pages = await runAdmitted(opts.signal, () => findPagesMissingAuthoringTier(scope, batchSize));
   } catch (err) {
     log.warn('findPagesMissingAuthoringTier failed; skipping pass', {
       reason: err instanceof Error ? err.message : String(err),
@@ -87,6 +90,7 @@ export async function runTierBackfillJob(
   }
 
   for (const row of pages) {
+    requireJobAdmission(opts.signal);
     summary.attempted++;
     const result = deriveTierFromSignal(row.signal_data);
     if (result === null) {
@@ -99,6 +103,7 @@ export async function runTierBackfillJob(
     }
     try {
       const affected = await updatePageMetadata(row.user_id, row.page_id, patch);
+      requireJobAdmission(opts.signal);
       if (affected === 0) {
         // updatePageMetadata returns 0 when the page disappeared between
         // the find query and the update (deleted, user reassigned, etc.),
@@ -114,6 +119,7 @@ export async function runTierBackfillJob(
       if (result.source === 'signal-tier') summary.copiedFromSignal++;
       else summary.reclassified++;
     } catch (err) {
+      requireJobAdmission(opts.signal);
       summary.failed++;
       log.warn('tier backfill: updatePageMetadata failed', {
         pageId: row.page_id,
@@ -122,6 +128,8 @@ export async function runTierBackfillJob(
       });
     }
   }
+
+  requireJobAdmission(opts.signal);
 
   if (summary.attempted > 0) {
     log.info('tier backfill pass complete', { ...summary });

@@ -150,6 +150,21 @@ vi.mock('@skytwin/db', () => {
       }),
     },
     aiProviderRepository: { getEnabledForUser: vi.fn().mockResolvedValue([]) },
+    inferenceReceiptRepository: {
+      isCompleteForDecision: vi.fn().mockResolvedValue(false),
+      createManyForUser: vi.fn().mockImplementation(async (_u, inputs, completion) => ({ receipts: inputs, continuation: completion.continuation })),
+      getContinuationForDecision: vi.fn().mockResolvedValue(null),
+      claimExecutionForDecision: vi.fn().mockResolvedValue({ id: 'plan-1', dispatchAuthorityUpdatedAt: new Date() }),
+      isExecutionDispatchableForDecision: vi.fn().mockResolvedValue(true),
+      markExecutionTerminalForDecision: vi.fn().mockResolvedValue(true),
+      markNonEffectForDecision: vi.fn().mockResolvedValue(true),
+    },
+    executionAdmissionRepository: {
+      recordApprovalPreflightNonAction: vi.fn().mockResolvedValue({
+        explanationId: 'preflight-explanation-1',
+        evidence: {},
+      }),
+    },
     emailLabelRepository: {
       topLabelsForSender: vi.fn().mockResolvedValue([]),
       topLabelsForListId: vi.fn().mockResolvedValue([]),
@@ -248,6 +263,12 @@ vi.mock('@skytwin/explanations', () => ({
 
 vi.mock('@skytwin/llm-client', () => ({ LlmClient: vi.fn() }));
 
+vi.mock('../lib/user-llm-client.js', () => ({
+  resolveUserLlmClient: vi.fn().mockResolvedValue({
+    state: 'no_provider', client: null, reason: 'No provider in test',
+  }),
+}));
+
 vi.mock('@skytwin/core', async () => {
   const actual: typeof import('@skytwin/core') = await vi.importActual('@skytwin/core');
   return {
@@ -266,6 +287,7 @@ function buildApp(): Express {
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as unknown as { user: { id: string } }).user = { id: USER_ID };
+    req.authenticatedUserId = USER_ID;
     next();
   });
   app.use('/api/events', createEventsRouter());

@@ -1,5 +1,9 @@
 export { userRepository } from './user-repository.js';
-export type { CreateUserInput, UpdateUserInput } from './user-repository.js';
+export type {
+  CreateUserInput,
+  DemoUserRow,
+  UpdateUserInput,
+} from './user-repository.js';
 
 export { twinRepository } from './twin-repository.js';
 export type { UpdateProfileInput } from './twin-repository.js';
@@ -12,25 +16,169 @@ export type {
 } from './decision-repository.js';
 
 export { policyRepository } from './policy-repository.js';
+export { getPolicyAuthorityRevision } from './policy-repository.js';
 export type { CreatePolicyInput, UpdatePolicyInput } from './policy-repository.js';
 
 export { explanationRepository } from './explanation-repository.js';
 export type { CreateExplanationInput } from './explanation-repository.js';
+export { routineNonActionRepository } from './routine-non-action-repository.js';
+export type {
+  RecordRoutineNonActionInput,
+  RecordRoutineNonActionResult,
+} from './routine-non-action-repository.js';
+export { inferenceReceiptRepository } from './inference-receipt-repository.js';
+export type { CreateInferenceReceiptInput } from './inference-receipt-repository.js';
+export { decisionReceiptRepository } from './decision-receipt-repository.js';
+export type {
+  AppendDecisionReceiptFailureCode,
+  AppendDecisionReceiptInput,
+  AppendDecisionReceiptResult,
+  FindDecisionReceiptResult,
+} from './decision-receipt-repository.js';
+export {
+  buildDecisionRecordedReceiptContentV1,
+  decisionReceiptLifecycleRepository,
+} from './decision-receipt-lifecycle.js';
+export type { AppendDecisionReceiptLifecycleInput } from './decision-receipt-lifecycle.js';
+export {
+  decisionReceiptRowArtifactRefV1,
+  decisionReceiptRowEvidenceRefV1,
+} from './decision-receipt-artifacts.js';
+export {
+  buildGmailArchiveProposalCandidate,
+  gmailArchiveProposalRepository,
+  GmailArchiveProposalReceiptError,
+} from './gmail-archive-proposal-repository.js';
+export type {
+  GmailArchiveProposalBundle,
+  GmailArchiveProposal,
+  PersistGmailArchiveProposalInput,
+  PersistGmailArchiveProposalResult,
+} from './gmail-archive-proposal-repository.js';
+export type {
+  GmailArchiveApprovalResponseBundle,
+  RespondGmailArchiveApprovalInput,
+  RespondGmailArchiveApprovalResult,
+} from './gmail-archive-approval-response-repository.js';
+export type {
+  GmailArchivePreparationBundle,
+  PrepareGmailArchiveInput,
+  PrepareGmailArchiveResult,
+} from './gmail-archive-preparation-repository.js';
+export type {
+  ClaimPreparedGmailArchiveInput,
+  ClaimPreparedGmailArchiveResult,
+} from './gmail-archive-claim-repository.js';
+export { GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS } from './gmail-archive-recovery-repository.js';
+export { GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS } from './gmail-archive-recovery-lease-repository.js';
+export type { GmailInboxObservationTarget } from './gmail-inbox-observation-target-repository.js';
+export {
+  buildGmailArchiveReconciliationTerminalEnvelope,
+  gmailArchiveReconciliationEvidenceAllowedForPhase,
+  gmailArchiveReconciliationExplanationSemantics,
+  parseGmailArchiveReconciliationExplanationEvidence,
+  parseGmailArchiveReconciliationTerminalEnvelope,
+  validateStoredGmailArchiveReconciliationTerminal,
+  validateStoredGmailArchiveTerminalGraph,
+} from './gmail-archive-reconciliation-repository.js';
+export type {
+  GmailArchiveReconciliationBundle,
+  GmailArchiveReconciliationExplanationSemantics,
+  GmailArchiveReconciliationStableValues,
+  GmailArchiveReconciliationTerminalEnvelope,
+  ReconcileAbandonedGmailArchiveResult,
+} from './gmail-archive-reconciliation-repository.js';
+export {
+  buildGmailArchiveTerminalContent,
+  buildGmailArchiveTerminalResultEnvelope,
+  gmailArchiveResultAllowedForAttemptPhase,
+  parseGmailArchiveTerminalEvidence,
+  parseGmailArchiveTerminalExplanationBinding,
+  parseGmailArchiveTerminalExplanationEvidence,
+  parseGmailArchiveTerminalResultEnvelope,
+} from './gmail-archive-terminalization-repository.js';
+export type {
+  QueryAbandonedGmailArchiveInput,
+  QueryAbandonedGmailArchiveResult,
+  AcquireGmailArchiveRecoveryLeaseInput,
+  AcquireGmailArchiveRecoveryLeaseResult,
+  BeginGmailArchiveRecoveryObservationResult,
+  GmailArchiveRecoveryLease,
+  GmailArchiveRecoveryLeaseFence,
+  GmailArchiveRecoveryObservationPermit,
+  RecordGmailArchiveRecoveryObservationInput,
+  RecordGmailArchiveRecoveryObservationResult,
+} from '@skytwin/shared-types';
+export type {
+  GmailArchiveTerminalEvidence,
+  LegacyGmailArchiveTerminalResultPayload,
+  StoredGmailArchiveMutationResult,
+  GmailArchiveTerminalResultEnvelope,
+  GmailArchiveTerminalizationBundle,
+  TerminalizeGmailArchiveInput,
+  TerminalizeGmailArchiveResult,
+} from './gmail-archive-terminalization-repository.js';
+export { gmailArchiveRuntimeRepositories } from './gmail-archive-runtime-repositories.js';
 
 export { feedbackRepository } from './feedback-repository.js';
 export type { CreateFeedbackInput } from './feedback-repository.js';
 
-export { oauthRepository } from './oauth-repository.js';
+export {
+  oauthRepository,
+  OAuthAccountBindingConflictError,
+  CredentialDispatchConflictError,
+  CredentialDisconnectInProgressError,
+  CredentialVaultLockedError,
+  CredentialConnectionAuthorityError,
+} from './oauth-repository.js';
+export type { BeginCredentialDisconnectResult } from './oauth-repository.js';
+export {
+  credentialDispatchLeaseRepository,
+  executionDispatchLeaseRepository,
+  expireCredentialDispatchLeasesWithClient,
+  hasActiveCredentialDispatchWithClient,
+} from './credential-dispatch-lease-repository.js';
+export type {
+  CredentialDispatchGrant,
+  CredentialDispatchTerminalState,
+  ExecutionDispatchGrant,
+  StartExecutionDispatchInput,
+  StartExecutionDispatchResult,
+  BindCredentialDispatchInput,
+  BindCredentialDispatchResult,
+  StartCredentialDispatchInput,
+  StartCredentialDispatchResult,
+} from './credential-dispatch-lease-repository.js';
+export {
+  connectedAccountRepository,
+  digestProviderSubject,
+  canonicalizeScopes,
+} from './connected-account-repository.js';
+export type {
+  VerifiedConnectedAccountInput,
+  UnverifiedConnectedAccountInput,
+} from './connected-account-repository.js';
 export { oauthPkcePendingRepository } from './oauth-pkce-pending-repository.js';
 export { connectorHealthRepository } from './connector-health-repository.js';
 export type { ConnectorHealthRow } from './connector-health-repository.js';
-export { workerDeadLetterRepository } from './worker-dead-letter-repository.js';
+export {
+  workerDeadLetterRepository,
+  WORKER_DEAD_LETTER_JOB_CODES,
+  WORKER_DEAD_LETTER_ERROR_CODES,
+  isWorkerDeadLetterJobCode,
+} from './worker-dead-letter-repository.js';
 export type {
   WorkerDeadLetterRow,
+  WorkerDeadLetterJobCode,
+  WorkerDeadLetterErrorCode,
   WorkerDeadLetterStatus,
   RecordDeadLetterInput,
 } from './worker-dead-letter-repository.js';
-export { userPurgeRepository } from './user-purge-repository.js';
+export {
+  userPurgeRepository,
+  ActiveExecutionAdmissionError,
+  assertNoActiveExecutionsWithClient,
+} from './user-purge-repository.js';
 export type { PurgeUserResult } from './user-purge-repository.js';
 export { accessLogRepository } from './access-log-repository.js';
 export type { AccessLogRow, RecordAccessInput } from './access-log-repository.js';
@@ -44,17 +192,54 @@ export type {
 export { approvalRepository } from './approval-repository.js';
 export { patternRepository } from './pattern-repository.js';
 
+export {
+  workflowRepository,
+  WorkflowProposalIdempotencyConflictError,
+} from './workflow-repository.js';
+export type {
+  CreateWorkflowDraftInput,
+  CreateWorkflowDraftWithProposalInput,
+  CreateWorkflowVersionWithProposalInput,
+  CreateWorkflowVersionWithProposalResult,
+} from './workflow-repository.js';
+export { workflowWatchProjectionRepository } from './workflow-watch-projection-repository.js';
+export type {
+  MaterializeWorkflowVersionInput,
+  MaterializeWorkflowVersionResult,
+} from './workflow-watch-projection-repository.js';
+export { legacyWatchWorkflowReconciliationRepository } from './legacy-watch-workflow-reconciliation-repository.js';
+export type {
+  ReconcileLegacyWatchWorkflowsInput,
+  ReconcileLegacyWatchWorkflowsResult,
+} from './legacy-watch-workflow-reconciliation-repository.js';
+
 export { executionRepository } from './execution-repository.js';
+export { rollbackAdmissionRepository } from './rollback-admission-repository.js';
+export type {
+  RollbackAdmissionInput, RollbackAdmissionRow, RollbackTerminalStatus,
+  RollbackTerminalRow, RecordRollbackTerminalInput, RollbackAdmissionLifecycleStatus,
+  RollbackClaimInput, RollbackClaimRow, RollbackClaimResult,
+} from './rollback-admission-repository.js';
 export type {
   CreateExecutionPlanInput,
   CreateExecutionResultInput,
   CreateExecutionEventInput,
+  FinalizeAdmittedExecutionInput,
   ExecutionPlanWithResult,
   RollbackTarget,
 } from './execution-repository.js';
 
 export { signalRepository } from './signal-repository.js';
-export type { CreateSignalInput } from './signal-repository.js';
+export type {
+  CreateSignalInput,
+  PersistAccountConnectorSignalInput,
+  PersistConnectorSignalInput,
+} from './signal-repository.js';
+export { gmailMessageRefRepository } from './gmail-message-ref-repository.js';
+export type {
+  PersistGmailEvidenceInput,
+  PersistGmailEvidenceResult,
+} from './gmail-message-ref-repository.js';
 
 export { proposalRepository } from './proposal-repository.js';
 export type { CreateProposalInput } from './proposal-repository.js';
@@ -108,6 +293,7 @@ export type { RegisterCredentialRequirementInput } from './credential-requiremen
 
 export { aiProviderRepository } from './ai-provider-repository.js';
 export type { UpsertAIProviderInput } from './ai-provider-repository.js';
+export { reasoningModeRepository } from './reasoning-mode-repository.js';
 
 export { ironClawToolRepository } from './ironclaw-tool-repository.js';
 export type { UpsertIronClawToolInput } from './ironclaw-tool-repository.js';
@@ -144,6 +330,19 @@ export type {
   MarkMemoryActionOpportunityInput,
   UpsertMemoryActionOpportunityInput,
 } from './memory-action-opportunity-repository.js';
+
+export { executionAdmissionRepository } from './execution-admission-repository.js';
+export type {
+  AdmitApprovalExecutionInput,
+  AdmitMemoryExecutionInput,
+  ExecutionAdmission,
+  ExecutionAdmissionRow,
+  ExecutionAdmissionScope,
+  ExecutionAdmissionStatus,
+  ExecutionPolicyDenialRecord,
+  ObserveExecutionInput,
+  RecordExecutionPolicyDenialInput,
+} from './execution-admission-repository.js';
 
 export { mcpServerRepository } from './mcp-server-repository.js';
 export type { McpServerRow } from './mcp-server-repository.js';
@@ -259,5 +458,28 @@ export type {
 export { watchRepository } from './watch-repository.js';
 export type { WatchRow, CreateWatchInput } from './watch-repository.js';
 
-export { watchRunRepository } from './watch-run-repository.js';
-export type { WatchRunRow, CreateWatchRunInput } from './watch-run-repository.js';
+export {
+  createWatchRunEvidenceCommitment,
+  watchRunEvidenceSha256,
+  watchRunRepository,
+} from './watch-run-repository.js';
+export type {
+  WatchRunRow,
+  WatchRunEvidenceCommitment,
+  WatchSlotStatus,
+  ClaimedWatchSlot,
+  ClaimNextWatchSlotInput,
+  CompleteWatchSlotInput,
+  FailWatchSlotInput,
+  FailWatchSlotResult,
+} from './watch-run-repository.js';
+
+export { preEffectBarrierRepository } from './pre-effect-barrier-repository.js';
+export type {
+  PreEffectType,
+  PreEffectBarrierStatus,
+  PreEffectBarrierRow,
+  ReservePreEffectInput,
+  PreparePreEffectInput,
+  TerminalPreEffectWithExplanationInput,
+} from './pre-effect-barrier-repository.js';

@@ -1,11 +1,23 @@
 import { Router } from 'express';
 import type { Briefing, BriefingItem } from '@skytwin/shared-types';
+import { loadConfig } from '@skytwin/config';
 import {
   proactiveScanRepository,
   userRepository,
 } from '@skytwin/db';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
+import { DEMO_USER_ID } from '../auth/demo-session.js';
+
+function emptyBriefingFor(userId: string): Briefing {
+  return {
+    id: `briefing_empty_${userId}`,
+    userId,
+    items: [],
+    emailSent: false,
+    createdAt: new Date(),
+  };
+}
 
 /**
  * Create the briefings router.
@@ -32,18 +44,21 @@ export function createBriefingsRouter(): Router {
         return;
       }
 
+      // Retained proactive-scan rows can contain items derived from an older
+      // account-connected build. The supported preview exposes this surface
+      // only for the reserved fictional sample and returns before any row read
+      // for every other user. Exact source-development experimental mode keeps
+      // the previous behavior.
+      if (loadConfig().googleConnectionMode !== 'experimental' && userId !== DEMO_USER_ID) {
+        res.json({ briefing: emptyBriefingFor(userId) });
+        return;
+      }
+
       const row = await proactiveScanRepository.getLatestBriefing(userId);
 
       if (!row) {
         // No briefings exist yet — return an empty briefing
-        const emptyBriefing: Briefing = {
-          id: `briefing_empty_${userId}`,
-          userId,
-          items: [],
-          emailSent: false,
-          createdAt: new Date(),
-        };
-        res.json({ briefing: emptyBriefing });
+        res.json({ briefing: emptyBriefingFor(userId) });
         return;
       }
 

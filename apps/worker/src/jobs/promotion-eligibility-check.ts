@@ -1,4 +1,5 @@
 import { createLogger } from '@skytwin/core';
+import { loadConfig } from '@skytwin/config';
 import {
   mcpServerRepository,
   promotionOffersRepository,
@@ -6,8 +7,9 @@ import {
   query,
 } from '@skytwin/db';
 import { TrustTierEngine } from '@skytwin/policy-engine';
-import { PROMOTION_THRESHOLDS } from '@skytwin/shared-types';
+import { isAccountBackedIntegration, PROMOTION_THRESHOLDS } from '@skytwin/shared-types';
 import type { TrustTier } from '@skytwin/shared-types';
+import { requireJobAdmission, runAdmitted } from './job-admission.js';
 
 const log = createLogger('worker:promotion-eligibility-check');
 
@@ -46,11 +48,42 @@ export interface PromotionEligibilityCheckResult {
   alreadyPending: number;
 }
 
-export async function runPromotionEligibilityCheckJob(): Promise<PromotionEligibilityCheckResult> {
+async function isAccountFreePreviewServerBlocked(
+  connectionMode: string | undefined,
+  server: {
+    id: string;
+    registry_id?: string | null;
+    oauth_provider?: string | null;
+  },
+): Promise<boolean> {
+  if (isAccountBackedIntegration({
+    key: server.registry_id ?? undefined,
+    integration: server.oauth_provider ?? undefined,
+  })) return connectionMode !== 'experimental';
+  if (connectionMode === 'experimental') return false;
+
+  try {
+    const skills = await mcpServerRepository.listSkillNamesForServer(server.id);
+    if (skills.length === 0) return true;
+    return isAccountBackedIntegration({
+      key: server.registry_id ?? undefined,
+      integration: server.oauth_provider ?? undefined,
+      skills,
+    });
+  } catch {
+    return true;
+  }
+}
+
+export async function runPromotionEligibilityCheckJob(
+  deps: { signal?: AbortSignal } = {},
+): Promise<PromotionEligibilityCheckResult> {
+  requireJobAdmission(deps.signal);
   log.info('Running promotion eligibility check');
 
   // Fetch all active servers that have not been paused from auto-promotion
-  const activeServers = await mcpServerRepository.listActive();
+  const activeServers = await runAdmitted(deps.signal, () => mcpServerRepository.listActive());
+  const connectionMode = loadConfig().googleConnectionMode;
   const now = new Date();
 
   const engine = new TrustTierEngine();
@@ -59,7 +92,10 @@ export async function runPromotionEligibilityCheckJob(): Promise<PromotionEligib
   let alreadyPending = 0;
 
   for (const server of activeServers) {
+    requireJobAdmission(deps.signal);
     try {
+      if (await isAccountFreePreviewServerBlocked(connectionMode, server)) continue;
+
       // Skip if auto-promotion ceremony is paused for this server
       if (server.auto_promote_paused_until && server.auto_promote_paused_until > now) {
         continue;
@@ -124,6 +160,7 @@ export async function runPromotionEligibilityCheckJob(): Promise<PromotionEligib
       });
 
       if (evaluation.shouldChange && evaluation.recommendedTier) {
+        requireJobAdmission(deps.signal);
         const created = await promotionOffersRepository.createIfPending({
           userId: server.user_id,
           serverId: server.id,
@@ -133,6 +170,7 @@ export async function runPromotionEligibilityCheckJob(): Promise<PromotionEligib
           decisionsObservedCount: totalActions,
           approvedCount: approvedActions,
         });
+        requireJobAdmission(deps.signal);
         if (created) {
           offered++;
           log.info('Promotion ceremony offered', {
@@ -147,6 +185,7 @@ export async function runPromotionEligibilityCheckJob(): Promise<PromotionEligib
         }
       }
     } catch (err) {
+      requireJobAdmission(deps.signal);
       log.warn('Error checking promotion eligibility for server', {
         serverId: server.id,
         error: err instanceof Error ? err.message : String(err),

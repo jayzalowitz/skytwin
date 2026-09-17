@@ -2,16 +2,16 @@
 -- Model download tracking for embedded LLM auto-fetch (#187 AC#2).
 --
 -- Each row tracks one download of a GGUF artifact named in the
--- `@skytwin/embedded-llm` registry. The downloader streams in chunks,
--- updates `bytes_downloaded` periodically, and survives API restart
--- via DB persistence: any row with status='downloading' on boot is
--- transitioned to 'paused' so the user can manually resume.
+-- `@skytwin/embedded-llm` registry. The downloader checkpoints verified
+-- transfer progress in CockroachDB. On boot, transfer and hash rows become
+-- paused and resumable; installation rows are reconciled against the exact
+-- verified active manifest. The API does not bind until a bounded,
+-- authoritative recovery pass leaves no worker-owned row ambiguous.
 --
--- Why DB-backed and not just in-memory: 2-9GB downloads can run for
--- 10+ minutes. An API restart mid-download (deploy, OOM, crash) would
--- otherwise lose all progress. With this table the user sees a
--- "paused — click resume" UX and the partial bytes on disk are still
--- valid (Range request resumes from where we left off).
+-- Why DB-backed and not just in-memory: model downloads can be large and
+-- long-running. An API restart mid-download (deploy, OOM, crash) must not
+-- infer durable progress from a file's length. The row, validator sidecar,
+-- and row-id-namespaced partial jointly bind the resumable byte boundary.
 
 CREATE TABLE IF NOT EXISTS model_downloads (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -20,16 +20,14 @@ CREATE TABLE IF NOT EXISTS model_downloads (
   -- registry lives in the `@skytwin/embedded-llm` package, not in DB.
   model_id STRING NOT NULL,
   -- Absolute path on the API host's filesystem where the final GGUF
-  -- will land. We download to `<target_path>.partial` and atomically
-  -- rename on success.
+  -- will land. Each attempt uses a row-id-namespaced partial plus a durable
+  -- validator sidecar; verified activation publishes a content-addressed copy.
   target_path STRING NOT NULL,
-  -- Total bytes per registry (matches registry.approxBytes at start,
-  -- gets corrected to Content-Length on first response if different).
+  -- Exact immutable registry byte count. A disagreeing response is rejected.
   total_bytes INT8 NOT NULL,
   bytes_downloaded INT8 NOT NULL DEFAULT 0,
-  -- SHA-256 hex (64 chars) from registry. Verified after download
-  -- completes; mismatch → status='failed'. Empty / all-zeros = skip
-  -- verification (placeholder hashes in v1 registry).
+  -- Mandatory SHA-256 from the immutable registry. It is verified before
+  -- activation; placeholder or malformed digests are rejected at module load.
   sha256_expected STRING NOT NULL,
   status STRING NOT NULL CHECK (status IN (
     'pending', 'downloading', 'paused', 'verifying', 'installing', 'complete', 'failed', 'cancelled'

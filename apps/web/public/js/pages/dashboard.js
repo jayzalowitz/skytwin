@@ -2,12 +2,11 @@ import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearn
 import { renderTrustProgress } from '../components/progress-bar.js';
 import { renderTierLadderIntro } from '../components/tier-ladder-intro.js';
 import {
-  KEY_USER_ID,
-  KEY_TOUR_MODE,
   lastVisitKey,
   firstDecisionSeenKey,
   tierCelebratedKey,
 } from '../storage-keys.js';
+import { getEffectiveUserId, isSampleMode } from '../sample-session.js';
 
 // View layer — pure render helpers + global handlers (handleAskTwin etc).
 // Split out so this file can stay focused on data flow and lifecycle.
@@ -359,8 +358,8 @@ function renderBrainPrompt() {
         <a href="#/settings" class="btn btn-outline btn-sm">Or bring your own API key</a>
       </div>
       <div style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.5;">
-        <strong>Local brain</strong> — runs on your machine, no API keys, no per-message cost, your data never leaves the device.<br>
-        <strong>API key</strong> — uses Anthropic / OpenAI / Google. Faster on a small laptop, but each message goes to that provider.
+        <strong>On-device model</strong> — keeps the reasoning prompt on this device and has no per-message provider fee; a compatible runtime and model must be installed.<br>
+        <strong>Hosted provider</strong> — uses Anthropic / OpenAI / Google. Each reasoning request sends its prompt to the provider you configure.
       </div>
     </div>
   `;
@@ -381,6 +380,8 @@ function formatDashboardTime(d) {
 }
 
 export async function renderDashboard(container, userId) {
+  const tourMode = isSampleMode();
+
   // Fast-changing data — refetched on every render because SSE updates
   // and user action move them around constantly.
   // Slow-changing data — wrapped in slowFetch so a 4s first-scan tick or
@@ -395,9 +396,9 @@ export async function renderDashboard(container, userId) {
     slowFetch(`skill-gaps-${userId}`, fetchSkillGaps, [userId]),
     fetchTrustProgress(userId),
     slowFetch(`learned-${userId}`, fetchLearned, [userId]),
-    slowFetch('unmet-creds', fetchUnmetCredentials, []),
-    slowFetch(`oauth-google-${userId}`, fetchOAuthStatus, [userId, 'google']),
-    slowFetch('creds-status', fetchCredentialsStatus, []),
+    tourMode ? Promise.resolve({ unmet: [] }) : slowFetch('unmet-creds', fetchUnmetCredentials, []),
+    tourMode ? Promise.resolve({ connected: false, scopes: [] }) : slowFetch(`oauth-google-${userId}`, fetchOAuthStatus, [userId, 'google']),
+    tourMode ? Promise.resolve({ google: { configured: false } }) : slowFetch('creds-status', fetchCredentialsStatus, []),
     fetchBriefing(userId),
     fetchLatestTwinBriefing(userId, 'daily').catch(() => null),
     slowFetch(`lifebooks-${userId}`, fetchLifebooks, [userId]),
@@ -462,8 +463,6 @@ export async function renderDashboard(container, userId) {
   const confLabel = overallConf >= 75 ? 'Very confident' : overallConf >= 50 ? 'Getting there' : overallConf >= 25 ? 'Still learning' : 'Just started';
   const confClass = overallConf >= 75 ? 'high' : overallConf >= 50 ? 'moderate' : overallConf >= 25 ? 'low' : 'speculative';
 
-  const tourMode = (() => { try { return localStorage.getItem(KEY_TOUR_MODE) === '1'; } catch { return false; } })();
-
   // First-run "needs a brain" prompt. Two prerequisites are cheap and
   // already known here: tour mode (always-off) and recentDecisions
   // (zero only on first-run-ish accounts). Only when both clear do we
@@ -522,12 +521,12 @@ export async function renderDashboard(container, userId) {
     window._skytwinLastVisitWired = true;
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState !== 'hidden') return;
-      const uid = (() => { try { return localStorage.getItem(KEY_USER_ID); } catch { return null; } })();
+      const uid = getEffectiveUserId();
       if (!uid) return;
       try { localStorage.setItem(lastVisitKey(uid), String(Date.now())); } catch { /* private mode */ }
     });
     window.addEventListener('beforeunload', () => {
-      const uid = (() => { try { return localStorage.getItem(KEY_USER_ID); } catch { return null; } })();
+      const uid = getEffectiveUserId();
       if (!uid) return;
       try { localStorage.setItem(lastVisitKey(uid), String(Date.now())); } catch { /* noop */ }
     });

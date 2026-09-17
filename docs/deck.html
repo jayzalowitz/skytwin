@@ -4,27 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SkyTwin — the deck: every claim, and the mechanism that constrains it</title>
-  <meta name="description" content="Twenty-two slides on SkyTwin, an open-source local-first digital twin. Every capability claim is followed by the mechanism that limits it: provenance-gated actions, autonomy earned in published increments with no automatic path to full autopilot, spend structurally off in the shipped build, a correction control on every row, and no server anywhere in the path.">
+  <meta name="description" content="Twenty-two slides on SkyTwin, an open-source local-first digital twin. Every capability claim is followed by the mechanism that limits it: provenance-gated actions, autonomy earned in published increments with no automatic path to full autopilot, spend structurally off in the shipped build, correction controls, and explicit network boundaries.">
   <link rel="canonical" href="https://jayzalowitz.github.io/skytwin/deck.html">
   <meta property="og:title" content="SkyTwin — the deck">
   <meta property="og:description" content="An agent you let into your inbox is only adoptable if its refusals are as legible as its actions. Twenty-two slides, each claim paired with the code that constrains it.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://jayzalowitz.github.io/skytwin/deck.html">
-  <!-- The unfurl image is a page this deck already ships, served from the same
-       origin. It resolves only because docs/_config.yml no longer excludes the
-       screenshots directory from the Jekyll build; if that exclude ever comes
-       back, this 404s along with the index.html hero. -->
-  <meta property="og:image" content="https://jayzalowitz.github.io/skytwin/screenshots/briefing.png">
-  <meta property="og:image:alt" content="The SkyTwin briefing page: a headline reading “2 things need you.” above a counter row and two to-do rows.">
-  <meta name="twitter:card" content="summary_large_image">
   <!-- No external font fetch, and none of the three design-system typefaces
        load here. DESIGN.md names Fraunces / Geist / Geist Mono; this page lists
        them first and falls through to the system stack, so every reader sees
        the platform sans, a serif (Georgia) for the twin's voice, and the
        platform mono for data. That is the trade we chose — a serif signature is
-       not worth a third-party request on a doc set whose whole claim is that
-       nothing leaves your machine, and it keeps slide "There is no SkyTwin
-       server" literally true. What survives the fallback is the register
+       not worth a third-party request on a privacy-focused doc set. What
+       survives the fallback is the register
        change: serif against sans. Same token block as index.html / demo.html so
        the Pages site reads as one product. No CDN, no analytics, no
        third-party anything on this page. -->
@@ -787,12 +779,7 @@
           <p>Same morning. Same ten things.</p>
           <p>This page is the product: what was already handled, what needs a decision from you, and what you can read later — in that order, with the source of every line one click away. Everything after this slide exists to make this page safe to believe.</p>
         </div>
-        <figure class="mt-lg col-fig">
-          <div class="crop" style="--sx:284; --sy:296; --sw:800; --sh:356;">
-            <img src="screenshots/briefing.png" alt="Crop of the SkyTwin briefing page. A headline reads '2 things need you.' over a counter row: 2 handled on my own, 2 need you, 6 to catch up on. Below it a TO-DOS block with two accent-edged rows — 'Account notice' (email · 1 source · Details), 'We detected a sign-in from a new device on your account,' instruction 'Open your account's security settings and confirm this sign-in — don't use links in the message'; and 'Acme kickoff' (calendar · 1 source · Details), 'Intro call with the Acme team. Agenda attached,' instruction 'Accept the invite, or decline / propose another time.' A Power view pill sits above the headline.">
-          </div>
-          <figcaption>Briefing · daily · captured 2026-06-15. Cropped to the voice line, the value line and the two to-do rows so the product's own type is readable here; <a href="screenshots/briefing.png">the whole frame</a> is one click away, and <a href="#04-claim-decides">the awareness zone below it</a> gets its own slide.</figcaption>
-        </figure>
+        <p class="honest mt-lg">Historical briefing capture withheld pending replacement after the public-copy audit.</p>
       </div>
     </section>
 
@@ -809,7 +796,7 @@
             <p class="row-b"><span class="mono danger">CVE-2025-32711</span>, “EchoLeak,” <span class="mono">CVSS 9.3</span>. One crafted email exfiltrated whatever Microsoft 365 Copilot had in context. No click from the victim. An assistant that reads your inbox and treats what it reads as instructions is not hypothetically exposed. It is exposed by construction.</p>
           </div>
           <div class="row">
-            <p class="row-t"><span class="row-n">02</span>Three days ago.</p>
+            <p class="row-t"><span class="row-n">02</span>Reported on 2026-08-24.</p>
             <p class="row-b">TechCrunch (<span class="mono">2026-08-24</span>) reported privacy and security concerns about Instinct, a personal assistant with access to email, calendar, screen, audio and keystrokes. Per that reporting: it would not delete a user's Gmail records on request; it summarized an inbox after access had been disconnected, while storing emails in plain text; it was phishable into unauthorized email access; and Katie Jacobs Stanton said it “sent an innocuous email on my behalf without checking with me first.”</p>
           </div>
           <div class="row">
@@ -853,22 +840,12 @@
         <div class="split">
           <div>
             <h3 class="flush">The act zone</h3>
-            <figure>
-              <div class="crop" style="--sx:284; --sy:362; --sw:700; --sh:292;">
-                <img loading="lazy" src="screenshots/briefing.png" alt="Crop of the briefing's value line and TO-DOS block: two rows, each with an accent left edge and a checkbox. 'Account notice — email · 1 source · Details' with the instruction 'Open your account's security settings and confirm this sign-in — don't use links in the message.' and 'Acme kickoff — calendar · 1 source · Details' with 'Accept the invite, or decline / propose another time.'">
-              </div>
-              <figcaption>Accent left edge · checkbox · 15px. Both to-do rows.</figcaption>
-            </figure>
+            <p>Historical act-zone capture withheld pending replacement after the public-copy audit.</p>
             <p class="callout">act zone — the accent edge is semantics, not decoration</p>
           </div>
           <div>
             <h3 class="flush">The awareness zone</h3>
-            <figure>
-              <div class="crop" style="--sx:284; --sy:645; --sw:700; --sh:292;">
-                <img loading="lazy" src="screenshots/briefing.png" alt="Crop of the briefing's TOPICS TO CATCH UP ON block: lighter rows with no accent edge and no checkbox, grouped under 'Email' — 'Weekly product digest' with 'Nothing needed — I'll file it for you.', 'Re: vendor onboarding' with the same disposition, and 'Trial ending soon' with 'Nothing needed — I'll file it for you.' Each row carries a source-type tag, a '·1 source' citation and a Details link.">
-              </div>
-              <figcaption>No edge · no checkbox · 13.5px. Three of the six rows.</figcaption>
-            </figure>
+            <p>Historical awareness-zone capture withheld pending replacement after the public-copy audit.</p>
             <p class="callout-neutral">awareness zone — visibly recedes</p>
           </div>
         </div>
@@ -879,8 +856,8 @@
           <p>The sixth is wrong, and we are not cropping it out. The voice note reads “Take a look and tell me what to do” — an action request rendered in the zone this slide defines as no-edge, no-checkbox, visibly receding. That is a bug in the frame, and it is exactly the kind the two-zone rule exists to make visible.</p>
         </div>
         <details class="srcs">
-          <summary>Sources · 3 file references</summary>
-          <p class="src">Rows verbatim from <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/screenshots/briefing.png">docs/screenshots/briefing.png</a> · two-zone hierarchy specified in <a href="https://github.com/jayzalowitz/skytwin/blob/main/DESIGN.md#L108-L141">DESIGN.md:108-141</a> · in-app signal links, never raw external URLs, per <a href="https://github.com/jayzalowitz/skytwin/blob/main/DESIGN.md#L133-L136">DESIGN.md:133-136</a> and <a href="https://github.com/jayzalowitz/skytwin/blob/main/CLAUDE.md">CLAUDE.md</a> Safety Invariant #8.</p>
+          <summary>Sources · 2 file references</summary>
+          <p class="src">Two-zone hierarchy specified in <a href="https://github.com/jayzalowitz/skytwin/blob/main/DESIGN.md#L108-L141">DESIGN.md:108-141</a> · in-app signal links, never raw external URLs, per <a href="https://github.com/jayzalowitz/skytwin/blob/main/DESIGN.md#L133-L136">DESIGN.md:133-136</a> and <a href="https://github.com/jayzalowitz/skytwin/blob/main/CLAUDE.md">CLAUDE.md</a> Safety Invariant #8.</p>
         </details>
       </div>
     </section>
@@ -938,16 +915,11 @@
         <h2>It sends mail and answers invites on your real accounts.</h2>
 
         <div class="col">
-          <p class="lede">Two local handlers call live APIs: Gmail v1 and Google Calendar v3. Real sends, real RSVPs, real event changes.</p>
+          <p class="lede">The source contains Google and Microsoft account handlers, but the supported preview disables account credential access before provider contact. The account-free sample has no real sends, RSVPs, or event changes.</p>
           <p class="voice mt-lg">Your call. I'll explain the why on each one — say yes if it sounds right, or tell me why not so I learn for next time.</p>
         </div>
 
-        <figure class="mt-lg col-fig">
-          <div class="crop" style="--sx:284; --sy:336; --sw:840; --sh:296;">
-            <img loading="lazy" src="screenshots/approvals.png" alt="Crop of the 'Needs your OK' queue: the first approval card, 'RSVP to the Acme kickoff invite', tagged NORMAL, citing its source as google_calendar / Acme kickoff, with the line 'A new invite needs your yes/no before I respond', a collapsible 'If you approve — what happens' preview, and three controls — a green 'Yes, do it' button, 'Not this time', and a free-text box reading 'Tell me why so I learn (optional)'.">
-          </div>
-          <figcaption>Needs your OK · captured 2026-06-15. The approve control ships green (--safe, “handled”); risk ships amber; iris is spent on the card edge that means “needs you”. <a href="screenshots/approvals.png">The whole queue</a> — the tier card above this crop, and the HIGH card below it — is one click away.</figcaption>
-        </figure>
+        <p class="honest mt-lg">Historical approvals capture withheld pending replacement after the public-copy audit.</p>
           <p class="callout">one primary per card · “Yes, do it” / “Not this time” / “Tell me why so I learn”</p>
 
         <div class="two-up mt-lg">
@@ -963,8 +935,8 @@
         </div>
 
         <details class="srcs">
-          <summary>Sources · 7 file references</summary>
-          <p class="src"><a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/ironclaw-adapter/src/handlers/email-action-handler.ts#L5">packages/ironclaw-adapter/src/handlers/email-action-handler.ts:5</a> (GMAIL_API, 4 fetch calls) and calendar-action-handler.ts (Calendar v3, 1 fetch). <span class="mono">grep -c 'fetch('</span> returns 0 for the finance, task, smart-home, social, document and health handlers, all of which throw to force fallback; smart-home-action-handler.ts:6-8 says so in a comment. <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/execution-setup.ts#L62-L132">apps/api/src/execution-setup.ts:62-132</a> registers IronClaw and OpenClaw only when their URLs are configured. Card copy verbatim from docs/screenshots/approvals.png. Brand-voice rule (“never regress to generic Approve/Reject”) is <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/demo.md">docs/demo.md</a> Step 2. Corrects <a href="https://github.com/jayzalowitz/skytwin/blob/main/README.md">README.md</a>'s “Concrete Examples” table, which implies end-to-end flight booking and grocery reorder.</p>
+          <summary>Sources · 6 file references</summary>
+          <p class="src"><a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/ironclaw-adapter/src/handlers/email-action-handler.ts#L5">packages/ironclaw-adapter/src/handlers/email-action-handler.ts:5</a> (GMAIL_API, 3 fetch calls) and calendar-action-handler.ts (Calendar v3, 1 fetch). <span class="mono">grep -c 'fetch('</span> returns 0 for the finance, task, smart-home, social, document and health handlers, all of which throw to force fallback; smart-home-action-handler.ts:6-8 says so in a comment. <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/execution-setup.ts#L62-L132">apps/api/src/execution-setup.ts:62-132</a> registers configured execution adapters. Brand-voice guidance is in <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/demo.md">docs/demo.md</a> Step 2. Corrects <a href="https://github.com/jayzalowitz/skytwin/blob/main/README.md">README.md</a>'s illustrative scenarios, which are not supported-workflow assertions.</p>
         </details>
       </div>
     </section>
@@ -1000,12 +972,7 @@
           </div>
           </div>
         <div class="full-figure">
-            <figure>
-              <div class="crop" style="--sx:284; --sy:126; --sw:823; --sh:590;">
-                <img loading="lazy" src="screenshots/settings.png" alt="Crop of the SkyTwin settings page, autonomy section: 'How much should your twin do? Choose how much autonomy your twin should have. You can change this anytime.' Five radio rows — Just watch ('Your assistant watches but never does anything'), Ask me first ('suggests actions and waits for your OK. The safest way to start.'), Handle small stuff, Handle most things (selected, marked with an accent border and filled radio), and Full autopilot. Below them a Save button and a collapsed disclosure reading 'What does it take to move up?'">
-              </div>
-              <figcaption>Settings · the ladder · captured 2026-06-15. Iris marks only the selected rung.</figcaption>
-            </figure>
+            <p class="honest">Current Settings ladder capture withheld pending replacement after the public-copy audit.</p>
             <p class="src mt-md">Copy drift, stated rather than hidden: the settings page ships “Just watch” for the bottom rung while <span class="mono">TIER_DISPLAY_LABELS</span> at policy.ts:128-129 reads “Watch &amp; Suggest”. The table above uses the label the app actually renders.</p>
             <div class="honest">
               <b>Honest note</b>
@@ -1110,12 +1077,7 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
             <p>Caps compose in one direction only. Global settings are the ceiling; an LLM-interpreted risk profile can only clamp down; per-app overrides clamp again; and boolean rails like “always ask before doing something that can't be undone” are OR-ed, so no lower layer can relax them. If the model misreads your risk profile, the worst case is over-restriction.</p>
             <p>And the model is never allowed to price its own action. Candidates emitted by an LLM strategy carry a cost intent of <span class="mono">unknown</span>, and unknown is refused the zero-cost fast path and escalated to a human. Negative costs are rejected outright as a spend-tracking bypass.</p>
           </div>
-          <figure>
-            <div class="crop" style="--sx:284; --sy:2636; --sw:823; --sh:332;">
-              <img loading="lazy" src="screenshots/settings.png" alt="Crop of the settings page 'Spending guardrails' panel: 'Put a cap on how much your assistant can spend without asking you first.' Two fields — 'Most I can spend at once' set to $100.00, and 'Most I can spend in one day' set to $500.00 — plus a checked box reading 'Always ask before doing something that can't be undone', and a Save button.">
-            </div>
-            <figcaption>Settings · spending guardrails.</figcaption>
-        </figure>
+          <p class="honest">Current spending-guardrails capture withheld pending replacement after the public-copy audit.</p>
             <div class="honest">
               <b>Honest footnote</b>
               That spend rule's own description says “unless the user has configured spend limits.” The rule has no such condition. The code is stricter than its own doc. We would rather fix the doc than loosen the rule.
@@ -1131,7 +1093,7 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
 
         <details class="srcs">
           <summary>Sources · 8 file references</summary>
-          <p class="src">Caps from <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/web/public/js/pages/settings.js#L514">apps/web/public/js/pages/settings.js:514</a> (<span class="mono">maxSpendPerActionCents ?? 10000</span>) and :521 (<span class="mono">maxDailySpendCents ?? 50000</span>), matching <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/demo.md">docs/demo.md</a> Step 6. Exactness and the costZeroIntent “unknown” refusal at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/policy-engine/src/policy-evaluator.ts#L312-L332">packages/policy-engine/src/policy-evaluator.ts:312-332</a> (#372) — the per-action comparison is <span class="mono">estimatedCostCents &lt;= maxSpendPerActionCents</span> at :331, so the cap itself passes and one cent over does not; the daily comparison is the strict <span class="mono">totalAfterAction &gt; effectiveDaily</span> at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/policy-engine/src/spend-tracker.ts#L253">spend-tracker.ts:253</a>, same boundary. Negative-cost rejection at spend-tracker.ts:214-224; one-way clamping (<span class="mono">clampDown = Math.min</span>) at spend-tracker.ts:96-100, covered by 15 tests in per-app-overrides.test.ts and 13 in risk-profile-clamp.test.ts. The cost&gt;0 deny read verbatim at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/policy-engine/src/default-policies.ts#L13-L38">packages/policy-engine/src/default-policies.ts:13-38</a>, merged unconditionally at policy-evaluator.ts:119-122, evaluated in the policy loop at :229-247 (deny return at :232-239) — after the tier gate at :135, the autonomy-settings check at :175-177 and the quiet-hours early return at :198-226. Approve-time re-evaluation at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/approvals.ts">apps/api/src/routes/approvals.ts</a>:625-628.</p>
+          <p class="src">Caps from <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/web/public/js/pages/settings.js#L524">apps/web/public/js/pages/settings.js:524</a> (<span class="mono">maxSpendPerActionCents ?? 10000</span>) and :531 (<span class="mono">maxDailySpendCents ?? 50000</span>), matching <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/demo.md">docs/demo.md</a> Step 6. Exactness and the costZeroIntent “unknown” refusal at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/policy-engine/src/policy-evaluator.ts#L312-L332">packages/policy-engine/src/policy-evaluator.ts:312-332</a> (#372) — the per-action comparison is <span class="mono">estimatedCostCents &lt;= maxSpendPerActionCents</span> at :331, so the cap itself passes and one cent over does not; the daily comparison is the strict <span class="mono">totalAfterAction &gt; effectiveDaily</span> at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/policy-engine/src/spend-tracker.ts#L253">spend-tracker.ts:253</a>, same boundary. Negative-cost rejection at spend-tracker.ts:214-224; one-way clamping (<span class="mono">clampDown = Math.min</span>) at spend-tracker.ts:96-100, covered by 15 tests in per-app-overrides.test.ts and 13 in risk-profile-clamp.test.ts. The cost&gt;0 deny read verbatim at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/policy-engine/src/default-policies.ts#L13-L38">packages/policy-engine/src/default-policies.ts:13-38</a>, merged unconditionally at policy-evaluator.ts:119-122, evaluated in the policy loop at :229-247 (deny return at :232-239) — after the tier gate at :135, the autonomy-settings check at :175-177 and the quiet-hours early return at :198-226. Approve-time re-evaluation at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/approvals.ts">apps/api/src/routes/approvals.ts</a>:625-628.</p>
         </details>
       </div>
     </section>
@@ -1141,19 +1103,14 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
       <div class="wrap">
         <p class="slide-label">GATE 05 &nbsp;·&nbsp; the way out, 1 of 2</p>
         <h2>Pause. And exactly what pause covers.</h2>
-        <p class="lede col">Two buttons in this product say “Pause everything.” Neither one is the switch that stops your twin.</p>
+        <p class="lede col">Two buttons in this product say “Pause everything.” Neither one stops every subsystem.</p>
 
         <div class="col">
-          <p>Four different stops ship today, two of them called “Pause everything,” and they are not the same stop. The one in the top-right corner of every page pauses your installed capability servers — the MCP tools. It never touches the twin's email and calendar path and never touches your trust tier. The one lower in Settings demotes you to observer. Neither is what the label promises, and naming that here is cheaper than letting you find out during an incident.</p>
-          <p>The switch that actually stops the twin is Settings → Pause auto-execution (#379), the panel beside this text. Self-hosters get a matching operator switch, <span class="mono">SKYTWIN_AUTO_EXECUTE_DISABLED</span>, that the interface cannot clear. Either one flips the same flag inside the evaluator, and the ordering is the interesting part: it is applied at the <em>end</em> of policy evaluation, not the start, so it can only escalate things to you — it can never turn a refusal into an approval. That was a real bug once; the source comment records it.</p>
+          <p>Five different stops ship today, two of them called “Pause everything,” and they are not the same stop. The one in the top-right corner of every page pauses your installed capability servers — the MCP tools. It never touches the twin's email and calendar path and never touches your trust tier. The one lower in Settings demotes you to observer. The desktop tray stops the packaged worker and suppresses delayed replacement; its exact ready API/web generation may remain available, while a pause during recovery contains any partial generation. These controls are separate, and naming that here is cheaper than letting you find out during an incident.</p>
+          <p>The switch that stops automatic action is Settings → Pause auto-execution (#379), the panel beside this text. Signal sync continues and otherwise-allowed actions route to review. Self-hosters get a matching operator switch, <span class="mono">SKYTWIN_AUTO_EXECUTE_DISABLED</span>, that the interface cannot clear. Either one flips the same flag inside the evaluator, and the ordering is the interesting part: it is applied at the <em>end</em> of policy evaluation, not the start, so it can only escalate things to you — it can never turn a refusal into an approval. That was a real bug once; the source comment records it. There is no single whole-system stop today.</p>
         </div>
 
-        <figure class="col-fig mt-lg">
-          <div class="crop" style="--sx:284; --sy:2257; --sw:823; --sh:205;">
-            <img loading="lazy" src="screenshots/settings.png" alt="Crop of the settings page 'Pause auto-execution' panel, which carries a red left edge. It reads: 'Panic button (#379). When on, every action your twin would take is routed to the approvals queue for you to review manually — even at the highest autonomy tier.' Below it: 'Your toggle: ACTIVE. Your twin can act on signals per your trust tier.' and a 'Pause auto-execution' button.">
-          </div>
-          <figcaption>Settings · the panic button. The red is the product's own.</figcaption>
-        </figure>
+        <p class="honest col-fig mt-lg">Current pause-control capture withheld pending replacement after the public-copy audit.</p>
         <p class="dim mt-md">Pause stops your twin from acting. It keeps watching, so nothing is lost. One caveat, fixed while this deck was in review: the primary inbound-mail path did not pass per-user autonomy settings to the evaluator, so only the operator switch fired there. <a href="https://github.com/jayzalowitz/skytwin/pull/615">#615</a> routes them through — <span class="mono">decision-maker.ts:256</span> now passes <span class="mono">context.autonomySettings</span>.</p>
       </div>
     </section>
@@ -1168,7 +1125,7 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
         <h3 class="flush">What “Undo” actually does</h3>
         <div class="two-up">
           <p>Every row of the decision log carries an Undo button, and it does not un-send the email. Clicking it opens a form — what went wrong, how bad, what you'd have preferred — and writes that as feedback against the decision. The twin reads it and adjusts. The toast is honest about which of the two it is: “Walked back. I'll remember: …”.</p>
-          <p>Real reversal of an executed action exists in exactly one place in this codebase, <span class="mono">POST /api/capabilities/:id/regret</span>, and it only reaches actions taken through an MCP server. The decision log never calls it. Undoing the send itself is not shipped, and Safety Invariant #5 is why we won't write the word “reversible” on this slide until it is.</p>
+          <p><span class="mono">POST /api/capabilities/:id/regret</span> is report-only: it identifies linked reversible and irreversible actions but changes nothing outside SkyTwin. The decision log's Undo control records corrective feedback and never calls that endpoint. Reversing the executed action itself is not shipped, and Safety Invariant #5 is why we won't write the word “reversible” on this slide until it is.</p>
         </div>
 
         <h3>Can I get out?</h3>
@@ -1176,103 +1133,85 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
           <div>
             <p>“Delete everything about me” — profile, decisions, memory, preferences, OAuth tokens, sessions, spend records — runs as one serializable transaction. Either all of it is gone or nothing changed. There is no half-deleted state to discover later, and the endpoint is ownership-gated so nobody can purge anyone else.</p>
           </div>
-          <figure>
-            <div class="crop" style="--sx:284; --sy:3668; --sw:823; --sh:186;">
-              <img loading="lazy" src="screenshots/settings.png" alt="Crop of the settings page 'Delete everything about me' panel, which carries a red left edge: 'Wipes your twin profile, every decision, every memory page, every preference, OAuth tokens, sessions, spend records — the whole footprint, in one transaction. Can't be undone. Your connected services (Gmail, Calendar) keep working at the provider level; SkyTwin just stops seeing them and forgets what it learned.' A red-outlined 'Delete my data' button sits below.">
-            </div>
-            <figcaption>Settings · one transaction, or nothing.</figcaption>
-          </figure>
+          <p class="honest">Current data-deletion capture withheld pending replacement after the public-copy audit.</p>
         </div>
 
         <details class="srcs">
           <summary>Sources · 10 file references</summary>
-          <p class="src">Undo wiring: <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/web/public/js/pages/decisions.js#L175">apps/web/public/js/pages/decisions.js:175</a> renders the button on every row, :384-390 posts <span class="mono">submitFeedback(userId, decisionId, 'undo', …)</span> to <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/feedback.ts#L129-L157">apps/api/src/routes/feedback.ts:129-157</a>, which persists the event and calls <span class="mono">twinService.processFeedback</span> — no execution path is touched. Rollback: <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/execution-router/src/execution-router.ts#L336">packages/execution-router/src/execution-router.ts:336</a>, reachable only from <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/capabilities.ts">apps/api/src/routes/capabilities.ts</a>:706. <a href="https://github.com/jayzalowitz/skytwin/blob/main/CLAUDE.md">CLAUDE.md</a> Safety Invariant #5. The four stops: top-right button at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/web/public/js/components/global-pause-button.js#L101">apps/web/public/js/components/global-pause-button.js:101</a> → <span class="mono">POST /api/capabilities/pause-all</span> (<a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/capabilities.ts#L1391-L1421">apps/api/src/routes/capabilities.ts:1391-1421</a>, which calls <span class="mono">mcpServerRepository.markAllPausedForUser</span> and nothing else); the demote-to-observer button at settings.js:499; the real kill switch at settings.js:483 → <span class="mono">PUT /api/users/:id/autonomy-pause</span> (settings.js:1301); operator env var read once at policy-evaluator.ts:70. User pause and operator switch merged at policy-evaluator.ts:101-117 and applied at :249-273, where the source comment records the pre-review bug in which an early return turned every deny into an approval. Purge at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/db/src/repositories/user-purge-repository.ts#L24-L26">packages/db/src/repositories/user-purge-repository.ts:24-26</a> (no partial-delete state) and :46-119 / :142-143, ownership-gated at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/users.ts">apps/api/src/routes/users.ts</a>:97.</p>
+          <p class="src">Undo wiring: <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/web/public/js/pages/decisions.js#L175">apps/web/public/js/pages/decisions.js:175</a> renders the button on every row, :384-390 posts <span class="mono">submitFeedback(userId, decisionId, 'undo', …)</span> to <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/feedback.ts#L129-L157">apps/api/src/routes/feedback.ts:129-157</a>, which persists the event and calls <span class="mono">twinService.processFeedback</span> — no execution path is touched. Report-only rollback inventory: <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/capabilities.ts">apps/api/src/routes/capabilities.ts</a>. <a href="https://github.com/jayzalowitz/skytwin/blob/main/CLAUDE.md">CLAUDE.md</a> Safety Invariant #5. The five stops: top-right button at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/web/public/js/components/global-pause-button.js#L101">apps/web/public/js/components/global-pause-button.js:101</a> → <span class="mono">POST /api/capabilities/pause-all</span> (<a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/capabilities.ts#L1391-L1421">apps/api/src/routes/capabilities.ts:1391-1421</a>, which calls <span class="mono">mcpServerRepository.markAllPausedForUser</span> and nothing else); the demote-to-observer button at settings.js:509; the auto-execution stop at settings.js:493 → <span class="mono">PUT /api/users/:id/autonomy-pause</span> (settings.js:1351); the operator env var read at policy-evaluator.ts:70; and the desktop lifecycle pause wired through <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/desktop/src/tray.ts">apps/desktop/src/tray.ts</a> into <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/desktop/src/service-manager.ts">apps/desktop/src/service-manager.ts</a>. User pause and operator switch merge at policy-evaluator.ts:101-117 and apply at :249-273, where the source comment records the pre-review bug in which an early return turned every deny into an approval. Purge at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/db/src/repositories/user-purge-repository.ts#L24-L26">packages/db/src/repositories/user-purge-repository.ts:24-26</a> (no partial-delete state) and :46-119 / :142-143, ownership-gated at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/users.ts">apps/api/src/routes/users.ts</a>:97.</p>
         </details>
       </div>
     </section>
 
     <!-- ============================ 13-receipt ============================ -->
-    <section class="slide" tabindex="-1" id="13-receipt" aria-label="Slide 13 of 22: Every call is logged, explained, and correctable.">
+    <section class="slide" tabindex="-1" id="13-receipt" aria-label="Slide 13 of 22: Supported decisions can be explained; successful decision-event finalization is receipted.">
       <div class="wrap">
         <p class="slide-label">The receipt</p>
-        <h2>Every call is logged, explained, and correctable.</h2>
+        <h2>Supported decisions can be explained. Successful decision-event finalization is receipted.</h2>
         <p class="lede col">A gate you can't audit after the fact is a promise, not a control.</p>
 
         <div class="col">
           <p>An explanation record has four mandatory narrative fields — <span class="mono">summary</span>, <span class="mono">confidenceReasoning</span>, <span class="mono">actionRationale</span>, <span class="mono">correctionGuidance</span> — plus structured <span class="mono">evidenceUsed[]</span> and <span class="mono">preferencesInvoked[]</span>. What happened, what it read, why this and not the alternative, and how you correct it if it's wrong.</p>
-          <p>Refusals get one too. A decision blocked by policy still writes a record carrying the block reason. That is the difference between an audit log and a highlight reel: a log that records only successes isn't a trail.</p>
+          <p>The explanation generator supports blocked decisions and can carry the block reason. Release-wide entry-path coverage remains under audit.</p>
+          <p>Within a successfully finalized decision-event attempt, the path captures a signed receipt for each completed model call and persists the whole batch before approval or external execution. If the process stops after the decision is durable but before that finalization, retry returns recovery-required and performs no new inference or side effect; it does not invent a complete audit batch from a later attempt. That receipt scope does not extend to every LLM client in the application.</p>
         </div>
 
-        <figure class="mt-lg col-fig">
-          <div class="crop" style="--sx:284; --sy:352; --sw:880; --sh:448;">
-            <img loading="lazy" src="screenshots/decisions.png" alt="Crop of the 'What happened' page table. Columns When, Area, What happened, Urgency, How and Actions. Eight rows are tagged by area (EMAIL, VOICE, DOCUMENTS, CALENDAR, SECURITY), urgency (LOW, MEDIUM, HIGH) and disposition (YOU OK'D in green, AUTO in grey, NEEDS YOU in amber). Every row ends with an Undo button.">
-          </div>
-          <figcaption>What happened · 8 rows, 8 correction buttons. Not a subset. Every row. Areas tagged EMAIL, CALENDAR, DOCUMENTS, VOICE, SECURITY; urgency LOW, MEDIUM, HIGH; disposition YOU OK'D, AUTO or NEEDS YOU. Click any row for the full reasoning.</figcaption>
-        </figure>
+        <p class="honest mt-lg">Historical decision-history capture withheld pending replacement after the public-copy audit.</p>
 
         <div class="split wide-right mt-lg">
         <div>
           <p>And whatever it learned about you is a list you can edit — not a chat transcript, not a pile of vectors. Every entry carries how sure the twin is and where it came from, and every entry has two controls: Edit, and “That's not right.” The page says it in the twin's own words: corrections are the fastest way I get smarter.</p>
         </div>
 
-        <figure>
-          <div class="crop" style="--sx:300; --sy:318; --sw:800; --sh:78;">
-            <img loading="lazy" src="screenshots/twin.png" alt="Crop of one row on the 'What I've learned' page: the preference 'response style: concise' with a VERY CONFIDENT badge, a 'You told me' provenance label, and two controls — Edit and 'That's not right.'">
-          </div>
-          <figcaption>What I've learned · one preference row: the value, how sure, where it came from, and both correction controls.</figcaption>
-        </figure>
-          <p class="src">Cropped to one row on purpose: the third card on that capture renders a preference as raw JSON, which contradicts the plain-language standard the rest of this deck argues for. It is a bug in the frame, so the bug is named here rather than shown as if it were fine.</p>
+        <p class="honest">Current learned-preference capture withheld pending replacement after the public-copy audit.</p>
         </div>
 
         <p class="col mt-md">That is the loop. The “no” you type on an approval card lands here, and this page is what gets promoted on <a href="#07-gate-ladder">the ladder</a>.</p>
 
         <details class="srcs">
           <summary>Sources · 5 file references</summary>
-          <p class="src"><a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/shared-types/src/explanation.ts#L6-L35">packages/shared-types/src/explanation.ts:6-35</a> (narrative fields) and :40-56 (EvidenceReference, PreferenceReference); blocked-path branch persisting escalationRationale at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/explanations/src/explanation-generator.ts">packages/explanations/src/explanation-generator.ts</a>:62-68. Screens read directly from <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/screenshots/decisions.png">docs/screenshots/decisions.png</a> and twin.png. Undo is a feedback control, not a reversal — see <a href="#12-undo-delete">Undo. Delete.</a> for what it does and does not do. <a href="https://github.com/jayzalowitz/skytwin/blob/main/CLAUDE.md">CLAUDE.md</a> Safety Invariants #2 and #6.</p>
+          <p class="src"><a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/shared-types/src/explanation.ts#L6-L35">packages/shared-types/src/explanation.ts:6-35</a> (narrative fields) and :40-56 (EvidenceReference, PreferenceReference); blocked-path branch at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/explanations/src/explanation-generator.ts">packages/explanations/src/explanation-generator.ts</a>:62-68. Receipt admission and recovery-required behavior: <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/events.ts">apps/api/src/routes/events.ts</a> and the <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/inference-receipts.md">inference receipt guide</a>. Undo is a feedback control, not a reversal — see <a href="#12-undo-delete">Undo. Delete.</a> for what it does and does not do. <a href="https://github.com/jayzalowitz/skytwin/blob/main/CLAUDE.md">CLAUDE.md</a> Safety Invariants #2 and #6.</p>
         </details>
       </div>
     </section>
 
     <!-- ============================ 14-local-first ============================ -->
-    <section class="slide" tabindex="-1" id="14-local-first" aria-label="Slide 14 of 22: There is no SkyTwin server.">
+    <section class="slide" tabindex="-1" id="14-local-first" aria-label="Slide 14 of 22: Local storage and explicit network boundaries.">
       <div class="wrap">
         <p class="slide-label">Local-first &nbsp;·&nbsp; 1 of 2</p>
-        <h2>There is no SkyTwin server. Not “we don't look” — there is nothing to look with.</h2>
+        <h2>Your application database stays local. Connected services still use the network.</h2>
         <p class="lede col">Four facts you can check, starting with what the installer actually contains.</p>
 
         <div class="rows cols2">
           <div class="row">
             <p class="row-t"><span class="row-n">01</span>The installer brings its own database. The model it fetches on your say-so.</p>
-            <p class="row-b">CockroachDB ships inside the desktop bundle as a native binary, verified against a published sha256 when the installer is built — a mismatch aborts the build. The model is not in the box: the app sizes one to your machine (row 02) and downloads it, 2.0–9.0 GB, when you agree. Nor is the llama.cpp runtime — the API adds the local provider only once it finds both a binary and a model, so a fresh install has no LLM until you supply one. No Docker, no Ollama, no API key, no <span class="mono">.env</span>, no account.</p>
+            <p class="row-b">CockroachDB ships inside the desktop bundle as a native binary, verified against a published sha256 when the installer is built — a mismatch aborts the build. The model is not in the box: the app recommends the maintained artifact for the machine and downloads about 1.0 GiB when the user starts it. Nor is the llama.cpp runtime — the API adds the local provider only once it finds a compatible binary and a verified managed model, so a fresh install has no local LLM until both are present. No Docker, no Ollama, no API key, no <span class="mono">.env</span>, no account.</p>
           </div>
           <div class="row">
             <p class="row-t"><span class="row-n">02</span>It sizes the model to your machine before you sign in.</p>
-            <p class="row-b">Two public endpoints read your RAM, free disk, cores and architecture, then pick from a five-model catalog across four memory brackets — Phi-3.5 Mini at 4 GB, Qwen2.5 3B and Llama-3.2 3B at 8, Qwen2.5 7B at 16, Qwen2.5 14B at 32 and up. The first-run screen says “your AI runs privately on this computer — we'll use &lt;model&gt;” and it has already worked out which one. That removes the two hardest asks in local AI — choose a model, paste a key — before the first screen.</p>
+            <p class="row-b">The public recommendation endpoint evaluates RAM and free disk on the server but returns only the selected catalog model and a plain-language fit reason — not the raw host profile or filesystem paths. The current catalog is deliberately narrow: one Qwen2.5 1.5B Instruct Q4_K_M artifact pinned to an immutable upstream revision, exact byte count and SHA-256. The app can recommend it before sign-in; the user still starts the download, and a compatible llama.cpp runtime is required.</p>
           </div>
           <div class="row">
-            <p class="row-t"><span class="row-n">03</span>Cloud is consent, not a default.</p>
+            <p class="row-t"><span class="row-n">03</span>Reasoning location is a boundary, not a fallback accident.</p>
             <div class="chain mt-md">
-              <span>embedded</span><span class="arrow">→</span><span>ollama</span><span class="arrow">→</span>
-              <span class="dimmer">anthropic</span><span class="arrow">→</span><span class="dimmer">openai</span><span class="arrow">→</span><span class="dimmer">google</span>
+              <span>on device</span><span class="arrow">→</span><span>embedded</span><span class="arrow">/</span><span>ollama:local</span>
             </div>
-            <p class="row-b mt-md">Cloud-first is one environment variable, and an unrecognized value falls back to local — a typo must not silently escalate to a vendor.</p>
+            <div class="chain mt-md">
+              <span>my provider</span><span class="arrow">→</span><span class="dimmer">configured chain</span>
+            </div>
+            <p class="row-b mt-md">Settings persists the choice. Environment-only mixed chains require a valid <span class="mono">SKYTWIN_REASONING_MODE</span>; a missing or mistyped mode runs no model instead of crossing locations. Verified private cloud currently admits only explicit interactive TrustedRouter calls whose pinned same-session attestation and exact-byte receipt checks pass; NEAR AI remains unavailable.</p>
           </div>
           <div class="row">
-            <p class="row-t"><span class="row-n">04</span>If you do turn cloud on, email addresses are masked out of the decision engine's prompts before they leave.</p>
+            <p class="row-t"><span class="row-n">04</span>If you turn cloud on, two decision-prompt fragments mask email addresses before they leave.</p>
             <p class="row-b">On by default, not opt-in. The regex is length-bounded because it runs over untrusted inbound mail and must not backtrack. Scope, stated plainly, because it is narrower than the row title alone would suggest: it covers the two <span class="mono">PromptBuilder</span> paths — situation interpretation and candidate generation — and inside those it masks the raw signal dump and episodic memories, not the situation summary. Chat, briefing prose, draft-email generation and capability inference send their text unmasked today. Addresses only, in any case: names and phone numbers are never masked, and the source file says so and says why.</p>
           </div>
         </div>
 
-        <figure class="mt-lg col-fig">
-          <div class="crop" style="--sx:284; --sy:1014; --sw:823; --sh:74;">
-            <img loading="lazy" src="screenshots/settings.png" alt="Crop of the settings page 'Local AI brain' panel showing the model picker set to 'Qwen2.5 14B (Q4) · 9.0 GB · 32gb-plus (recommended)' with a Download button beside it, and below it the line 'Recommended for your machine: Qwen2.5 14B (Q4) (9.0 GB).'">
-          </div>
-          <figcaption>Settings · Local AI brain. Cropped above the panel's description line, which contains the author's local filesystem path.</figcaption>
-        </figure>
+        <p class="mt-lg col">Managed downloads are resumable, but automatic loading is fail-closed: an artifact must still match the pinned registry entry and active manifest when the runtime selects it. An explicit <span class="mono">SKYTWIN_LLAMA_MODEL</span> path is a user-managed override and does not receive those managed-artifact guarantees.</p>
 
         <details class="srcs">
-          <summary>Sources · 14 file references</summary>
-          <p class="src">Provider chain at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/lib/llm-client-factory.ts#L62-L129">apps/api/src/lib/llm-client-factory.ts:62-129</a>, local-first default at :121-128, embedded gate at :66-75 and :154. Redaction at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/llm-client/src/redact.ts#L31-L40">packages/llm-client/src/redact.ts:31-40</a> (the length-bounded regex and why) / :51-56, default-on at prompt-builder.ts:21-22, reached only from prompt-builder.ts:41 / :74 / :99 — whose two production callers are <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/decision-engine/src/strategies/llm-situation.ts#L14">packages/decision-engine/src/strategies/llm-situation.ts:14</a> and llm-candidates.ts:18. <span class="mono">grep -n 'redact\|Pii'</span> returns nothing in packages/assistant, packages/policy-prompts, packages/capability-engine or draft-email-candidate.ts. Runtime probes at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/embedded-llm/src/runtime-detector.ts#L72-L74">packages/embedded-llm/src/runtime-detector.ts:72-74</a> with NullPort fallbacks. Hardware sizing at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/system.ts#L16">apps/api/src/routes/system.ts:16</a> / :24 and <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/system/hardware.ts#L112-L174">apps/api/src/system/hardware.ts:112-174</a> (:163-168 refuses to promise local execution without the llama.cpp binary); catalog at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/embedded-llm/src/model-registry.ts#L55-L110">packages/embedded-llm/src/model-registry.ts:55-110</a> — every entry a HuggingFace <span class="mono">downloadUrl</span>, none bundled. Build-time sha256 verify at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/desktop/scripts/build-single-binary.sh#L121-L130">apps/desktop/scripts/build-single-binary.sh:121-130</a>; that script downloads CockroachDB and nothing else, and <span class="mono">build.extraResources</span> in <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/desktop/package.json">apps/desktop/package.json</a> ships only apps.tar.gz + bundle-manifest.json. “Hash-verified” is claimed for the desktop build script only — not for <a href="https://github.com/jayzalowitz/skytwin/blob/main/install.sh">install.sh</a> (no checksum logic, issue #369) and not for model downloads (the registry ships placeholder hashes).</p>
+          <summary>Sources · 8 file references</summary>
+          <p class="src">Environment mode resolution at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/lib/llm-client-factory.ts#L126-L153">apps/api/src/lib/llm-client-factory.ts:126-153</a>; provider admission and Ollama source constraints at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/llm-client/src/provider-privacy.ts">packages/llm-client/src/provider-privacy.ts</a> and <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/llm-client/src/providers/ollama.ts">packages/llm-client/src/providers/ollama.ts</a>. Redaction at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/llm-client/src/redact.ts#L31-L40">packages/llm-client/src/redact.ts:31-40</a>. Runtime probes at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/embedded-llm/src/runtime-detector.ts#L72-L74">packages/embedded-llm/src/runtime-detector.ts:72-74</a> with NullPort fallbacks. Hardware sizing is in <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/system/hardware.ts">apps/api/src/system/hardware.ts</a>; the immutable artifact metadata and validation rules are in <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/embedded-llm/src/model-registry.ts">packages/embedded-llm/src/model-registry.ts</a>; descriptor-based activation and runtime verification are in <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/embedded-llm/src/managed-model-store.ts">packages/embedded-llm/src/managed-model-store.ts</a>. The model is downloaded after user action and is not part of the desktop bundle. The explicit <span class="mono">SKYTWIN_LLAMA_MODEL</span> override remains a separate user-managed trust path.</p>
         </details>
       </div>
     </section>
@@ -1287,25 +1226,27 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
         <div class="rows cols2">
           <div class="row">
             <p class="row-t"><span class="row-n">05</span>Voice is on-device.</p>
-            <p class="row-b">Speech-to-text with whisper.cpp, speech with Piper. The phone app records and ships audio to your own desktop over your own network, not to a service.</p>
+            <p class="row-b">Speech-to-text uses whisper.cpp and speech uses Piper when their local binaries and models are present. The phone app sends audio over the network to the paired desktop API rather than directly to a hosted speech provider.</p>
           </div>
           <div class="row">
-            <p class="row-t"><span class="row-n">06</span>OAuth lands on your loopback interface.</p>
-            <p class="row-b">The redirect is <span class="mono">http://localhost:3100/api/oauth/google/callback</span>. The token goes straight to the desktop process and never passes through a server anyone else operates. Google scopes its third-party security assessment to apps that handle restricted data “from or through a third-party server” — no server in the path is the test we're on the right side of, and you can check that against their wording rather than take it from us. It is not an exemption: <a href="#19-not-yet">what isn't true yet</a> has what we still owe Google on the bundled client.</p>
+            <p class="row-t"><span class="row-n">06</span>Future OAuth is designed around a loopback callback.</p>
+            <p class="row-b">The source defines <span class="mono">http://localhost:3100/api/oauth/google/callback</span>, but the supported preview disables Google before authorization or exchange. A future real-account flow must bind that callback to one immutable owner/client transaction and satisfy Google's then-current requirements; source topology alone is not support or approval.</p>
           </div>
           <div class="row span2">
-            <p class="row-t"><span class="row-n">07</span>Eight external runtime dependencies, across 30 packages and six Node apps.</p>
-            <p class="mono mt-md mb-sm">@modelcontextprotocol/sdk · ajv · bonjour-service · chrono-node · express · pg · tweetnacl · zod</p>
-            <p class="row-b">26 of 30 packages have zero. Five LLM providers, no vendor SDKs — Anthropic, OpenAI, Google, Ollama and llama.cpp are all reached over plain <span class="mono">fetch</span>. The Prometheus endpoint is hand-written to keep it that way. The dashboard has no bundler and no framework: 21,693 lines of vanilla JS across 53 files, 31 of them page modules, and <span class="mono">express</span> is its only runtime dependency. One database, no broker, no Redis. One grep disproves any of it if it's false.</p>
+            <p class="row-t"><span class="row-n">07</span>Ten external runtime dependencies, across 30 packages and six Node apps.</p>
+            <p class="mono mt-md mb-sm">@modelcontextprotocol/sdk · ajv · bonjour-service · chrono-node · express · ipaddr.js · pg · tweetnacl · undici · zod</p>
+            <p class="row-b">25 of 30 packages have zero. Five LLM providers, no model-vendor SDKs — their APIs use <span class="mono">fetch</span>, with <span class="mono">undici</span> pinning validated DNS for custom endpoints. The Prometheus endpoint is hand-written. The dashboard has no bundler and no framework: 22,062 lines of non-test vanilla JS across 45 files, 26 of them page modules, and <span class="mono">express</span> is its only runtime dependency. One database, no broker, no Redis. One grep disproves any of it if it's false.</p>
           </div>
         </div>
 
         <div class="split wide-left mt-lg">
         <figure>
-          <div class="crop" style="--sx:284; --sy:2030; --sw:823; --sh:210;">
-            <img loading="lazy" src="screenshots/settings.png" alt="Crop of the settings page 'Your data, your machine' panel: 'Everything your twin learns lives on this computer. Nothing is sent to a SkyTwin cloud, because there isn't one.' Then three lines — 'I keep: the preferences I learn, patterns I notice, and a log of every decision I made (with the reasoning).' 'I don't keep: the actual contents of your emails, your calendar event details, or any of your passwords.' 'Account access: I have a sign-in token from Google so I can read inbox and calendar. Disconnect above and that token is destroyed.'">
+          <div class="panel mt-0">
+            <h3 class="flush">The current Settings disclosure</h3>
+            <p class="mb-sm">The saved reasoning boundary is either <b>On this device</b> or <b>My configured provider</b>. Authorized signal fields, learned preferences, and decision history remain in the local database.</p>
+            <p class="mb-0">A configured remote reasoning endpoint may receive prompt content. Separately, an administrator-configured OpenAI-compatible embedding endpoint may receive memory text for indexing and semantic-search query text.</p>
           </div>
-          <figcaption>Settings · “Nothing is sent to a SkyTwin cloud, because there isn't one.”</figcaption>
+          <figcaption>Current source contract. The pre-selector Settings screenshot was removed; a fresh live capture is still an acceptance item.</figcaption>
         </figure>
           <div class="honest">
             <b>The cost, said out loud</b>
@@ -1314,14 +1255,14 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
 
         <div class="panel mt-0">
           <h3 class="flush">What isn't encrypted at rest, and how far it got</h3>
-          <p class="mb-sm">OAuth credentials have the whole mechanism — AES-256-GCM, a fresh 96-bit IV per encryption, a scrypt-derived key that is never persisted and lives in a one-hour in-process cache — and it is still not reached end to end. Tokens land plaintext on connect and are upgraded to their encrypted columns only by a process holding your unlocked key. The only place that upgrade runs is the worker, and the worker cannot see the key the API unlocks: they are separate processes and the handoff isn't built. The source comment says so, in those words.</p>
-          <p class="mb-0">Your preferences, twin profile and memory pages are written in plaintext too. The columns shipped, the crypto helper shipped, the key provider is switched on only in tests. Planned for 0.7, along with the cross-process key handoff. Until both land, the thing protecting this data is your operating system's disk encryption, not ours — and we are not going to write “your data is encrypted at rest” before it is.</p>
+          <p class="mb-sm">OAuth token-secret storage is opt-in and mixed. Without an initialized vault, new grants are plaintext. With the matching API vault generation unlocked, new and reconnected grants are encrypted with AES-256-GCM and complete legacy plaintext grants can migrate on authorized use; an initialized locked vault refuses the write. The key is process-local, so the worker does not receive the API key and may report encrypted credentials as unavailable.</p>
+          <p class="mb-0">Your OAuth account identifiers and scopes, preferences, twin profile, memory pages, receipt rows, and searchable indexes remain locally readable. The broader recovery-key registry and locked source-key broker kernel have shipped, but its API and worker owner grants are deliberately empty and no preference, profile, or memory source field uses it. Until the remaining grant, repository, migration, packaged-verification, and bake gates land, use operating-system disk encryption for the database as a whole — we are not going to write “your data is encrypted at rest” as a general claim before it is.</p>
         </div>
         </div>
 
         <details class="srcs">
           <summary>Sources · 15 file references</summary>
-          <p class="src">Dependency set recomputed at HEAD by scanning <span class="mono">dependencies</span> in every packages/* and apps/* package.json and excluding <span class="mono">@skytwin/*</span> (desktop and mobile excluded and stated as such): exactly the eight listed; 26 of 30 packages have none. <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/llm-client/package.json">packages/llm-client/package.json</a> has only workspace deps. apps/web's only runtime dep is express. Hand-written Prometheus at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/observability/src/prometheus.ts#L1-L24">packages/observability/src/prometheus.ts:1-24</a>, mounted at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/index.ts">apps/api/src/index.ts</a>:255. OAuth redirect at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/oauth.ts#L419">apps/api/src/routes/oauth.ts:419</a> and <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/config/src/index.ts">packages/config/src/index.ts</a>:123. Crypto at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/credential-vault/src/key-derivation.ts#L22-L25">packages/credential-vault/src/key-derivation.ts:22-25</a> / :70-98, envelope.ts:14-50, key-cache.ts:36. OAuth gap: tokens are inserted plaintext by <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/db/src/repositories/oauth-repository.ts#L59-L95">oauth-repository.ts:59-95</a> (<span class="mono">saveTokenForAccount</span>, no encrypted columns in the INSERT); the only encrypting path is <span class="mono">DbTokenStore</span>'s lazy migration, and its single production instantiation is <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/worker/src/index.ts#L542">apps/worker/src/index.ts:542</a> / :547, wired to a <span class="mono">KeyCache</span> that nothing ever populates — the comment at :72-85 states it: “Cross-process unlock IPC is not yet implemented… this cache is empty and the worker behaves exactly as it did before — plaintext tokens flow through.” The API's <span class="mono">sharedKeyCache</span> (routes/credential-vault.ts:34) is populated on unlock but is never handed to a token store. Preferences gap: <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/db/src/adapters/twin-repository-adapter.ts#L32">twin-repository-adapter.ts:32</a> defaults the provider to null, <span class="mono">setPreferenceVaultKeyProvider</span> at :35 has no caller outside <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/db/src/__tests__/preferences-vault.test.ts">preferences-vault.test.ts</a>, and <span class="mono">resolveKey(null, …)</span> returns <span class="mono">{ mode: 'plaintext' }</span> at vault-helper.ts:162-174. twin_profiles / brain_pages have the migration-066 columns and zero TypeScript references. Corroborated by <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/launch-readiness-report.md">docs/launch-readiness-report.md</a> on #374. Installer sizes from the v0.6.58.0 release assets.</p>
+          <p class="src">Dependency set recomputed at HEAD by scanning <span class="mono">dependencies</span> in every packages/* and apps/* package.json and excluding <span class="mono">@skytwin/*</span> (desktop and mobile excluded and stated as such): exactly the ten listed; 25 of 30 packages have none. <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/llm-client/package.json">packages/llm-client/package.json</a> adds <span class="mono">undici</span> for pinned custom-endpoint transport and <span class="mono">ipaddr.js</span> for parsed special-purpose address classification. apps/web's only runtime dep is express. The dashboard count excludes <span class="mono">*.test.js</span>. Hand-written Prometheus at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/observability/src/prometheus.ts#L1-L24">packages/observability/src/prometheus.ts:1-24</a>, mounted at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/index.ts#L282">apps/api/src/index.ts:282</a>. OAuth redirect default and callback route at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/oauth.ts#L440">apps/api/src/routes/oauth.ts:440</a> and <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/oauth.ts#L981">:981</a>, with the config default at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/config/src/index.ts">packages/config/src/index.ts</a>:123. Crypto at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/credential-vault/src/key-derivation.ts#L22-L25">packages/credential-vault/src/key-derivation.ts:22-25</a> / :70-98, envelope.ts:14-50, key-cache.ts:36. OAuth storage boundary: <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/oauth.ts#L596-L627">saveConnectedToken</a> chooses plaintext only when no vault exists and otherwise requires the matching unlocked API key before supplying ciphertext; <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/db/src/repositories/oauth-repository.ts#L435-L452">oauth-repository.ts:435-452</a> locks and checks that authority, and <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/db/src/repositories/oauth-repository.ts#L470-L498">:470-498</a> writes either plaintext or ciphertext fields. The worker's separate <span class="mono">DbTokenStore</span> key cache is not populated by API unlock. <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/desktop/src/service-manager.ts">service-manager.ts</a> attaches API and worker children to the broader source-key broker over private IPC with empty owner grants, while <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/desktop/src/key-broker.ts">key-broker.ts</a> enforces the role/owner/field capabilities and lock barrier. Recovery wrappers now use the narrow Cockroach registry adapter without legacy-store or plaintext fallback; authenticated grant authority and production source repository clients remain absent. See <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/security/source-key-broker-implementation.md">source-key-broker-implementation.md</a>. Preferences gap: <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/db/src/adapters/twin-repository-adapter.ts#L32">twin-repository-adapter.ts:32</a> defaults the provider to null, <span class="mono">setPreferenceVaultKeyProvider</span> at :35 has no caller outside <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/db/src/__tests__/preferences-vault.test.ts">preferences-vault.test.ts</a>, and <span class="mono">resolveKey(null, …)</span> returns <span class="mono">{ mode: 'plaintext' }</span> at vault-helper.ts:162-174. twin_profiles / brain_pages have the migration-066 columns and zero production consumers. Corroborated by <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/launch-readiness-report.md">docs/launch-readiness-report.md</a> on #374. Installer sizes from the v0.6.58.0 release assets.</p>
         </details>
       </div>
     </section>
@@ -1365,7 +1306,7 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
         <div class="col mt-lg">
           <p class="dim">OpenClaw already owns “open-source agent that runs on your machine” — <span class="mono">387,835 stars</span>, and it's good. Its homepage headline is “The AI that really does things,” and the line under it: “Organizes your inbox, sends emails, manages your calendar, checks you in for flights.” On permissions it offers “full access or sandboxed — your choice.” One switch, two positions. This is the graded version: five rungs, per domain, earned, with published thresholds, a policy engine, an origin-based guard and a correction control on every row. We don't check you in for flights either.</p>
           <p class="dim">Inbox Zero (<span class="mono">12,099 stars</span>) organizes and drafts, well, on a hosted service. The difference isn't the feature list. It's whether there's a server in the path, and whether the thing remembers you between Tuesdays.</p>
-          <p class="dim">Google put free AI summaries and suggested replies in Gmail in 2026. Summarizing an inbox is now a feature you already have and didn't pay for. So we don't sell summarization. We sell the two things a vendor structurally cannot: your mail never reaching one, and a record of what was refused.</p>
+          <p class="dim">Google put free AI summaries and suggested replies in Gmail in 2026. Summarizing an inbox is already a commodity. SkyTwin's intended differentiation is local custody plus an auditable record of what was refused, but the current sample-only preview does not use real mail and is not evidence that the future connected-account boundary is complete.</p>
         </div>
 
         <h3>The academic anchor</h3>
@@ -1385,11 +1326,11 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
         <div class="status">
           <div class="works">
             <ul>
-              <li><strong>116 dated releases</strong> to v0.6.101.0 · <strong>413 commits</strong> and 413 merged pull requests between 2026-03-31 and 2026-08-26, one engineer, essentially every commit through a review gate</li>
-              <li><strong>30 packages, 8 apps, 186,935 lines of TypeScript</strong> — 98,882 source against 88,053 test</li>
-              <li><strong>4,524 test cases across 369 files</strong>, including 17 on the injection guard, 25 on the action-safety primitives, 27 on the policy evaluator, 18 on the spend tracker, 44 across the trust-tier engines</li>
-              <li><strong>70 migrations, 91 tables, one database</strong></li>
-              <li>Gmail, Google Calendar, Outlook mail and Outlook calendar on real OAuth, with Microsoft Graph delta sync</li>
+              <li><strong>A versioned public changelog</strong> spanning more than 100 dated releases</li>
+              <li><strong>A typed TypeScript monorepo</strong> spanning the decision, policy, memory, connector, execution, API, web, desktop and mobile layers</li>
+              <li><strong>Automated unit, integration, evaluation, migration and packaging checks</strong></li>
+              <li><strong>One migration-managed CockroachDB source of truth</strong></li>
+              <li>Google and Microsoft connector implementations in source; the supported preview is account-free sample only and admits neither account provider</li>
               <li>The briefing, the approvals queue, the decision log with a per-row correction, the learned-preferences page</li>
               <li>Desktop installers for .dmg, .exe, .AppImage, .deb and .rpm; a phone app with QR pairing, notifications and voice</li>
               <li>A one-line install re-validated end to end in CI inside clean Ubuntu 22.04, Debian 12 and Fedora 40 containers — last run green, 2026-08-27</li>
@@ -1398,8 +1339,8 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
         </div>
 
         <details class="srcs">
-          <summary>Sources · every number above, and the command that produced it</summary>
-          <p class="src">All counts re-run at HEAD (0.6.101.0) in this worktree on 2026-08-27. Releases: <span class="mono">grep -cE '^## \[?[0-9]' CHANGELOG.md</span> → 116; <a href="https://github.com/jayzalowitz/skytwin/blob/main/VERSION">VERSION</a> → 0.6.101.0. Commits: <span class="mono">git rev-list --count HEAD</span> → 413, first 2026-03-31, latest 2026-08-26; merged PRs via <span class="mono">gh pr list --state merged</span> → 413; 408 of the 413 commits carry a <span class="mono">(#N)</span> squash-merge reference, which is what “essentially every commit” means. Layout: <span class="mono">ls -d packages/*/</span> → 30, <span class="mono">ls -d apps/*/</span> → 8. Lines: <span class="mono">wc -l</span> over every non-dist, non-node_modules <span class="mono">*.ts</span> → 186,935 total and 88,053 under <span class="mono">__tests__</span>/<span class="mono">*.test.ts</span>, leaving 98,882 source. Tests: 369 files, 4,524 <span class="mono">it(</span>/<span class="mono">test(</span> declarations — the safety subset counted per file, <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/policy-engine/src/__tests__/injection-guard.test.ts">packages/policy-engine/src/__tests__/injection-guard.test.ts</a> 17, <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/shared-types/src/__tests__/action-safety.test.ts">packages/shared-types/src/__tests__/action-safety.test.ts</a> 25, policy-evaluator.test.ts 27, spend-tracker.test.ts 18, trust-tier-engine.test.ts 28 + trust-tier-engine-adaptive.test.ts 16 = 44. Schema: <span class="mono">ls packages/db/src/migrations/</span> → 70 files (69 <span class="mono">.sql</span> + <span class="mono">001-initial.ts</span>); 91 tables = unique <span class="mono">CREATE TABLE</span> targets across those migrations and <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/db/src/schemas/schema.sql">packages/db/src/schemas/schema.sql</a>, minus <span class="mono">capability_recipes</span>, dropped by <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/db/src/migrations/053-drop-capability-recipes.sql">053-drop-capability-recipes.sql</a>. That number was 80 on an earlier cut of this slide; the grep behind it counted two comment lines in 027-capability-acquisition.sql as tables and missed schema.sql entirely. Installer targets from <span class="mono">build.mac/win/linux.target</span> in <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/desktop/package.json">apps/desktop/package.json</a> (dmg, nsis, AppImage, deb, rpm). Install CI matrix <span class="mono">[ubuntu, debian, fedora]</span> in <a href="https://github.com/jayzalowitz/skytwin/blob/main/.github/workflows/install-validation.yml">.github/workflows/install-validation.yml</a>, last green on main 2026-08-27. Caveat, same as the next slide's: the test and line counts are static greps — this worktree has no node_modules, so nothing here was produced by actually running the suite.</p>
+          <summary>Sources · release history, architecture, schema and validation</summary>
+          <p class="src">Release history and the current source version live in <a href="https://github.com/jayzalowitz/skytwin/blob/main/CHANGELOG.md">CHANGELOG.md</a> and <a href="https://github.com/jayzalowitz/skytwin/blob/main/VERSION">VERSION</a>. Package and app responsibilities are mapped in the <a href="https://github.com/jayzalowitz/skytwin/blob/main/README.md#architecture">README architecture section</a>; database changes live under <a href="https://github.com/jayzalowitz/skytwin/tree/main/packages/db/src/migrations">packages/db/src/migrations</a>. Test, evaluation, installer and package matrices are defined by the repository's <a href="https://github.com/jayzalowitz/skytwin/tree/main/.github/workflows">GitHub Actions workflows</a>. Installer targets come from <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/desktop/package.json">apps/desktop/package.json</a>. These source-tree checks do not certify the still-published June installers.</p>
         </details>
       </div>
     </section>
@@ -1414,22 +1355,22 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
         <div class="status">
           <div>
             <ul>
-              <li><strong>No release has been cut since June, even though the build is green again.</strong> Two facts that it would be convenient to tell as one. The release job only fires on a <span class="mono">v*</span> tag; the newest tag is v0.6.58.0, published June 2, which is why the download you get is the June build, with assets stamped 0.3.0 because <span class="mono">apps/desktop/package.json</span> was pinned there and electron-builder rejects our four-segment <span class="mono">VERSION</span> — so electron-updater compared 0.3.0 against 0.3.0 and auto-update could never fire. <a href="https://github.com/jayzalowitz/skytwin/pull/613">#613</a> now derives a real three-segment version at package time. The repo is on 0.6.102.0. For the two months after that the pipeline was green and simply was not tagged. Separately, the build <em>was</em> red from early August: seven tests failed inside one helper, <span class="mono">computeBidirectionalThreadCounts</span>, and because that job failed all six downstream build and release jobs were skipped — so a tag pushed then would not have produced artifacts either. That was fixed the day this deck shipped: the fixtures pinned absolute dates against a rolling <span class="mono">Date.now()</span> window and aged out on a calendar date rather than on a commit. <span class="mono">Test</span> passes on main again and the packaging jobs run. The tag is still the missing step, and it is first in the queue.</li>
-              <li><strong>The installers aren't code-signed.</strong> Gatekeeper and SmartScreen will warn you on first launch. That needs a $99/yr Apple membership, a roughly $400/yr Windows certificate, and the secrets wired into a workflow that currently disables signing outright. Procurement, not code.</li>
-              <li><strong>Gmail is not one click. Calendar is.</strong> The bundled Google client is approved for identity and calendar only; connecting Gmail means creating your own Google Cloud project through an in-app wizard, about five minutes. Both Gmail scopes are classified restricted, and clearing that permanently needs a $15k–$50k/yr third-party assessment, deliberately deferred until there's revenue.</li>
-              <li><strong>“Encrypted at rest” is not true of anything yet.</strong> The AES-256-GCM machinery, the scrypt key derivation and the encrypted columns all shipped; nothing in production supplies the key. OAuth tokens land plaintext and are upgraded only by a process holding an unlocked key, which no process currently is; preferences read and write through a key provider that only the tests ever set; twin profiles and memory pages have the columns and no code path at all. <a href="#15-local-data">The panel on the local-data slide</a> has the specifics.</li>
+              <li><strong>No release has been cut since June, even though the build is green again.</strong> Two facts that it would be convenient to tell as one. The release job only fires on a <span class="mono">v*</span> tag; the newest tag is v0.6.58.0, published June 2, which is why the download you get is the June build, with assets stamped 0.3.0 because <span class="mono">apps/desktop/package.json</span> was pinned there and electron-builder rejects our four-segment <span class="mono">VERSION</span> — so electron-updater compared 0.3.0 against 0.3.0 and auto-update could never fire. <a href="https://github.com/jayzalowitz/skytwin/pull/613">#613</a> now derives a real three-segment version at package time. The repo is on 0.6.102.0. For the two months after that the pipeline was green and simply was not tagged. Separately, the build <em>was</em> red from early August: seven tests failed inside one helper, <span class="mono">computeBidirectionalThreadCounts</span>, and because that job failed all six downstream build and release jobs were skipped — so a tag pushed then would not have produced artifacts either. That was fixed the day this deck shipped: the fixtures pinned absolute dates against a rolling <span class="mono">Date.now()</span> window and aged out on a calendar date rather than on a commit. <span class="mono">Test</span> passes on main again and the packaging jobs run. A tag is not the next step: version alignment, a ready claim ledger, the required evidence producers, signing, and artifact gates must clear before the tag workflow may create a draft.</li>
+              <li><strong>The installers aren't code-signed.</strong> Gatekeeper and SmartScreen will warn you on first launch. The certificates are external procurement; wiring their secrets into the applicable package jobs and producing digest-bound signing and notarization evidence is still release-engineering work.</li>
+              <li><strong>Connected accounts are unavailable in the supported preview.</strong> Google and Microsoft source implementations remain disabled behind an exact experimental opt-in. SkyTwin ships no managed Google OAuth client. Managed identity/Calendar is deferred, and operator/BYO Google remains unsupported until client-generation, callback/session, exact-scope, ownership, connector-isolation, and secret-custody gates are complete. Gmail remains separately optional only after those gates and Google's applicable review path.</li>
+              <li><strong>There is no general production source-field encryption boundary yet.</strong> OAuth token secrets have a narrow opt-in API-local vault: no vault means plaintext; a matching unlocked vault encrypts new/reconnected grants and can migrate complete legacy grants on authorized use; the worker does not receive that key. OAuth account metadata, preferences, twin profiles, memory pages, receipt rows, and searchable indexes remain readable. The broader source-key broker still gives its API and worker children empty owner grants. <a href="#15-local-data">The panel on the local-data slide</a> has the specifics.</li>
               <li><strong>Per-user pause, per-user spend caps, domain lists and quiet hours were not applied on the primary inbound-mail path</strong> — the autonomy settings weren't passed to the evaluator there. Trust tiers, the injection guard, the escalate-only terminal, the built-in deny policies and the operator kill switch still were, and the blanket cost-above-zero deny is why the missing spend check was never exploitable for money. We found this writing the deck, filed it, and <a href="https://github.com/jayzalowitz/skytwin/pull/615">#615</a> closed it a day later. Left on this slide because the deck should show its own corrections, not quietly delete them.</li>
               <li><strong>Recurring plain-language routines shipped read-only</strong> and are off by default behind a flag. They digest and notify; they never send, reply, schedule or spend.</li>
-              <li><strong>There is no hosted demo, and the current published installers predate packaged sample mode.</strong> The June artifacts still render the tour unavailable. Current source provisions a fictional profile on the bundled loopback database and opens it with a short-lived, read-only sample credential while keeping the development auth bypass disabled. That safely supports browsing decisions and explanations; the simulated approve, reject, correct and learn loop is still follow-up work.</li>
-              <li><strong>Feature work has been paused since July 6.</strong> The most recent commits are dependency bumps.</li>
+              <li><strong>There is no hosted demo, and the current published installers predate packaged sample mode.</strong> The June artifacts still render the tour unavailable. Current source provisions a fictional profile on the bundled loopback database and opens it with a short-lived sample credential while keeping the development auth bypass disabled. Normal product routes remain read-only; a separate session-local simulation supports approve, reject, correct and learn interactions without connectors, execution adapters, credentials, persistence or external effects.</li>
+              <li><strong>Source completion is not artifact certification.</strong> The packaged sample and service-lifecycle protections must clear integration and final clean-machine artifact verification before a published release claims them.</li>
               <li><strong>No user base, no testimonial, no traction number</strong> in this deck, because there isn't one worth showing.</li>
             </ul>
           </div>
         </div>
 
         <details class="srcs">
-          <summary>Sources · 20 file references</summary>
-          <p class="src">Counts re-run at HEAD in this worktree: 30 packages, 8 apps, 369 test files, 4,524 test declarations, 98,882 source lines vs 88,053 test lines, 70 migrations. CHANGELOG has 116 release headings; <a href="https://github.com/jayzalowitz/skytwin/blob/main/VERSION">VERSION</a> is 0.6.102.0; <span class="mono">git rev-list</span> → 413 commits; first commit 2026-03-31, latest 2026-08-26. Eval count re-derived by top-level indent: 101 scenario ids across 13 files, safety-regressions.ts has 8. <a href="https://github.com/jayzalowitz/skytwin/blob/main/.github/workflows/evals.yml#L33-L41">.github/workflows/evals.yml:33-41</a> runs the suite and greps for “FAIL”; no eval-results artifact exists anywhere in the repo. Build history: run 33044196174 (2026-08-27) showed 14 failed / 262 passed in in-memory-repository.test.ts (7 unique, doubled across src and dist) with all 6 downstream jobs skipped. Fixed by #614 (date-bomb fixtures now derive from a <span class="mono">daysAgo()</span> helper, plus the Vitest 4 dist-duplication that was doubling every suite); re-checked at merge time — run 33145390273 on 954b94c has <span class="mono">Test: success</span> and the packaging jobs running rather than skipped. Release gate: <a href="https://github.com/jayzalowitz/skytwin/blob/main/.github/workflows/build.yml#L500">.github/workflows/build.yml:500</a> — <span class="mono">if: startsWith(github.ref, 'refs/tags/v')</span>; newest tag is v0.6.58.0 (tagged 2026-05-22, published 2026-06-02) and none since. The two facts are independent: build.yml succeeded on main on 2026-07-06 (run 28774758300) and on a branch 2026-07-14; the first failures are 2026-08-04, main went red 2026-08-27 and green again 2026-08-28 (#614). Release drift: the published June assets are stamped 0.3.0; <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/desktop/package.json">apps/desktop/package.json</a> is still 0.3.0 on purpose (electron-builder rejects four-segment versions) and <a href="https://github.com/jayzalowitz/skytwin/blob/main/.github/scripts/derive-app-version.sh">derive-app-version.sh</a> now injects the real one at package time (#613). Signing: <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/launch-plan.md">docs/launch-plan.md</a> §1.3 with build.yml <span class="mono">CSC_IDENTITY_AUTO_DISCOVERY: 'false'</span>; issues #368 / #359. Gmail: <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/oauth.ts#L530-L579">apps/api/src/routes/oauth.ts:530-579</a>; CASA cost and deferral in <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/launch-plan.md">docs/launch-plan.md</a> §3.1. Encryption: <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/launch-readiness-report.md">docs/launch-readiness-report.md</a> on #374, plus the code trail on <a href="#15-local-data">the local-data slide</a> — worker KeyCache never populated (apps/worker/src/index.ts:72-86), <span class="mono">setPreferenceVaultKeyProvider</span> test-only (packages/db/src/adapters/twin-repository-adapter.ts:35), twin_profiles / brain_pages columns with zero TypeScript references. Ingest-path gap, closed by <a href="https://github.com/jayzalowitz/skytwin/pull/615">#615</a>: <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/decision-engine/src/decision-maker.ts#L256">decision-maker.ts:256</a> now passes <span class="mono">context.autonomySettings</span>; it previously omitted it and <span class="mono">grep 'autonomy'</span> in that file returned nothing; <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/worker/src/jobs/memory-action-loop.ts#L254-L260">apps/worker/src/jobs/memory-action-loop.ts:254-260</a> and <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/routines.ts#L104-L110">apps/api/src/routes/routines.ts:104-110</a> do pass it. Watches gate: <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/worker/src/jobs/watch-scheduler.ts">apps/worker/src/jobs/watch-scheduler.ts</a>:27-33. Demo gate: <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/demo.ts#L107-L125">apps/api/src/routes/demo.ts:107-125</a> (loopback AND <span class="mono">SKYTWIN_DEV_AUTH_BYPASS</span>); <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/desktop/src/service-manager.ts#L297">apps/desktop/src/service-manager.ts:297</a> sets <span class="mono">NODE_ENV: 'production'</span> and never sets the bypass; <span class="mono">runSeed</span> at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/desktop/src/first-launch.ts#L196">apps/desktop/src/first-launch.ts:196</a> has zero callers; the disabled-button branch is <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/web/public/js/pages/onboarding.js">apps/web/public/js/pages/onboarding.js</a>:548-553. <a href="https://github.com/jayzalowitz/skytwin/blob/main/install.sh">install.sh</a>'s dev path does both (bin/skytwin-dev:208, :248). Install CI: <a href="https://github.com/jayzalowitz/skytwin/blob/main/.github/workflows/install-validation.yml">.github/workflows/install-validation.yml</a>, success on main 2026-08-27. Caveat: test counts are static greps — this worktree has no node_modules.</p>
+          <summary>Sources · release and safety boundaries</summary>
+          <p class="src">Release production remains tag-gated in <a href="https://github.com/jayzalowitz/skytwin/blob/main/.github/workflows/build.yml">build.yml</a>; the newest published artifacts are still the June release and do not contain this source work. Packaging derives a three-segment app version with <a href="https://github.com/jayzalowitz/skytwin/blob/main/.github/scripts/derive-app-version.sh">derive-app-version.sh</a>. Signing and Gmail verification gaps remain recorded in <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/launch-plan.md">the launch plan</a>; current encryption limits remain recorded in <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/launch-readiness-report.md">the readiness report</a>. The sample session is issued by <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/routes/demo.ts">demo.ts</a> and authorized by <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/auth/demo-session.ts">demo-session.ts</a>; it does not use <span class="mono">SKYTWIN_DEV_AUTH_BYPASS</span>. Packaged startup pins production mode and the attested database in <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/desktop/src/service-manager.ts">service-manager.ts</a>. The June installers still show the older unavailable-tour path; source integration and artifact verification must finish before these claims describe a published release.</p>
         </details>
       </div>
     </section>
@@ -1441,7 +1382,7 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
         <h2>And the number we are not showing you.</h2>
 
         <div class="col">
-          <p>There is no accuracy percentage anywhere in this deck, on purpose. 101 evaluation scenarios across 13 domain files — 8 of the scenarios, in a dedicated safety-regressions file — run in CI, measuring escalation correctness, expected calibration error and decision latency, with a replay engine that re-runs historical decisions against older profile snapshots. Nobody has run it and published a result, so no result appears here.</p>
+          <p>There is no accuracy percentage anywhere in this deck, on purpose. 101 evaluation scenarios across 13 domain files — 8 of the scenarios, in a dedicated safety-regressions file — run in CI, measuring escalation correctness, expected calibration error and decision latency. The separate temporal replay engine reconstructs historical twin and preference state without rerunning decisions or effects. Nobody has run and published a complete result, so no result appears here.</p>
           <p>An agent benchmark score is not, by itself, evidence about an agent. In April 2026 the Berkeley RDI group published an automated audit that synthesised exploits scoring <span class="mono">100%</span> on SWE-bench Verified and Terminal-Bench and roughly <span class="mono">100%</span> on WebArena <em>without solving a single task</em> — 219 distinct flaws across ten agent benchmarks.</p>
           <p>Which is why a number we haven't published the run for would be the easiest sentence on this page to disprove. We went looking for a real-world counterweight to put here — a deployed-agent success rate measured from production telemetry rather than a benchmark — and every version of that statistic we could find traced back to a marketing post carrying no dataset, no methodology and no primary source. It is absent for the same reason our own accuracy number is. When there is one, the code that produced it ships next to it.</p>
         </div>
@@ -1469,7 +1410,7 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
             </div>
           </div>
           <div class="cmd">
-            <p class="cmd-note"># the eight dependencies — desktop and mobile excluded, and the command says so</p>
+            <p class="cmd-note"># the ten dependencies — desktop and mobile excluded, and the command says so</p>
             <div class="cmd-line">
               <code id="cmd-1">cat packages/*/package.json apps/{api,web,worker,idle-miner-runner,openclaw-bridge,twin-mcp-server}/package.json | jq -r '.dependencies // {} | keys[]' | grep -v '@skytwin/' | sort -u</code>
               <button class="copy" type="button" data-action="copy-command" data-target="cmd-1">copy</button>
@@ -1492,14 +1433,14 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
           <div class="cmd">
             <p class="cmd-note"># the provenance overwrite an injected email can't beat</p>
             <div class="cmd-line">
-              <code id="cmd-4">sed -n '170,184p' packages/decision-engine/src/decision-maker.ts</code>
+              <code id="cmd-4">sed -n '170,186p' packages/decision-engine/src/decision-maker.ts</code>
               <button class="copy" type="button" data-action="copy-command" data-target="cmd-4">copy</button>
             </div>
           </div>
           <div class="cmd">
-            <p class="cmd-note"># the local-first default</p>
+            <p class="cmd-note"># the explicit environment location gate</p>
             <div class="cmd-line">
-              <code id="cmd-5">sed -n '114,128p' apps/api/src/lib/llm-client-factory.ts</code>
+              <code id="cmd-5">sed -n '126,153p' apps/api/src/lib/llm-client-factory.ts</code>
               <button class="copy" type="button" data-action="copy-command" data-target="cmd-5">copy</button>
             </div>
           </div>
@@ -1517,7 +1458,7 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
         <div class="rows cols2">
           <div class="row span2">
             <p class="row-t">Click around without connecting anything.</p>
-            <p class="row-b">Build from source with the command below — it seeds the developer sample and enables the local tour — then choose “Just show me around.” The source-development path includes fictional decisions, a briefing, learned preferences and mock-executor approvals. Current source also gives packaged desktop builds a narrower, read-only sample path without an account, inbox or OAuth; interactive simulated approvals and corrections in that packaged path are not finished yet. There is no hosted demo.</p>
+            <p class="row-b">Build from source with the command below — it seeds the developer sample and enables the local tour — then choose “Just show me around.” The source-development path includes fictional decisions, a briefing, learned preferences and mock-executor approvals. Current source also gives packaged desktop builds an account-free local sample: normal product routes stay read-only, while a separate session-local surface simulates approvals and corrections with no connectors, credentials, persistence, execution adapters or external effects. There is no hosted demo.</p>
           </div>
           <div class="row">
             <p class="row-t">Build from source.</p>
@@ -1556,8 +1497,8 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
         <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/shared-types/src/policy.ts">policy.ts</a>
         <a href="demo.html">Demo storyboard</a>
       </div>
-      <p>SkyTwin is an open-source personal-automation project by <a href="https://github.com/jayzalowitz">Jay Zalowitz</a>, licensed Apache 2.0. Screenshots captured 2026-06-15 against v0.6.x; code references verified at 0.6.101.0.</p>
-      <p>install.sh's header advertises a “hash-verified” CockroachDB download and the script contains no checksum logic (issue #369) — that claim is deliberately not repeated on this page; only the desktop build script genuinely verifies a sha256.</p>
+      <p>SkyTwin is an open-source personal-automation project by <a href="https://github.com/jayzalowitz">Jay Zalowitz</a>, licensed Apache 2.0. Historical screenshots were captured 2026-06-15 against v0.6.x and are withheld as prohibited stale assets pending replacement and re-audit; code references were rechecked on this 0.6.102.0 release-candidate branch on 2026-09-14. The <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/beta-claim-ledger.json">beta claim ledger</a> remains authoritative and blocked.</p>
+      <p>The source installer delegates CockroachDB setup to <span class="mono">bin/skytwin-db</span>, which verifies the downloaded archive against a pinned SHA-256 before extraction. Desktop packaging independently verifies the CockroachDB archive embedded in its bundle.</p>
     </div>
   </footer>
 
@@ -1588,7 +1529,7 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
         <a class="index-tile" href="#11-stops" data-action="goto-slide"><span class="n">11</span><span class="t">GATE 05 — Pause, and what pause covers.</span></a>
         <a class="index-tile" href="#12-undo-delete" data-action="goto-slide"><span class="n">12</span><span class="t">GATE 05 — Undo. Delete.</span></a>
         <a class="index-tile" href="#13-receipt" data-action="goto-slide"><span class="n">13</span><span class="t">Logged, explained, correctable.</span></a>
-        <a class="index-tile" href="#14-local-first" data-action="goto-slide"><span class="n">14</span><span class="t">There is no SkyTwin server.</span></a>
+        <a class="index-tile" href="#14-local-first" data-action="goto-slide"><span class="n">14</span><span class="t">Local storage. Explicit network boundaries.</span></a>
         <a class="index-tile" href="#15-local-data" data-action="goto-slide"><span class="n">15</span><span class="t">On your hardware — and what that costs.</span></a>
         <a class="index-tile" href="#16-refusals" data-action="goto-slide"><span class="n">16</span><span class="t">What we refuse to be.</span></a>
         <a class="index-tile" href="#17-who-else" data-action="goto-slide"><span class="n">17</span><span class="t">Who else is here, honestly.</span></a>

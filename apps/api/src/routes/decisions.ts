@@ -1,7 +1,12 @@
 import { Router } from 'express';
-import { decisionRepository, explanationRepository } from '@skytwin/db';
+import { decisionRepository, explanationRepository, inferenceReceiptRepository } from '@skytwin/db';
+import { snapshotInferenceReceipt, verifyInferenceReceiptSeal } from '@skytwin/shared-types';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
-import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
+import { bindUserIdParamValidator, bindUuidParamValidator } from '../middleware/validate-uuid.js';
+
+function sameUuid(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
+}
 
 /**
  * Create the decisions query router.
@@ -9,6 +14,7 @@ import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 export function createDecisionsRouter(): Router {
   const router = Router();
   bindUserIdParamValidator(router);
+  bindUuidParamValidator(router, 'decisionId', 'invalid_decision_id', 'Decision ID');
   bindUserIdParamOwnership(router);
 
   /**
@@ -141,6 +147,65 @@ export function createDecisionsRouter(): Router {
           createdAt: explanation.created_at,
         },
       });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /** Structured signed receipt; excludes bundle byte fields, while free-form strings may be source-bearing. */
+  router.get('/:decisionId/receipt', async (req, res, next) => {
+    try {
+      const userId = req.authenticatedUserId;
+      const decisionId = req.params['decisionId'];
+      if (!userId) {
+        res.status(401).json({ error: 'Authentication required' });
+        return;
+      }
+      if (!decisionId) {
+        res.status(400).json({ error: 'Missing decisionId parameter' });
+        return;
+      }
+      const row = await inferenceReceiptRepository.findByDecisionForUser(userId, decisionId);
+      if (!row) {
+        res.status(404).json({ error: 'Inference receipt not found' });
+        return;
+      }
+      const receipt = snapshotInferenceReceipt(row.receipt);
+      if (!receipt || !verifyInferenceReceiptSeal(receipt) || !sameUuid(receipt.id, row.id) ||
+          receipt.version !== row.version || !sameUuid(receipt.userId, userId) ||
+          !sameUuid(receipt.decisionId, row.decision_id) ||
+          !sameUuid(receipt.decisionId, decisionId) ||
+          !sameUuid(receipt.explanationId, row.explanation_id) || receipt.status !== row.status) {
+        res.status(409).json({ error: 'Stored inference receipt failed integrity validation' });
+        return;
+      }
+      res.json({
+        receipt,
+        persistenceTrust: row.trusted === true ? 'trusted' : 'imported_unverified',
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.delete('/:decisionId/receipt', async (req, res, next) => {
+    try {
+      const userId = req.authenticatedUserId;
+      const decisionId = req.params['decisionId'];
+      if (!userId) {
+        res.status(401).json({ error: 'Authentication required' });
+        return;
+      }
+      if (!decisionId) {
+        res.status(400).json({ error: 'Missing decisionId parameter' });
+        return;
+      }
+      const deleted = await inferenceReceiptRepository.deleteByDecisionForUser(userId, decisionId);
+      if (!deleted) {
+        res.status(404).json({ error: 'Inference receipt not found' });
+        return;
+      }
+      res.status(204).send();
     } catch (error) {
       next(error);
     }

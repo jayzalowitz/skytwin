@@ -1,9 +1,4 @@
-import type {
-  DecisionContext,
-  DecisionOutcome,
-  ExplanationRecord,
-  ExecutionResult,
-} from '@skytwin/shared-types';
+import type { DecisionContext, DecisionOutcome, ExplanationRecord, ExecutionResult } from '@skytwin/shared-types';
 import { TrustTier } from '@skytwin/shared-types';
 import type { SituationInterpreter, DecisionMaker } from '@skytwin/decision-engine';
 import type { TwinService } from '@skytwin/twin-model';
@@ -50,21 +45,15 @@ export interface EmailTriageResult {
  * 3. TwinService retrieves relevant preferences
  * 4. DecisionMaker evaluates (generates candidates, assesses risk, checks policies)
  * 5. PolicyEngine validates (done inside DecisionMaker)
- * 6. If approved: IronClaw adapter executes (archive, draft reply, etc.)
- * 7. ExplanationGenerator creates audit record
+ * 6. ExplanationGenerator creates an audit record
+ * 7. External execution remains disabled; mounted routes own durable admission
  * 8. All state persisted to DB (done by services internally)
  */
 export async function processEmailEvent(
   event: Record<string, unknown>,
   dependencies: EmailTriageDependencies,
 ): Promise<EmailTriageResult> {
-  const {
-    interpreter,
-    twinService,
-    decisionMaker,
-    explanationGenerator,
-    ironclawAdapter,
-  } = dependencies;
+  const { interpreter, twinService, decisionMaker, explanationGenerator, ironclawAdapter } = dependencies;
 
   const userId = event['userId'] as string;
   if (!userId) {
@@ -78,21 +67,13 @@ export async function processEmailEvent(
     ...event,
   });
 
-  log.info(
-    `Interpreted email: ${decision.situationType} / ${decision.urgency} - "${decision.summary}"`,
-  );
+  log.info(`Interpreted email: ${decision.situationType} / ${decision.urgency} - "${decision.summary}"`);
 
   // Step 2: Get twin profile and relevant preferences
   const profile = await twinService.getOrCreateProfile(userId);
-  const preferences = await twinService.getRelevantPreferences(
-    userId,
-    decision.domain,
-    decision.summary,
-  );
+  const preferences = await twinService.getRelevantPreferences(userId, decision.domain, decision.summary);
 
-  log.info(
-    `Twin profile v${profile.version}: ${preferences.length} relevant preferences`,
-  );
+  log.info(`Twin profile v${profile.version}: ${preferences.length} relevant preferences`);
 
   // Step 3: Build decision context
   // Trust tier must come from DB, never from the event payload
@@ -112,62 +93,26 @@ export async function processEmailEvent(
 
   log.info(
     `Decision outcome: autoExecute=${outcome.autoExecute}, ` +
-    `requiresApproval=${outcome.requiresApproval}, ` +
-    `action=${outcome.selectedAction?.actionType ?? 'none'}`,
+      `requiresApproval=${outcome.requiresApproval}, ` +
+      `action=${outcome.selectedAction?.actionType ?? 'none'}`,
   );
 
-  // Step 5: Execute if auto-approved
-  let executionResult: ExecutionResult | null = null;
-
-  if (outcome.autoExecute && outcome.selectedAction) {
-    log.info(
-      `Auto-executing: ${outcome.selectedAction.actionType} - ${outcome.selectedAction.description}`,
-    );
-
-    const plan = await ironclawAdapter.buildPlan(outcome.selectedAction);
-    executionResult = await ironclawAdapter.execute(plan);
-
-    log.info(
-      `Execution result: status=${executionResult.status}`,
-    );
-  }
+  // This legacy workflow is not mounted by the ingest route. Direct adapter
+  // dispatch is intentionally disabled because it has no durable admission
+  // authority; the receipt-backed ingest route owns external execution.
+  const executionResult: ExecutionResult | null = null;
+  void ironclawAdapter;
 
   // Step 6: Generate explanation for audit
-  const explanation = await explanationGenerator.generate(
-    decision,
-    outcome,
-    context,
-  );
+  const explanation = await explanationGenerator.generate(decision, outcome, context);
 
-  log.info(
-    `Explanation generated: risk=${explanation.riskTier}, ` +
-    `confidence=${explanation.overallConfidence}`,
-  );
-
-  // Step 7: If the event should be treated as evidence, update the twin
-  if (outcome.autoExecute && outcome.selectedAction) {
-    // The fact that we auto-executed is itself evidence about user preferences
-    await twinService.addEvidence(userId, {
-      id: `ev_email_${decision.id}`,
-      userId,
-      source: 'email_triage_workflow',
-      type: `auto_${outcome.selectedAction.actionType}`,
-      data: {
-        action: outcome.selectedAction.actionType,
-        domain: decision.domain,
-        emailFrom: event['from'],
-        emailCategory: event['category'],
-      },
-      domain: decision.domain,
-      timestamp: new Date(),
-    });
-  }
+  log.info(`Explanation generated: risk=${explanation.riskTier}, ` + `confidence=${explanation.overallConfidence}`);
 
   return {
     decisionId: decision.id,
     outcome,
     explanation,
     executionResult,
-    autoHandled: outcome.autoExecute,
+    autoHandled: false,
   };
 }

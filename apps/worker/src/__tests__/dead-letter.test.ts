@@ -1,176 +1,177 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Mock the workspace deps so the tracker can be unit-tested in isolation
-// without the full pnpm workspace resolution. The tests always inject
-// `record`, so the real repository is never exercised here.
-vi.mock('@skytwin/core', () => ({
-  createLogger: () => ({
+const { logger } = vi.hoisted(() => ({
+  logger: {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
     debug: vi.fn(),
-  }),
+  },
 }));
+
+vi.mock('@skytwin/core', () => ({ createLogger: () => logger }));
 vi.mock('@skytwin/db', () => ({
   workerDeadLetterRepository: { record: vi.fn() },
+  isWorkerDeadLetterJobCode: (value: unknown) =>
+    typeof value === 'string' &&
+    [
+      'metrics-rollup',
+      'domain-extraction',
+      'embedding-backfill',
+      'federation-sync',
+      'briefing-generator-daily',
+      'legacy-redacted',
+    ].includes(value),
 }));
 
-const { DeadLetterTracker } = await import('../dead-letter.js');
+const { DeadLetterTracker, reportDeadLetterRetentionFailure } =
+  await import('../dead-letter.js');
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function tracker(
+  record = vi.fn().mockResolvedValue({ id: 'x' }),
+  maxRetries = 3,
+) {
+  return {
+    record,
+    value: new DeadLetterTracker({
+      maxRetries,
+      record,
+    }),
+  };
+}
 
 describe('DeadLetterTracker', () => {
-  describe('run', () => {
-    it('returns the result and clears the streak on success', async () => {
-      const record = vi.fn().mockResolvedValue({ id: 'x' });
-      const tracker = new DeadLetterTracker({ maxRetries: 3, record });
+  beforeEach(() => vi.clearAllMocks());
 
-      const result = await tracker.run('job-a', async () => 42);
-      expect(result).toBe(42);
-      expect(tracker.getFailureStreak('job-a')).toBe(0);
-      expect(record).not.toHaveBeenCalled();
+  it('returns successful results and clears prior failure streaks', async () => {
+    const { value, record } = tracker();
+    await value.run('metrics-rollup', async () => {
+      throw new Error('transient');
     });
-
-    it('does NOT dead-letter before the retry budget is exhausted', async () => {
-      const record = vi.fn().mockResolvedValue({ id: 'x' });
-      const tracker = new DeadLetterTracker({ maxRetries: 3, record });
-      const fail = async () => {
-        throw new Error('boom');
-      };
-
-      await tracker.run('job-b', fail);
-      await tracker.run('job-b', fail);
-      expect(record).not.toHaveBeenCalled();
-      expect(tracker.getFailureStreak('job-b')).toBe(2);
-    });
-
-    it('dead-letters once the failure streak reaches maxRetries, then resets', async () => {
-      const record = vi.fn().mockResolvedValue({ id: 'dlq-1' });
-      const tracker = new DeadLetterTracker({ maxRetries: 3, record });
-      const fail = async () => {
-        throw new Error('CRDB unreachable');
-      };
-
-      await tracker.run('job-c', fail);
-      await tracker.run('job-c', fail);
-      await tracker.run('job-c', fail); // 3rd consecutive failure → dead-letter
-
-      expect(record).toHaveBeenCalledTimes(1);
-      expect(record).toHaveBeenCalledWith({
-        jobName: 'job-c',
-        errorMessage: 'CRDB unreachable',
-        attempts: 3,
-        context: undefined,
-      });
-      // Streak resets so the DLQ isn't spammed with a row every tick.
-      expect(tracker.getFailureStreak('job-c')).toBe(0);
-    });
-
-    it('does not spam the DLQ: after dead-lettering it takes another full streak', async () => {
-      const record = vi.fn().mockResolvedValue({ id: 'dlq' });
-      const tracker = new DeadLetterTracker({ maxRetries: 2, record });
-      const fail = async () => {
-        throw new Error('still broken');
-      };
-
-      // First streak of 2 → one DLQ row.
-      await tracker.run('job-d', fail);
-      await tracker.run('job-d', fail);
-      expect(record).toHaveBeenCalledTimes(1);
-
-      // Next tick starts a fresh streak; one failure is not enough.
-      await tracker.run('job-d', fail);
-      expect(record).toHaveBeenCalledTimes(1);
-
-      // Second failure of the new streak → second DLQ row.
-      await tracker.run('job-d', fail);
-      expect(record).toHaveBeenCalledTimes(2);
-    });
-
-    it('a success in the middle of a failure streak resets it', async () => {
-      const record = vi.fn().mockResolvedValue({ id: 'dlq' });
-      const tracker = new DeadLetterTracker({ maxRetries: 3, record });
-      const fail = async () => {
-        throw new Error('flaky');
-      };
-
-      await tracker.run('job-e', fail);
-      await tracker.run('job-e', fail);
-      await tracker.run('job-e', async () => 'ok'); // recovers
-      expect(tracker.getFailureStreak('job-e')).toBe(0);
-
-      // One more failure should NOT dead-letter (streak restarted at 1).
-      await tracker.run('job-e', fail);
-      expect(record).not.toHaveBeenCalled();
-      expect(tracker.getFailureStreak('job-e')).toBe(1);
-    });
-
-    it('never rejects even when the DLQ write itself throws', async () => {
-      const record = vi.fn().mockRejectedValue(new Error('DLQ write failed'));
-      const tracker = new DeadLetterTracker({ maxRetries: 1, record });
-      const fail = async () => {
-        throw new Error('boom');
-      };
-
-      // maxRetries=1 → first failure dead-letters; record() throws but
-      // run() must still resolve (undefined), not reject.
-      await expect(tracker.run('job-f', fail)).resolves.toBeUndefined();
-      expect(record).toHaveBeenCalledTimes(1);
-    });
-
-    it('passes the job context through to the DLQ row', async () => {
-      const record = vi.fn().mockResolvedValue({ id: 'dlq' });
-      const tracker = new DeadLetterTracker({ maxRetries: 1, record });
-      await tracker.run(
-        'job-g',
-        async () => {
-          throw new Error('boom');
-        },
-        { cadence: 'weekly' },
-      );
-      expect(record).toHaveBeenCalledWith(
-        expect.objectContaining({ context: { cadence: 'weekly' } }),
-      );
-    });
+    expect(await value.run('metrics-rollup', async () => 42)).toBe(42);
+    expect(value.getFailureStreak('metrics-rollup')).toBe(0);
+    expect(record).not.toHaveBeenCalled();
   });
 
-  describe('recordOutcome (fire-and-forget jobs)', () => {
-    it('clears the streak when passed a null/undefined error (success)', async () => {
-      const record = vi.fn().mockResolvedValue({ id: 'dlq' });
-      const tracker = new DeadLetterTracker({ maxRetries: 3, record });
-      await tracker.recordOutcome('job-h', new Error('x'));
-      await tracker.recordOutcome('job-h', null);
-      expect(tracker.getFailureStreak('job-h')).toBe(0);
-    });
-
-    it('dead-letters once consecutive failures reach maxRetries', async () => {
-      const record = vi.fn().mockResolvedValue({ id: 'dlq' });
-      const tracker = new DeadLetterTracker({ maxRetries: 2, record });
-      await tracker.recordOutcome('job-i', new Error('fail 1'));
-      expect(record).not.toHaveBeenCalled();
-      await tracker.recordOutcome('job-i', new Error('fail 2'), { cadence: 'daily' });
-      expect(record).toHaveBeenCalledWith({
-        jobName: 'job-i',
-        errorMessage: 'fail 2',
-        attempts: 2,
-        context: { cadence: 'daily' },
+  it('persists only stable codes, attempts, and correlation after the retry budget', async () => {
+    const { value, record } = tracker(undefined, 2);
+    const secret =
+      'password=hunter2 user=private@example.test prompt=delete everything payload={private}';
+    const fail = async () => {
+      const error = new Error(secret);
+      Object.assign(error, {
+        credentials: secret,
+        userId: secret,
+        context: { secret },
       });
-      expect(tracker.getFailureStreak('job-i')).toBe(0);
-    });
+      throw error;
+    };
 
-    it('stringifies non-Error throwables', async () => {
-      const record = vi.fn().mockResolvedValue({ id: 'dlq' });
-      const tracker = new DeadLetterTracker({ maxRetries: 1, record });
-      await tracker.recordOutcome('job-j', 'plain string failure');
-      expect(record).toHaveBeenCalledWith(
-        expect.objectContaining({ errorMessage: 'plain string failure' }),
-      );
-    });
+    await value.run('embedding-backfill', fail);
+    await value.run('embedding-backfill', fail);
 
-    it('never rejects when the DLQ write throws', async () => {
-      const record = vi.fn().mockRejectedValue(new Error('write failed'));
-      const tracker = new DeadLetterTracker({ maxRetries: 1, record });
-      await expect(
-        tracker.recordOutcome('job-k', new Error('boom')),
-      ).resolves.toBeUndefined();
+    expect(record).toHaveBeenCalledOnce();
+    expect(record).toHaveBeenCalledWith({
+      jobCode: 'embedding-backfill',
+      errorCode: 'job-failed',
+      attempts: 2,
+      correlationId: expect.stringMatching(UUID_PATTERN),
     });
+    const correlationId = record.mock.calls[0]![0].correlationId;
+    expect(logger.error).toHaveBeenCalledWith(
+      'Worker job exhausted retry budget; recording dead letter',
+      expect.objectContaining({ correlationId }),
+    );
+    expect(JSON.stringify(record.mock.calls)).not.toContain(secret);
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(secret);
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(secret);
+    expect(value.getFailureStreak('embedding-backfill')).toBe(0);
+  });
+
+  it('requires a new full streak before writing another row', async () => {
+    const { value, record } = tracker(undefined, 2);
+    const fail = async () => {
+      throw new Error('private failure');
+    };
+    await value.run('domain-extraction', fail);
+    await value.run('domain-extraction', fail);
+    await value.run('domain-extraction', fail);
+    expect(record).toHaveBeenCalledOnce();
+    await value.run('domain-extraction', fail);
+    expect(record).toHaveBeenCalledTimes(2);
+  });
+
+  it('never rejects or logs a secret-bearing DLQ persistence error', async () => {
+    const secret = 'credential=super-secret';
+    const record = vi.fn().mockRejectedValue(new Error(secret));
+    const { value } = tracker(record, 1);
+
+    await expect(
+      value.run('federation-sync', async () => {
+        throw new Error(secret);
+      }),
+    ).resolves.toBeUndefined();
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(secret);
+  });
+
+  it('rejects an unbounded runtime job code without logging or executing its bytes', async () => {
+    const secret = 'job=password=hunter2 userId=private prompt={secret}';
+    const { value, record } = tracker(undefined, 1);
+    const job = vi.fn();
+
+    await expect(
+      value.run(secret as Parameters<typeof value.run>[0], job),
+    ).resolves.toBeUndefined();
+    expect(job).not.toHaveBeenCalled();
+    expect(record).not.toHaveBeenCalled();
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(secret);
+  });
+
+  it('recordOutcome follows the same content-free boundary', async () => {
+    const { value, record } = tracker(undefined, 2);
+    const secret = 'userId=abc prompt=private context={credential:secret}';
+    await value.recordOutcome('briefing-generator-daily', new Error(secret));
+    expect(record).not.toHaveBeenCalled();
+    await value.recordOutcome('briefing-generator-daily', {
+      secret,
+      payload: secret,
+    });
+    expect(record).toHaveBeenCalledWith({
+      jobCode: 'briefing-generator-daily',
+      errorCode: 'job-failed',
+      attempts: 2,
+      correlationId: expect.stringMatching(UUID_PATTERN),
+    });
+    expect(JSON.stringify(record.mock.calls)).not.toContain(secret);
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(secret);
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(secret);
+
+    await value.recordOutcome('briefing-generator-daily', null);
+    expect(value.getFailureStreak('briefing-generator-daily')).toBe(0);
+  });
+});
+
+describe('dead-letter retention diagnostics', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('does not inspect or log secret-bearing retention errors', () => {
+    const secret =
+      'postgresql://private:password@host/source prompt=private@example.test';
+    const error = new Error(secret);
+    Object.assign(error, { connectionString: secret, query: secret });
+
+    reportDeadLetterRetentionFailure(error);
+
+    expect(logger.warn).toHaveBeenCalledOnce();
+    expect(logger.warn).toHaveBeenCalledWith(
+      'Worker dead-letter retention failed; continuing',
+      {
+        operationCode: 'dead-letter-retention',
+        errorCode: 'job-failed',
+      },
+    );
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(secret);
   });
 });

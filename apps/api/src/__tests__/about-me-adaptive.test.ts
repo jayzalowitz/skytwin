@@ -7,11 +7,7 @@ import type { Express } from 'express';
 
 // ── Factory mock ──────────────────────────────────────────────────────────────
 const { mockGetLlmClient } = vi.hoisted(() => ({ mockGetLlmClient: vi.fn() }));
-vi.mock('../lib/llm-client-factory.js', () => ({
-  getLlmClientFromConfig: mockGetLlmClient,
-  getLlmClientFromConfigFresh: vi.fn().mockReturnValue(null),
-  _resetLlmClientCache: vi.fn(),
-}));
+vi.mock('../lib/user-llm-client.js', () => ({ buildUserLlmClient: mockGetLlmClient }));
 
 // ── DB mocks ──────────────────────────────────────────────────────────────────
 const { mockQuery } = vi.hoisted(() => ({
@@ -46,8 +42,7 @@ async function request(
     const server = app.listen(0, () => {
       const addr = server.address();
       if (!addr || typeof addr === 'string') {
-        server.close();
-        reject(new Error('port'));
+        server.close(() => reject(new Error('port')));
         return;
       }
       const url = `http://127.0.0.1:${addr.port}${path}`;
@@ -57,10 +52,12 @@ async function request(
       fetch(url, options)
         .then(async (res) => {
           const json = await res.json().catch(() => null);
-          server.close();
-          resolve({ status: res.status, body: json });
+          server.close((error) => {
+            if (error) reject(error);
+            else resolve({ status: res.status, body: json });
+          });
         })
-        .catch((err: unknown) => { server.close(); reject(err); });
+        .catch((err: unknown) => server.close(() => reject(err)));
     });
   });
 }
@@ -119,6 +116,10 @@ describe('GET /about-me — J: self-portrait', () => {
     const app = buildApp();
     const res = await request(app, 'GET', '/api/about-me');
     expect(res.status).toBe(200);
+    expect(mockLlm.generate).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ invocationKind: 'interactive' }),
+    );
     expect((res.body as { modelVersion: string }).modelVersion).toBe('deterministic-v1');
   });
 

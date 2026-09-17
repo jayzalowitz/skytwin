@@ -1,16 +1,22 @@
 import { fork, spawn, execSync, type ChildProcess } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
-import { randomBytes } from 'crypto';
-import { join } from 'path';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
+import { randomBytes, randomUUID } from 'crypto';
+import { isAbsolute, join, relative, sep } from 'path';
 import { pathToFileURL } from 'url';
 import { app } from 'electron';
-import { CockroachManager } from './cockroach-manager.js';
+import { CockroachManager, type CockroachStartResult } from './cockroach-manager.js';
 import { computeBundleMarker } from './bundle-marker.js';
+import { DesktopKeyBroker } from './key-broker.js';
+import {
+  loadSourceKeyRegistryPort,
+  type SourceKeyRegistryPort,
+} from './crdb-wrapped-key-store.js';
 import {
   extractionDone,
   extractionProgress,
   type ExtractionProgress,
 } from './extraction-progress.js';
+import { verifyServiceInstanceProof } from './service-instance-proof.js';
 
 export type ProcessState = 'running' | 'stopped' | 'starting' | 'error' | 'paused';
 
@@ -28,28 +34,156 @@ interface ManagedProcess {
   external: boolean;
 }
 
+interface ApiGeneration {
+  readonly generation: number;
+  readonly process: ChildProcess;
+  readonly instanceCapability: string;
+  readonly ingestCredential: string;
+  readonly workerAuthorityId: string;
+  readonly workerAuthoritySecret: string;
+  readonly controller: AbortController;
+}
+
+interface WorkerGenerationAuthorityModule {
+  registerWorkerGenerationAuthority(options: {
+    connectionString: string;
+    generationId: string;
+    generationSecret: string;
+    authorize: () => boolean;
+  }): Promise<void>;
+  revokeWorkerGenerationAuthority(options: {
+    connectionString: string;
+    generationId: string;
+    generationSecret: string;
+    authorize: () => boolean;
+  }): Promise<void>;
+}
+
+export class ChildTerminationError extends Error {
+  readonly code = 'CHILD_TERMINATION_UNPROVEN';
+
+  constructor(readonly serviceName: string) {
+    super(`${serviceName} child termination could not be proven`);
+    this.name = 'ChildTerminationError';
+  }
+}
+
+function hasChildTerminationError(error: unknown): boolean {
+  if (error instanceof ChildTerminationError) return true;
+  return error instanceof AggregateError
+    && error.errors.some(hasChildTerminationError);
+}
+
+class ResumeCancelledError extends Error {
+  constructor(phase: string) {
+    super(`Resume cancelled by a newer pause request ${phase}`);
+    this.name = 'ResumeCancelledError';
+  }
+}
+
 const MAX_RESTARTS = 5;
 const FAILURE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 const HEALTH_CHECK_INTERVAL_MS = 5000;
+const HEALTH_REQUEST_TIMEOUT_MS = 2_000;
+const SERVICE_TERM_TIMEOUT_MS = 5_000;
+const SERVICE_KILL_TIMEOUT_MS = 2_000;
 const RESTART_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];
 
-/**
- * Google OAuth `client_id` baked into the desktop bundle.
- *
- * Registered in the SkyTwin Google Cloud project (`skytwin-492700`) as
- * an OAuth client of type "Desktop app", created 2026-05-22. PKCE
- * binds each auth code to a per-flow verifier the API holds in memory;
- * the public client_id alone redeems nothing. The token redirect
- * lands on `http://127.0.0.1:NNNN/api/oauth/google/callback` and never
- * traverses our infrastructure — tokens stay on the user's machine,
- * encrypted by `credential-vault`.
- *
- * Override at build time via `SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID` env if
- * shipping a forked SkyTwin build that should consent under a
- * different brand.
- */
-const BUNDLED_GOOGLE_CLIENT_ID =
-  '594829999930-kpjopcs1pak0rp0omimuegr5ugcv5l8h.apps.googleusercontent.com';
+function childHasExited(child: ChildProcess): boolean {
+  return child.exitCode != null || child.signalCode != null;
+}
+
+function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (childHasExited(child)) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (exited: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off('exit', onExit);
+      child.off('close', onExit);
+      resolve(exited);
+    };
+    const onExit = (): void => finish(true);
+    const timer = setTimeout(() => finish(childHasExited(child)), timeoutMs);
+    child.once('exit', onExit);
+    child.once('close', onExit);
+  });
+}
+
+async function fetchBounded(
+  input: Parameters<typeof fetch>[0],
+  init: RequestInit,
+  timeoutMs: number,
+  authoritySignals: readonly AbortSignal[] = [],
+): Promise<Response> {
+  const controller = new AbortController();
+  let rejectAuthority: ((error: Error) => void) | null = null;
+  const authorityLost = new Promise<never>((_resolve, reject) => {
+    rejectAuthority = reject;
+  });
+  const abort = (): void => {
+    controller.abort();
+    rejectAuthority?.(new Error('request authority was revoked'));
+  };
+  for (const signal of authoritySignals) signal.addEventListener('abort', abort, { once: true });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error('request timed out'));
+      }, timeoutMs);
+    });
+    if (authoritySignals.some((signal) => signal.aborted)) abort();
+    return await Promise.race([
+      fetch(input, { ...init, signal: controller.signal }),
+      timeout,
+      authorityLost,
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    for (const signal of authoritySignals) signal.removeEventListener('abort', abort);
+  }
+}
+
+async function fetchJsonBounded<T>(
+  input: Parameters<typeof fetch>[0],
+  init: RequestInit,
+  timeoutMs: number,
+  authoritySignals: readonly AbortSignal[] = [],
+): Promise<{ response: Response; payload: T | null }> {
+  const controller = new AbortController();
+  let rejectAuthority: ((error: Error) => void) | null = null;
+  const authorityLost = new Promise<never>((_resolve, reject) => {
+    rejectAuthority = reject;
+  });
+  const abort = (): void => {
+    controller.abort();
+    rejectAuthority?.(new Error('request authority was revoked'));
+  };
+  for (const signal of authoritySignals) signal.addEventListener('abort', abort, { once: true });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error('request timed out'));
+      }, timeoutMs);
+    });
+    if (authoritySignals.some((signal) => signal.aborted)) abort();
+    const request = (async (): Promise<{ response: Response; payload: T | null }> => {
+      const response = await fetch(input, { ...init, signal: controller.signal });
+      const payload = (await response.json().catch(() => null)) as T | null;
+      return { response, payload };
+    })();
+    return await Promise.race([request, timeout, authorityLost]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    for (const signal of authoritySignals) signal.removeEventListener('abort', abort);
+  }
+}
 
 /**
  * Manages the API server and worker as child processes.
@@ -63,7 +197,9 @@ const BUNDLED_GOOGLE_CLIENT_ID =
  */
 function countTarFiles(tarPath: string): Promise<number> {
   return new Promise((resolve, reject) => {
-    const child = spawn('tar', ['-tzf', tarPath], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const child = spawn('tar', ['-tzf', tarPath], {
+      stdio: ['ignore', 'pipe', 'inherit'],
+    });
     let count = 0;
     child.stdout?.on('data', (chunk: Buffer) => {
       for (const byte of chunk) {
@@ -79,16 +215,189 @@ function countTarFiles(tarPath: string): Promise<number> {
 }
 
 export class ServiceManager {
-  private api: ManagedProcess = { process: null, status: 'stopped', restartCount: 0, failureTimestamps: [], external: false };
-  private worker: ManagedProcess = { process: null, status: 'stopped', restartCount: 0, failureTimestamps: [], external: false };
-  private web: ManagedProcess = { process: null, status: 'stopped', restartCount: 0, failureTimestamps: [], external: false };
+  private api: ManagedProcess = {
+    process: null,
+    status: 'stopped',
+    restartCount: 0,
+    failureTimestamps: [],
+    external: false,
+  };
+  private worker: ManagedProcess = {
+    process: null,
+    status: 'stopped',
+    restartCount: 0,
+    failureTimestamps: [],
+    external: false,
+  };
+  private web: ManagedProcess = {
+    process: null,
+    status: 'stopped',
+    restartCount: 0,
+    failureTimestamps: [],
+    external: false,
+  };
   private cockroach = new CockroachManager();
   private cockroachStatus: ProcessState = 'stopped';
   private onStatusChange: ((status: ServiceStatus) => void) | null = null;
   private onExtractProgress: ((progress: ExtractionProgress) => void) | null = null;
   private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
   private paused = false;
+  private pauseIntentEpoch = 0;
   private sampleBootstrapAllowedThisLaunch = false;
+  private sampleLaunchEpoch = 0;
+  private sampleAbortController: AbortController | null = null;
+  private serviceLifecycleTail: Promise<void> = Promise.resolve();
+  private activeDatabaseStartup: CockroachStartResult | null = null;
+  private invalidatedDatabaseStartup: CockroachStartResult | null = null;
+  private apiGeneration: ApiGeneration | null = null;
+  private readyApiGeneration: ApiGeneration | null = null;
+  private webApiGeneration: ApiGeneration | null = null;
+  private workerApiGeneration: ApiGeneration | null = null;
+  private registeredWorkerGeneration: ApiGeneration | null = null;
+  private nextApiGeneration = 0;
+  private healthCheckInFlight = false;
+  private workerStartInFlight: Promise<void> | null = null;
+  private readonly terminatingProcesses = new WeakMap<ChildProcess, Promise<void>>();
+  private readonly recoveringApiGenerations = new WeakSet<ApiGeneration>();
+  private sourceKeyRegistryPortPromise: Promise<SourceKeyRegistryPort> | null = null;
+
+  constructor(private readonly keyBroker: DesktopKeyBroker | null = null) {
+    this.cockroach.setAuthorityLossHandler((generation) => {
+      const startup = this.activeDatabaseStartup;
+      if (startup?.ownership === 'managed-child' && startup.generation === generation) {
+        this.schedulePackagedDatabaseLoss(startup, 'managed CockroachDB child exited');
+      }
+    });
+  }
+
+  private isServiceDatabaseCurrent(startup: CockroachStartResult | null): boolean {
+    if (!app.isPackaged) return true;
+    return (
+      startup?.ownership === 'managed-child' &&
+      this.activeDatabaseStartup === startup &&
+      this.invalidatedDatabaseStartup !== startup &&
+      this.cockroach.isManagedStartCurrent(startup)
+    );
+  }
+
+  private invalidatePackagedDatabase(startup: CockroachStartResult, reason: string): boolean {
+    if (!app.isPackaged || this.activeDatabaseStartup !== startup) return false;
+    if (this.invalidatedDatabaseStartup === startup) return false;
+    console.error(`[crdb] ${reason}; stopping packaged services.`);
+    this.invalidatedDatabaseStartup = startup;
+    this.revokeSampleLaunch();
+    this.cockroachStatus = 'error';
+    this.emitStatus();
+    return true;
+  }
+
+  private async stopDataServicesOwned(): Promise<void> {
+    const registeredGeneration = this.registeredWorkerGeneration;
+    const startup = this.activeDatabaseStartup;
+    const canRevokeDurably =
+      registeredGeneration !== null &&
+      startup?.ownership === 'managed-child' &&
+      this.cockroach.isManagedStartCurrent(startup);
+    const results = await Promise.allSettled([
+      canRevokeDurably && registeredGeneration && startup
+        ? this.revokeWorkerGenerationAuthority(registeredGeneration, startup)
+        : Promise.resolve(),
+      this.stopProcess(this.worker, 'worker'),
+      this.stopProcess(this.web, 'web'),
+      this.stopProcess(this.api, 'api'),
+    ]);
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failed) throw failed.reason;
+    if (this.registeredWorkerGeneration === registeredGeneration) {
+      this.registeredWorkerGeneration = null;
+    }
+    if (this.web.process === null) this.webApiGeneration = null;
+    if (this.worker.process === null) this.workerApiGeneration = null;
+  }
+
+  private async stopDataServicesForApiGeneration(
+    generation: ApiGeneration,
+    startup: CockroachStartResult | null,
+  ): Promise<void> {
+    const registered = this.registeredWorkerGeneration === generation;
+    const workerProcess = this.workerApiGeneration === generation ? this.worker.process : null;
+    const webProcess = this.webApiGeneration === generation ? this.web.process : null;
+    const apiProcess = this.api.process === generation.process ? generation.process : null;
+    const canRevokeDurably =
+      registered &&
+      startup?.ownership === 'managed-child' &&
+      this.cockroach.isManagedStartCurrent(startup);
+    const results = await Promise.allSettled([
+      canRevokeDurably && startup
+        ? this.revokeWorkerGenerationAuthority(generation, startup)
+        : Promise.resolve(),
+      workerProcess && this.worker.process === workerProcess
+        ? this.stopProcess(this.worker, 'worker')
+        : Promise.resolve(),
+      webProcess && this.web.process === webProcess
+        ? this.stopProcess(this.web, 'web')
+        : Promise.resolve(),
+      apiProcess && this.api.process === apiProcess
+        ? this.stopProcess(this.api, 'api')
+        : Promise.resolve(),
+    ]);
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failed) throw failed.reason;
+    if (this.registeredWorkerGeneration === generation) this.registeredWorkerGeneration = null;
+    if (this.workerApiGeneration === generation && this.worker.process === null) {
+      this.workerApiGeneration = null;
+    }
+    if (this.webApiGeneration === generation && this.web.process === null) {
+      this.webApiGeneration = null;
+    }
+  }
+
+  private clearInvalidatedDatabaseStartup(startup: CockroachStartResult): void {
+    if (
+      this.invalidatedDatabaseStartup === startup &&
+      this.activeDatabaseStartup === startup &&
+      this.registeredWorkerGeneration === null &&
+      this.api.process === null &&
+      this.web.process === null &&
+      this.worker.process === null
+    ) {
+      this.invalidatedDatabaseStartup = null;
+      this.activeDatabaseStartup = null;
+    }
+  }
+
+  private schedulePackagedDatabaseLoss(startup: CockroachStartResult, reason: string): void {
+    if (!this.invalidatePackagedDatabase(startup, reason)) return;
+    void this.runServiceLifecycle(async () => {
+      await this.stopDataServicesOwned();
+      this.clearInvalidatedDatabaseStartup(startup);
+    }).catch((error) => {
+      console.error('[crdb] Failed to stop services after database authority loss:', error);
+    });
+  }
+
+  private async requireServiceDatabaseCurrent(
+    startup: CockroachStartResult,
+    phase: string,
+  ): Promise<void> {
+    if (this.isServiceDatabaseCurrent(startup)) return;
+    this.invalidatePackagedDatabase(startup, `ownership changed ${phase}`);
+    await this.stopDataServicesOwned();
+    this.clearInvalidatedDatabaseStartup(startup);
+    throw new Error(`CockroachDB ownership changed ${phase}`);
+  }
+
+  private guardServiceDatabase(startup: CockroachStartResult | null, phase: string): boolean {
+    if (this.isServiceDatabaseCurrent(startup)) return true;
+    if (startup) this.schedulePackagedDatabaseLoss(startup, `ownership changed ${phase}`);
+    return false;
+  }
+
+  private async requireApiGenerationCurrent(generation: ApiGeneration, phase: string): Promise<void> {
+    if (this.isApiGenerationCurrent(generation)) return;
+    await this.stopDataServicesForApiGeneration(generation, this.activeDatabaseStartup);
+    throw new Error(`API process generation changed ${phase}`);
+  }
 
   setStatusHandler(handler: (status: ServiceStatus) => void): void {
     this.onStatusChange = handler;
@@ -142,8 +451,24 @@ export class ServiceManager {
    * old `join(getResourcePath(), 'embedded', ...)` constructions.
    */
   private extractedEmbeddedRoot: string | null = null;
+  private embeddedRootPromise: Promise<string> | null = null;
 
   private async ensureEmbeddedRoot(): Promise<string> {
+    if (this.extractedEmbeddedRoot) return this.extractedEmbeddedRoot;
+    if (this.embeddedRootPromise) return this.embeddedRootPromise;
+
+    const pending = this.extractEmbeddedRoot();
+    this.embeddedRootPromise = pending;
+    try {
+      return await pending;
+    } finally {
+      if (this.embeddedRootPromise === pending) {
+        this.embeddedRootPromise = null;
+      }
+    }
+  }
+
+  private async extractEmbeddedRoot(): Promise<string> {
     if (this.extractedEmbeddedRoot) return this.extractedEmbeddedRoot;
 
     if (!app.isPackaged) {
@@ -181,9 +506,7 @@ export class ServiceManager {
           }
           console.warn('[extract] Marker matches but api/dist/index.js missing — re-extracting.');
         } else {
-          console.log(
-            `[extract] Bundle changed (${markerSource}): ${installed} -> ${currentMarker}. Re-extracting.`,
-          );
+          console.log(`[extract] Bundle changed (${markerSource}): ${installed} -> ${currentMarker}. Re-extracting.`);
         }
       } catch {
         // Marker unreadable — fall through to re-extract.
@@ -229,11 +552,9 @@ export class ServiceManager {
       // all three platforms accepts this flag set (bsdtar on
       // macOS/Windows, gnu tar on Linux). stderr inherited so any
       // extraction error still surfaces in the user-facing console.
-      const child = spawn(
-        'tar',
-        ['-xzvf', tarPath, '-C', extractedRoot],
-        { stdio: ['ignore', 'pipe', 'inherit'] },
-      );
+      const child = spawn('tar', ['-xzvf', tarPath, '-C', extractedRoot], {
+        stdio: ['ignore', 'pipe', 'inherit'],
+      });
       let filesExtracted = 0;
       let lastEmittedPercent = -1;
       child.stdout?.on('data', (chunk: Buffer) => {
@@ -278,17 +599,16 @@ export class ServiceManager {
   }
 
   /**
-   * Read or generate the per-installation loopback service token handed to
-   * every managed child process as `SKYTWIN_SERVICE_TOKEN`.
+   * Read or generate the per-installation loopback service token used by
+   * developer-managed services as `SKYTWIN_SERVICE_TOKEN`.
    *
    * The desktop pins `NODE_ENV=production` for all children, which turns the
    * API's localhost auth bypass OFF. Before this existed, the worker's
    * `forwardSignalToApi()` and the idle-miner's ingest emitter posted to
    * `/api/events/ingest` with no credential at all, so every packaged install
-   * 401'd on every signal and ingested nothing. Same mint, same file
-   * conventions as the session secret — one value covers the API (verifier)
-   * and the worker + idle-miner (presenters), because they all read the env
-   * produced by `getEnv()`.
+   * 401'd on every signal and ingested nothing. Packaged API generations
+   * replace this fallback with a fresh in-memory credential shared only with
+   * the worker spawned for that generation.
    */
   private getOrCreateServiceToken(): string {
     return this.getOrCreateSecret('service-token');
@@ -312,20 +632,19 @@ export class ServiceManager {
   }
 
   private getEnv(): Record<string, string> {
-    // Bundle-default Google OAuth client_id. Empty when the desktop was
-    // built without one — env wins over this. The desktop bundle ships
-    // with the SkyTwin-team-registered verified OAuth client (type:
-    // "Installed application"), so users never have to create their own
-    // Google Cloud OAuth app. PKCE binds each authorization code to a
-    // per-flow verifier the API holds in memory; a leaked client_id
-    // alone redeems nothing.
-    const envOverride = process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'];
-    const bundledGoogleClientId =
-      envOverride !== undefined && envOverride !== ''
-        ? envOverride
-        : (BUNDLED_GOOGLE_CLIENT_ID || '');
+    const inheritedEnv = { ...process.env } as Record<string, string>;
+    // Renderer evidence authority belongs only to the Electron main process.
+    // API/web/worker children must not be able to forge the rendered-UI proof.
+    delete inheritedEnv['SKYTWIN_RELEASE_EVIDENCE_RENDERER_NONCE'];
+    delete inheritedEnv['SKYTWIN_RELEASE_EVIDENCE_RENDERER_PROOF'];
+    if (app.isPackaged) {
+      delete inheritedEnv['SKYTWIN_API_INSTANCE_CAPABILITY'];
+      delete inheritedEnv['SKYTWIN_SERVICE_TOKEN'];
+      delete inheritedEnv['SKYTWIN_WORKER_GENERATION_ID'];
+      delete inheritedEnv['SKYTWIN_WORKER_GENERATION_SECRET'];
+    }
     return {
-      ...process.env as Record<string, string>,
+      ...inheritedEnv,
       DESKTOP_MODE: 'true',
       // The desktop bundle ships without an IronClaw deployment; the
       // execution-router falls back to Direct/OpenClaw based on the
@@ -334,26 +653,100 @@ export class ServiceManager {
       // the purpose of the all-in-one bundle.
       USE_MOCK_IRONCLAW: process.env['USE_MOCK_IRONCLAW'] ?? 'true',
       NODE_ENV: 'production',
-      SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID: bundledGoogleClientId,
+      // Google account connections are outside the packaged preview boundary.
+      // Pin this after inherited environment so a launcher shell cannot opt the
+      // API or worker into the experimental source-development path.
+      SKYTWIN_GOOGLE_CONNECTION_MODE: app.isPackaged
+        ? 'disabled'
+        : process.env['SKYTWIN_GOOGLE_CONNECTION_MODE'] ?? 'disabled',
+      // Filesystem plugins are executable authority. Packaged children do not
+      // inherit an operator shell path; source development remains configurable.
+      ...(app.isPackaged ? { ADAPTER_PLUGIN_DIR: '' } : {}),
+      SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID: app.isPackaged
+        ? ''
+        : process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'] ?? '',
+      // Microsoft/Outlook is under the same account-free preview boundary.
+      // Clear every credential-bearing input in packaged children; source
+      // development retains the exact experimental opt-in above.
+      ...(app.isPackaged
+        ? {
+            MICROSOFT_CLIENT_ID: '',
+            MICROSOFT_CLIENT_SECRET: '',
+            MICROSOFT_REDIRECT_URI: '',
+            MICROSOFT_TENANT: '',
+            SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID: '',
+          }
+        : {}),
       API_PORT: '3100',
       WORKER_PORT: '3101',
-      API_BASE_URL: 'http://localhost:3100',
-      // CockroachManager owns the wire format; if the user has set
-      // DATABASE_URL explicitly we honor it (e.g. pointing at a hosted
-      // CRDB for power users), otherwise we use the bundled instance.
-      DATABASE_URL: process.env['DATABASE_URL'] || this.cockroach.getConnectionString(),
+      API_BASE_URL: 'http://127.0.0.1:3100',
+      // A packaged desktop is a local-data product: its services must use
+      // the exact database child this launch attested. Shell inheritance is
+      // useful in development, but it is not authority to redirect a signed
+      // bundle to an arbitrary database.
+      DATABASE_URL: app.isPackaged
+        ? this.cockroach.getConnectionString()
+        : process.env['DATABASE_URL'] || this.cockroach.getConnectionString(),
       // API refuses to start in NODE_ENV=production without this; auto-
       // generate per-install. Persisted across launches.
       SESSION_SECRET: process.env['SESSION_SECRET'] || this.getOrCreateSessionSecret(),
       // Pinned AFTER the `...process.env` spread on purpose: a packaged build
       // must never inherit a developer's shell bypass. Real auth, always.
       SKYTWIN_DEV_AUTH_BYPASS: 'false',
-      // Loopback service credential. The API verifies it; the worker and the
-      // idle-miner present it on `/api/events/ingest`. Without it, a packaged
-      // install (NODE_ENV=production, bypass off) 401s every ingest POST.
-      SKYTWIN_SERVICE_TOKEN:
-        process.env['SKYTWIN_SERVICE_TOKEN'] || this.getOrCreateServiceToken(),
+      // Developer fallback. Packaged API/worker generations receive a fresh
+      // in-memory ingest credential instead; web children never receive one.
+      ...(app.isPackaged
+        ? {}
+        : {
+            SKYTWIN_SERVICE_TOKEN:
+              process.env['SKYTWIN_SERVICE_TOKEN'] || this.getOrCreateServiceToken(),
+          }),
     };
+  }
+
+  private apiEnv(instanceCapability: string): Record<string, string> {
+    const baseEnv = this.getEnv();
+    const env: Record<string, string> = {
+      ...baseEnv,
+      SKYTWIN_API_INSTANCE_CAPABILITY: instanceCapability,
+      // Packaged worker authority is generation-scoped. Source-development
+      // workers can outlive an API-only restart, so they retain the stable
+      // operator/per-install credential from getEnv().
+      SKYTWIN_SERVICE_TOKEN: app.isPackaged
+        ? randomBytes(32).toString('hex')
+        : baseEnv['SKYTWIN_SERVICE_TOKEN'],
+    };
+    delete env['SKYTWIN_WORKER_GENERATION_ID'];
+    delete env['SKYTWIN_WORKER_GENERATION_SECRET'];
+    return env;
+  }
+
+  private workerEnv(apiGeneration: ApiGeneration | null): Record<string, string> {
+    const env = this.getEnv();
+    if (
+      apiGeneration &&
+      this.isApiGenerationCurrent(apiGeneration) &&
+      (!app.isPackaged || this.registeredWorkerGeneration === apiGeneration)
+    ) {
+      env['SKYTWIN_SERVICE_TOKEN'] = apiGeneration.ingestCredential;
+      if (app.isPackaged) {
+        env['SKYTWIN_WORKER_GENERATION_ID'] = apiGeneration.workerAuthorityId;
+        env['SKYTWIN_WORKER_GENERATION_SECRET'] = apiGeneration.workerAuthoritySecret;
+      }
+    } else if (app.isPackaged) {
+      throw new Error('Packaged worker startup requires the current API generation');
+    }
+    delete env['SKYTWIN_API_INSTANCE_CAPABILITY'];
+    return env;
+  }
+
+  private webEnv(): Record<string, string> {
+    const env = this.getEnv();
+    delete env['SKYTWIN_API_INSTANCE_CAPABILITY'];
+    delete env['SKYTWIN_SERVICE_TOKEN'];
+    delete env['SKYTWIN_WORKER_GENERATION_ID'];
+    delete env['SKYTWIN_WORKER_GENERATION_SECRET'];
+    return env;
   }
 
   /**
@@ -361,7 +754,7 @@ export class ServiceManager {
    * re-run every launch. Pulled into a separate method so startAll() can
    * gate the API on migrations completing.
    */
-  private async runMigrations(): Promise<boolean> {
+  private async runMigrations(startup: CockroachStartResult): Promise<boolean> {
     const base = this.getResourcePath();
     const embeddedRoot = await this.ensureEmbeddedRoot();
     const fallbackSymlink = app.isPackaged
@@ -399,12 +792,10 @@ export class ServiceManager {
     // either branch — likely a quirk in how Electron-shipped node + ESM
     // dynamic import + production-builder warnings interact.
     //
-    // The bulletproof path is to call `up()` directly from the Electron
-    // main process. Electron's main IS node, has full asar awareness,
-    // resolves pnpm symlinks, and shares one DB connection pool with
-    // ourselves — no child IPC overhead. The injected env vars
-    // (DATABASE_URL, SESSION_SECRET) live in process.env already from
-    // getEnv()'s spread.
+    // Call the migration package directly from Electron main so asar and
+    // pnpm-deploy paths resolve consistently. The package's upOwned() entry
+    // creates fixed, non-reconnecting pg clients and rechecks this launch's
+    // database capability before each write.
     console.log('[migrate] Running', script, '(in-process)');
     Object.assign(process.env, this.getEnv());
     try {
@@ -415,13 +806,33 @@ export class ServiceManager {
       // into a wrapped `require(x)` in CJS output, which then fails on
       // ESM targets ("file:// require"). Use Function-eval to bypass the
       // TS transform and get native runtime dynamic-import semantics.
-      const nativeImport = new Function('p', 'return import(p)') as (p: string) => Promise<{ up?: () => Promise<void> }>;
+      const nativeImport = new Function('p', 'return import(p)') as (
+        p: string,
+      ) => Promise<{
+        upOwned?: (options: {
+          connectionString: string;
+          authorize: () => boolean;
+        }) => Promise<void>;
+      }>;
       const mod = await nativeImport(moduleUrl);
-      if (typeof mod.up !== 'function') {
-        console.error('[migrate] target has no up() export:', script);
+      if (typeof mod.upOwned !== 'function') {
+        console.error('[migrate] target has no upOwned() export:', script);
         return false;
       }
-      await mod.up();
+      if (!this.cockroach.isManagedStartCurrent(startup)) {
+        console.error('[migrate] CockroachDB ownership changed before migration; refusing to write.');
+        return false;
+      }
+      await mod.upOwned({
+        // Never inherit DATABASE_URL here. The migration capability is for
+        // the exact bundled listener attested by CockroachManager.
+        connectionString: this.cockroach.getConnectionString(),
+        authorize: () => this.cockroach.isManagedStartCurrent(startup),
+      });
+      if (!this.cockroach.isManagedStartCurrent(startup)) {
+        console.error('[migrate] CockroachDB ownership changed during migration; refusing startup.');
+        return false;
+      }
       console.log('[migrate] complete');
       return true;
     } catch (err) {
@@ -430,15 +841,240 @@ export class ServiceManager {
     }
   }
 
+  private async workerGenerationAuthorityModule(): Promise<WorkerGenerationAuthorityModule> {
+    const base = this.getResourcePath();
+    const embeddedRoot = await this.ensureEmbeddedRoot();
+    const modulePath = app.isPackaged
+      ? join(
+          embeddedRoot,
+          'api',
+          'node_modules',
+          '@skytwin',
+          'db',
+          'dist',
+          'worker-generation-authority.js',
+        )
+      : join(base, 'packages', 'db', 'dist', 'worker-generation-authority.js');
+    if (!existsSync(modulePath)) {
+      throw new Error(`Worker generation authority module is missing: ${modulePath}`);
+    }
+    const nativeImport = new Function('p', 'return import(p)') as (
+      path: string,
+    ) => Promise<{
+      registerWorkerGenerationAuthority?: unknown;
+      revokeWorkerGenerationAuthority?: unknown;
+    }>;
+    const loaded = await nativeImport(pathToFileURL(realpathSync(modulePath)).href);
+    if (
+      typeof loaded.registerWorkerGenerationAuthority !== 'function' ||
+      typeof loaded.revokeWorkerGenerationAuthority !== 'function'
+    ) {
+      throw new Error('Worker generation authority module has an invalid contract');
+    }
+    return loaded as WorkerGenerationAuthorityModule;
+  }
+
+  /**
+   * Resolve the narrow DB leaf used by Electron's recovery-wrapper store.
+   *
+   * Packaged builds already carry a complete, self-contained API deployment;
+   * loading the reviewed DB leaf from that deployment avoids copying the
+   * package's unrelated runtime graph into app.asar a second time. Dev builds
+   * use the workspace dist directly. In both modes, resolve the real regular
+   * file before returning a URL so a missing or dangling package fails closed.
+   */
+  async sourceKeyRegistryModuleSpecifier(): Promise<string> {
+    const base = app.isPackaged ? null : this.getResourcePath();
+    const embeddedRoot = app.isPackaged
+      ? await this.ensureEmbeddedRoot()
+      : null;
+    const modulePath = app.isPackaged
+      ? join(
+          embeddedRoot!,
+          'api',
+          'node_modules',
+          '@skytwin',
+          'db',
+          'dist',
+          'source-key-registry.js',
+        )
+      : join(base!, 'packages', 'db', 'dist', 'source-key-registry.js');
+    if (!existsSync(modulePath)) {
+      throw new Error(`Source-key registry module is missing: ${modulePath}`);
+    }
+    const realPath = realpathSync(modulePath);
+    const expectedRoot = realpathSync(
+      app.isPackaged
+        ? join(embeddedRoot!, 'api')
+        : base!,
+    );
+    const relativePath = relative(expectedRoot, realPath);
+    if (
+      relativePath === '' ||
+      relativePath.startsWith(`..${sep}`) ||
+      isAbsolute(relativePath) ||
+      !statSync(realPath).isFile()
+    ) {
+      throw new Error(
+        `Source-key registry module escaped its package: ${modulePath}`,
+      );
+    }
+    return pathToFileURL(realPath).href;
+  }
+
+  private async sourceKeyRegistryPort(): Promise<SourceKeyRegistryPort> {
+    this.sourceKeyRegistryPortPromise ??= loadSourceKeyRegistryPort(
+      await this.sourceKeyRegistryModuleSpecifier(),
+    );
+    return await this.sourceKeyRegistryPortPromise;
+  }
+
+  private async registerWorkerGenerationAuthority(
+    generation: ApiGeneration,
+    startup: CockroachStartResult,
+  ): Promise<void> {
+    if (!app.isPackaged) return;
+    if (
+      this.registeredWorkerGeneration &&
+      this.registeredWorkerGeneration !== generation
+    ) {
+      throw new Error('A previous worker generation authority is still registered');
+    }
+    const authority = await this.workerGenerationAuthorityModule();
+    // Retain the exact capability before the first write. If the database
+    // commits and the response is lost, cleanup can reconcile by this ID and
+    // secret rather than orphaning an active authority row.
+    this.registeredWorkerGeneration = generation;
+    try {
+      await authority.registerWorkerGenerationAuthority({
+        connectionString: this.cockroach.getConnectionString(),
+        generationId: generation.workerAuthorityId,
+        generationSecret: generation.workerAuthoritySecret,
+        authorize: () =>
+          this.isServiceDatabaseCurrent(startup) && this.isApiGenerationCurrent(generation),
+      });
+      await this.requireServiceDatabaseCurrent(startup, 'after worker authority registration');
+      await this.requireApiGenerationCurrent(generation, 'after worker authority registration');
+    } catch (error) {
+      try {
+        await this.revokeWorkerGenerationAuthority(generation, startup);
+        if (this.registeredWorkerGeneration === generation) {
+          this.registeredWorkerGeneration = null;
+        }
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          'Worker generation registration and reconciliation both failed',
+        );
+      }
+      throw error;
+    }
+  }
+
+  private async revokeWorkerGenerationAuthority(
+    generation: ApiGeneration,
+    startup: CockroachStartResult,
+  ): Promise<void> {
+    if (!app.isPackaged) return;
+    const authority = await this.workerGenerationAuthorityModule();
+    await authority.revokeWorkerGenerationAuthority({
+      connectionString: this.cockroach.getConnectionString(),
+      generationId: generation.workerAuthorityId,
+      generationSecret: generation.workerAuthoritySecret,
+      authorize: () => this.cockroach.isManagedStartCurrent(startup),
+    });
+  }
+
+  private beginSampleLaunch(): { epoch: number; signal: AbortSignal } {
+    this.sampleAbortController?.abort();
+    const controller = new AbortController();
+    this.sampleAbortController = controller;
+    this.sampleBootstrapAllowedThisLaunch = false;
+    const epoch = ++this.sampleLaunchEpoch;
+    return { epoch, signal: controller.signal };
+  }
+
+  private revokeSampleLaunch(): void {
+    this.sampleAbortController?.abort();
+    this.sampleAbortController = null;
+    this.sampleBootstrapAllowedThisLaunch = false;
+    ++this.sampleLaunchEpoch;
+  }
+
+  private isSampleLaunchCurrent(epoch: number, signal: AbortSignal, startup: CockroachStartResult): boolean {
+    return (
+      app.isPackaged &&
+      !signal.aborted &&
+      epoch === this.sampleLaunchEpoch &&
+      this.cockroach.isManagedStartCurrent(startup)
+    );
+  }
+
+  private isSampleAuthorityCurrent(epoch: number, signal: AbortSignal, startup: CockroachStartResult): boolean {
+    return this.sampleBootstrapAllowedThisLaunch && this.isSampleLaunchCurrent(epoch, signal, startup);
+  }
+
+  private isApiGenerationCurrent(expected: ApiGeneration): boolean {
+    return (
+      !this.api.external &&
+      this.apiGeneration === expected &&
+      this.api.process === expected.process &&
+      !expected.controller.signal.aborted &&
+      !childHasExited(expected.process)
+    );
+  }
+
+  private revokeApiGeneration(expected?: ApiGeneration): void {
+    const current = this.apiGeneration;
+    if (!current || (expected && current !== expected)) return;
+    current.controller.abort();
+    if (this.readyApiGeneration === current) this.readyApiGeneration = null;
+    this.apiGeneration = null;
+  }
+
+  private claimApiGenerationRecovery(generation: ApiGeneration): boolean {
+    if (this.recoveringApiGenerations.has(generation)) return false;
+    this.recoveringApiGenerations.add(generation);
+    return true;
+  }
+
+  private isApiGenerationReady(generation: ApiGeneration): boolean {
+    return this.readyApiGeneration === generation && this.isApiGenerationCurrent(generation);
+  }
+
+  private requireResumeIntentCurrent(epoch: number, phase: string): void {
+    if (this.pauseIntentEpoch !== epoch) throw new ResumeCancelledError(phase);
+  }
+
+  private markApiGenerationReady(generation: ApiGeneration): boolean {
+    if (!this.isApiGenerationCurrent(generation)) return false;
+    this.readyApiGeneration = generation;
+    return true;
+  }
+
+  private isSampleIngestCurrent(
+    startup: CockroachStartResult,
+    epoch: number,
+    signal: AbortSignal,
+    apiGeneration: ApiGeneration,
+  ): boolean {
+    return this.isSampleAuthorityCurrent(epoch, signal, startup) && this.isApiGenerationCurrent(apiGeneration);
+  }
+
   /**
    * Provision the account-free sample only for a packaged build using its
    * bundled loopback database. The database module enforces the same boundary
    * again before writing and refuses reserved-ID collisions with real users.
    */
-  private async provisionPackagedSample(): Promise<void> {
-    if (!app.isPackaged) return;
+  private async provisionPackagedSample(
+    startup: CockroachStartResult,
+    epoch: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (!this.isSampleLaunchCurrent(epoch, signal, startup)) return;
 
     const embeddedRoot = await this.ensureEmbeddedRoot();
+    if (!this.isSampleLaunchCurrent(epoch, signal, startup)) return;
     const moduleSymlink = join(
       embeddedRoot,
       'api',
@@ -461,25 +1097,35 @@ export class ServiceManager {
           desktopMode: string | undefined;
           nodeEnv: string | undefined;
           databaseUrl: string | undefined;
+          bundledDatabaseUrl: string | undefined;
+          databaseOwnership: 'managed-child' | 'preexisting';
+          managedDataDir: string | null;
+          bundledDataDir: string;
           packaged: boolean;
+          authorize: () => boolean;
         }) => Promise<{ created: boolean; userId: string }>;
       }>;
       const mod = await nativeImport(moduleUrl);
+      if (!this.isSampleLaunchCurrent(epoch, signal, startup)) return;
       const env = this.getEnv();
       const result = await mod.provisionPackagedSample({
         packaged: app.isPackaged,
         desktopMode: env['DESKTOP_MODE'],
         nodeEnv: env['NODE_ENV'],
         databaseUrl: env['DATABASE_URL'],
+        bundledDatabaseUrl: this.cockroach.getConnectionString(),
+        databaseOwnership: startup.ownership,
+        managedDataDir: startup.dataDir,
+        bundledDataDir: this.cockroach.getDataDir(),
+        authorize: () => this.isSampleLaunchCurrent(epoch, signal, startup),
       });
+      if (!this.isSampleLaunchCurrent(epoch, signal, startup)) return;
       // Retry the versioned fixture on every healthy launch. Each synthetic
       // signal carries a stable signalId, so the normal ingest dedupe path
       // resumes partial bootstraps without duplicating decisions or approvals.
       this.sampleBootstrapAllowedThisLaunch = true;
       console.log(
-        result.created
-          ? '[sample] Reserved sample identity provisioned.'
-          : '[sample] Sample identity already present.',
+        result.created ? '[sample] Reserved sample identity provisioned.' : '[sample] Sample identity already present.',
       );
     } catch (err) {
       // Sample availability must not prevent owners from opening their local
@@ -488,11 +1134,38 @@ export class ServiceManager {
     }
   }
 
+  private async loadPackagedSampleIngestModule(moduleUrl: string): Promise<{
+    ingestPackagedSampleSignals: (options: {
+      apiUrl: string;
+      serviceToken: string;
+      signal: AbortSignal;
+      authorizeRequest: () => Promise<boolean>;
+    }) => Promise<{ ingested: number; total: number }>;
+  }> {
+    const nativeImport = new Function('p', 'return import(p)') as (
+      p: string,
+    ) => Promise<{
+      ingestPackagedSampleSignals: (options: {
+        apiUrl: string;
+        serviceToken: string;
+        signal: AbortSignal;
+        authorizeRequest: () => Promise<boolean>;
+      }) => Promise<{ ingested: number; total: number }>;
+    }>;
+    return nativeImport(moduleUrl);
+  }
+
   /** Populate a newly-created sample through the authenticated API boundary. */
-  private async ingestPackagedSample(): Promise<void> {
-    if (!app.isPackaged || !this.sampleBootstrapAllowedThisLaunch) return;
+  private async ingestPackagedSample(
+    startup: CockroachStartResult,
+    epoch: number,
+    signal: AbortSignal,
+    apiGeneration: ApiGeneration,
+  ): Promise<void> {
+    if (!this.isSampleIngestCurrent(startup, epoch, signal, apiGeneration)) return;
 
     const embeddedRoot = await this.ensureEmbeddedRoot();
+    if (!this.isSampleIngestCurrent(startup, epoch, signal, apiGeneration)) return;
     const moduleSymlink = join(
       embeddedRoot,
       'api',
@@ -505,26 +1178,103 @@ export class ServiceManager {
     );
     try {
       const moduleUrl = pathToFileURL(realpathSync(moduleSymlink)).href;
-      const nativeImport = new Function('p', 'return import(p)') as (p: string) => Promise<{
-        ingestPackagedSampleSignals: (options: {
-          apiUrl: string;
-          serviceToken: string;
-        }) => Promise<{ ingested: number; total: number }>;
-      }>;
-      const mod = await nativeImport(moduleUrl);
-      const env = this.getEnv();
+      const mod = await this.loadPackagedSampleIngestModule(moduleUrl);
+      if (!this.isSampleIngestCurrent(startup, epoch, signal, apiGeneration)) return;
+      const requestSignal = AbortSignal.any([signal, apiGeneration.controller.signal]);
+      if (!this.isSampleIngestCurrent(startup, epoch, requestSignal, apiGeneration)) return;
       const result = await mod.ingestPackagedSampleSignals({
-        apiUrl: env['API_BASE_URL'] ?? 'http://127.0.0.1:3100',
-        serviceToken: env['SKYTWIN_SERVICE_TOKEN'] ?? '',
+        // Keep the privileged request on the exact origin authenticated by
+        // verifyOwnedApi(); localhost could resolve to another IPv6 listener.
+        apiUrl: 'http://127.0.0.1:3100',
+        serviceToken: apiGeneration.ingestCredential,
+        signal: requestSignal,
+        authorizeRequest: async () =>
+          this.isSampleIngestCurrent(startup, epoch, requestSignal, apiGeneration) &&
+          (await this.verifyOwnedApi(apiGeneration, epoch, requestSignal)),
       });
+      if (!this.isSampleIngestCurrent(startup, epoch, requestSignal, apiGeneration)) return;
       console.log(`[sample] Ingested ${result.ingested}/${result.total} sample signals.`);
     } catch (err) {
       console.error('[sample] Signal ingestion incomplete:', err);
     }
   }
 
-  async startAll(): Promise<void> {
+  /** Prove that the API listener holds this exact spawn's capability. */
+  private async verifyOwnedApi(
+    expected: ApiGeneration,
+    epoch?: number,
+    launchSignal?: AbortSignal,
+    timeoutMs = HEALTH_REQUEST_TIMEOUT_MS,
+  ): Promise<boolean> {
+    if (
+      launchSignal?.aborted ||
+      (epoch !== undefined && epoch !== this.sampleLaunchEpoch) ||
+      !this.isApiGenerationCurrent(expected)
+    )
+      return false;
+    const challenge = randomBytes(32).toString('hex');
+    try {
+      const url = new URL('http://127.0.0.1:3100/api/health/instance');
+      url.searchParams.set('challenge', challenge);
+      const authoritySignals = launchSignal
+        ? [launchSignal, expected.controller.signal]
+        : [expected.controller.signal];
+      const { response, payload } = await fetchJsonBounded<{
+        service?: unknown;
+        challenge?: unknown;
+        proof?: unknown;
+      }>(url, {}, timeoutMs, authoritySignals);
+      if (!response.ok) return false;
+      return (
+        !launchSignal?.aborted &&
+        (epoch === undefined || epoch === this.sampleLaunchEpoch) &&
+        this.isApiGenerationCurrent(expected) &&
+        payload?.service === 'skytwin-api' &&
+        payload.challenge === challenge &&
+        verifyServiceInstanceProof(expected.instanceCapability, challenge, payload.proof)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /** Run sample ingestion in the background after proving API ownership. */
+  private startPackagedSampleIngest(startup: CockroachStartResult, epoch: number, signal: AbortSignal): void {
+    const apiGeneration = this.apiGeneration;
+    if (!apiGeneration || !this.isSampleIngestCurrent(startup, epoch, signal, apiGeneration)) return;
+    void (async () => {
+      if (!(await this.verifyOwnedApi(apiGeneration, epoch, signal))) {
+        console.warn('[sample] Signal ingestion skipped: API instance could not be authenticated.');
+        return;
+      }
+      if (!this.isSampleIngestCurrent(startup, epoch, signal, apiGeneration)) return;
+      await this.ingestPackagedSample(startup, epoch, signal, apiGeneration);
+    })().catch((err) => {
+      console.error('[sample] Background signal ingestion failed:', err);
+    });
+  }
+
+  startAll(): Promise<void> {
+    return this.runServiceLifecycle(() => this.startAllOwned());
+  }
+
+  private async startAllOwned(): Promise<void> {
+    if (
+      app.isPackaged &&
+      (this.activeDatabaseStartup !== null ||
+        this.invalidatedDatabaseStartup !== null ||
+        this.registeredWorkerGeneration !== null ||
+        this.api.process !== null ||
+        this.web.process !== null ||
+        this.worker.process !== null)
+    ) {
+      throw new Error(
+        'Packaged startup is blocked until every previous service generation has proven termination',
+      );
+    }
     this.paused = false;
+    const { epoch, signal } = this.beginSampleLaunch();
+    let startup: CockroachStartResult | null = null;
     // Extract the bundled embedded apps tarball before anything else so
     // every downstream method (CockroachManager, runMigrations, startApi,
     // startWeb, startWorker) sees a populated <userData>/embedded/ tree.
@@ -541,6 +1291,11 @@ export class ServiceManager {
       }
     }
     if (await this.waitForExternalApi(10000)) {
+      if (app.isPackaged) {
+        this.cockroachStatus = 'error';
+        this.emitStatus();
+        throw new Error('Packaged startup refused an external API listener');
+      }
       console.log('[crdb] External API detected on :3100 — skipping local CockroachDB startup.');
       // In monorepo dev, the external API owns the DB connection and
       // migrations. Treat the dependency as satisfied for tray/status
@@ -548,24 +1303,84 @@ export class ServiceManager {
       this.cockroachStatus = 'running';
       this.emitStatus();
     } else {
-      await this.startCockroach();
+      startup = await this.startCockroach();
+      if (
+        app.isPackaged &&
+        (startup?.ownership !== 'managed-child' || !this.cockroach.isManagedStartCurrent(startup))
+      ) {
+        this.cockroachStatus = 'error';
+        this.emitStatus();
+        throw new Error('Packaged startup requires the desktop-owned CockroachDB instance');
+      }
+      if (app.isPackaged && startup?.ownership === 'managed-child') {
+        this.activeDatabaseStartup = startup;
+      }
       // Migrations must complete after CRDB is up but before API starts;
       // otherwise API hits "relation does not exist" on first query and
       // crashlooks until restart-backoff exhausts.
-      if (this.cockroachStatus === 'running') {
-        const migrated = await this.runMigrations();
-        if (migrated) await this.provisionPackagedSample();
+      if (
+        this.cockroachStatus === 'running' &&
+        startup?.ownership === 'managed-child' &&
+        this.cockroach.isManagedStartCurrent(startup)
+      ) {
+        const migrated = await this.runMigrations(startup);
+        if (migrated && this.cockroach.isManagedStartCurrent(startup)) {
+          await this.provisionPackagedSample(startup, epoch, signal);
+          if (app.isPackaged && !this.cockroach.isManagedStartCurrent(startup)) {
+            this.activeDatabaseStartup = null;
+            this.revokeSampleLaunch();
+            this.cockroachStatus = 'error';
+            this.emitStatus();
+            throw new Error('CockroachDB ownership changed before packaged services could start');
+          }
+        } else if (app.isPackaged) {
+          this.activeDatabaseStartup = null;
+          this.revokeSampleLaunch();
+          this.cockroachStatus = 'error';
+          this.emitStatus();
+          throw new Error('Packaged startup requires migrations on the desktop-owned CockroachDB instance');
+        }
+      } else if (this.cockroachStatus === 'running' && app.isPackaged) {
+        this.activeDatabaseStartup = null;
+        this.revokeSampleLaunch();
+        this.cockroachStatus = 'error';
+        this.emitStatus();
+        throw new Error('Packaged startup refused an unowned CockroachDB listener');
       }
     }
-    await this.startApi();
-    const apiReady = await this.waitForApi(10000);
+    if (app.isPackaged && startup) await this.requireServiceDatabaseCurrent(startup, 'before API startup');
+    const apiGeneration = await this.startApi(startup);
+    if (app.isPackaged && startup) await this.requireServiceDatabaseCurrent(startup, 'during API startup');
+    if (app.isPackaged && (!apiGeneration || !this.isApiGenerationCurrent(apiGeneration))) {
+      await this.stopDataServicesOwned();
+      throw new Error('Packaged startup requires the desktop-owned API process');
+    }
+    if (app.isPackaged && startup && apiGeneration) {
+      await this.registerWorkerGenerationAuthority(apiGeneration, startup);
+    }
+    const apiReady = await this.waitForApi(10000, startup, apiGeneration);
+    if (app.isPackaged && startup) await this.requireServiceDatabaseCurrent(startup, 'during API readiness');
+    if (
+      app.isPackaged &&
+      (!apiReady || !apiGeneration || !this.markApiGenerationReady(apiGeneration))
+    ) {
+      await this.stopDataServicesOwned();
+      throw new Error('Packaged startup could not authenticate the desktop-owned API listener');
+    }
     if (apiReady) {
       this.api.restartCount = 0;
       this.api.failureTimestamps = [];
-      await this.ingestPackagedSample();
     }
-    await this.startWeb();
-    await this.startWorker();
+    await this.startWeb(startup, apiGeneration);
+    if (app.isPackaged && startup) await this.requireServiceDatabaseCurrent(startup, 'during web startup');
+    if (app.isPackaged && apiGeneration) {
+      await this.requireApiGenerationCurrent(apiGeneration, 'during web startup');
+    }
+    await this.startWorker(startup, apiGeneration);
+    if (app.isPackaged && startup) await this.requireServiceDatabaseCurrent(startup, 'during worker startup');
+    if (app.isPackaged && apiGeneration) {
+      await this.requireApiGenerationCurrent(apiGeneration, 'during worker startup');
+    }
     setTimeout(() => {
       if (this.worker.status === 'running') {
         this.worker.restartCount = 0;
@@ -573,42 +1388,88 @@ export class ServiceManager {
       }
     }, 3000);
 
-    this.startHealthMonitoring();
+    this.startHealthMonitoring(startup);
+    if (apiReady && startup?.ownership === 'managed-child' && this.isSampleAuthorityCurrent(epoch, signal, startup)) {
+      this.startPackagedSampleIngest(startup, epoch, signal);
+    }
   }
 
-  private startHealthMonitoring(): void {
+  private startHealthMonitoring(startup: CockroachStartResult | null): void {
     if (this.healthCheckTimer) clearInterval(this.healthCheckTimer);
-    this.healthCheckTimer = setInterval(() => this.runHealthCheck(), HEALTH_CHECK_INTERVAL_MS);
+    this.healthCheckTimer = setInterval(() => void this.runHealthCheck(startup), HEALTH_CHECK_INTERVAL_MS);
   }
 
-  private async runHealthCheck(): Promise<void> {
-    if (this.paused) return;
-
-    // Check API health
-    if (this.api.status === 'running') {
-      try {
-        const response = await fetch('http://localhost:3100/api/health');
-        if (!response.ok) {
-          this.recordFailure(this.api, 'api');
+  private async runHealthCheck(startup: CockroachStartResult | null): Promise<void> {
+    if (this.healthCheckInFlight) return;
+    this.healthCheckInFlight = true;
+    try {
+      if (!this.guardServiceDatabase(startup, 'during health monitoring')) return;
+      // A packaged health response must prove the exact API generation, not
+      // merely that some process has occupied the well-known port.
+      if (this.api.status === 'running') {
+        if (app.isPackaged) {
+          const generation = this.apiGeneration;
+          if (!generation) {
+            this.schedulePackagedApiIdentityLoss(startup, generation, 'API listener identity changed');
+            return;
+          }
+          // startApi marks the child running before its authenticated
+          // readiness proof completes. A timer retained from the previous
+          // generation must not classify that expected startup interval as
+          // listener identity loss.
+          if (!this.isApiGenerationReady(generation)) return;
+          if (!(await this.verifyOwnedApi(generation))) {
+            this.schedulePackagedApiIdentityLoss(startup, generation, 'API listener identity changed');
+            return;
+          }
+        } else {
+          try {
+            const response = await fetchBounded(
+              'http://localhost:3100/api/health',
+              {},
+              HEALTH_REQUEST_TIMEOUT_MS,
+            );
+            if (!this.guardServiceDatabase(startup, 'during API health check')) return;
+            if (!response.ok) this.recordFailure(this.api, 'api');
+          } catch {
+            this.recordFailure(this.api, 'api');
+          }
         }
-      } catch {
-        this.recordFailure(this.api, 'api');
       }
-    }
 
-    // Check worker is still alive (process-level check)
-    if (this.worker.status === 'running' && this.worker.process && !this.worker.process.connected) {
-      this.recordFailure(this.worker, 'worker');
+      // Check worker is still alive (process-level check)
+      if (this.worker.status === 'running' && this.worker.process && !this.worker.process.connected) {
+        this.recordFailure(this.worker, 'worker');
+      }
+    } finally {
+      this.healthCheckInFlight = false;
     }
+  }
+
+  private schedulePackagedApiIdentityLoss(
+    startup: CockroachStartResult | null,
+    generation: ApiGeneration | null,
+    reason: string,
+  ): void {
+    if (!app.isPackaged || !generation || !this.isApiGenerationCurrent(generation)) return;
+    if (!this.claimApiGenerationRecovery(generation)) return;
+    this.revokeApiGeneration(generation);
+    this.api.status = 'error';
+    this.emitStatus();
+    void this.runServiceLifecycle(async () => {
+      console.error(`[api] ${reason}; stopping packaged data services.`);
+      await this.stopDataServicesForApiGeneration(generation, startup);
+      if (startup) this.guardServiceDatabase(startup, 'after API listener identity loss');
+    }).catch((error) => {
+      console.error('[api] Failed to stop services after listener identity loss:', error);
+    });
   }
 
   private recordFailure(managed: ManagedProcess, name: string): void {
     const now = Date.now();
     managed.failureTimestamps.push(now);
     // Trim old timestamps outside the window
-    managed.failureTimestamps = managed.failureTimestamps.filter(
-      (t) => now - t < FAILURE_WINDOW_MS,
-    );
+    managed.failureTimestamps = managed.failureTimestamps.filter((t) => now - t < FAILURE_WINDOW_MS);
 
     if (managed.failureTimestamps.length >= MAX_RESTARTS) {
       console.error(`[${name}] ${MAX_RESTARTS} failures in ${FAILURE_WINDOW_MS / 60000} minutes — marking as failed`);
@@ -630,17 +1491,23 @@ export class ServiceManager {
    * attach to whatever stranger happens to be answering on localhost:3100,
    * since that could be a wildly different version (or untrusted).
    */
-  private async startCockroach(): Promise<void> {
+  private async startCockroach(): Promise<CockroachStartResult | null> {
     this.cockroachStatus = 'starting';
     this.emitStatus();
+    let startup: CockroachStartResult | null = null;
     try {
-      await this.cockroach.start();
+      startup = await this.cockroach.start();
       this.cockroachStatus = 'running';
     } catch (err) {
       console.error('[crdb] Failed to start:', err);
       this.cockroachStatus = 'error';
+      if ((err as { code?: unknown } | null)?.code === 'COCKROACH_TERMINATION_UNPROVEN') {
+        this.emitStatus();
+        throw err;
+      }
     }
     this.emitStatus();
+    return startup;
   }
 
   private async detectExternalApi(): Promise<boolean> {
@@ -648,9 +1515,13 @@ export class ServiceManager {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 500);
     try {
-      const res = await fetch('http://localhost:3100/api/health', { signal: controller.signal });
+      const res = await fetch('http://localhost:3100/api/health', {
+        signal: controller.signal,
+      });
       if (!res.ok) return false;
-      const payload = (await res.json().catch(() => null)) as { service?: unknown } | null;
+      const payload = (await res.json().catch(() => null)) as {
+        service?: unknown;
+      } | null;
       return payload?.service === 'skytwin-api';
     } catch {
       return false;
@@ -669,21 +1540,27 @@ export class ServiceManager {
     return false;
   }
 
-  private async startApi(): Promise<void> {
+  private async startApi(startup: CockroachStartResult | null = null): Promise<ApiGeneration | null> {
+    if (!this.guardServiceDatabase(startup, 'before API spawn')) return null;
+    if (this.apiGeneration && this.isApiGenerationCurrent(this.apiGeneration)) return this.apiGeneration;
+    this.revokeApiGeneration();
+    if (this.api.process) await this.stopProcess(this.api, 'api');
     this.api.status = 'starting';
     this.emitStatus();
 
     if (await this.detectExternalApi()) {
+      if (!this.guardServiceDatabase(startup, 'while detecting the API listener')) return null;
       console.log('[api] External API detected on :3100 — using existing instance, not forking.');
       this.api.external = true;
       this.api.status = 'running';
       this.emitStatus();
-      return;
+      return null;
     }
     this.api.external = false;
 
     const base = this.getResourcePath();
     const embeddedRoot = await this.ensureEmbeddedRoot();
+    if (!this.guardServiceDatabase(startup, 'while resolving the API bundle')) return null;
     // Packaged path uses the pnpm-deployed self-contained bundle —
     // since v0.6.58, extracted to <userData>/embedded/ on first launch
     // from the bundled apps.tar.gz (see ensureEmbeddedRoot). The earlier
@@ -694,45 +1571,305 @@ export class ServiceManager {
       ? join(embeddedRoot, 'api', 'dist', 'index.js')
       : join(base, 'apps', 'api', 'dist', 'index.js');
 
+    let generation: ApiGeneration | null = null;
     try {
-      this.api.process = fork(apiEntry, [], {
-        env: this.getEnv(),
+      const instanceCapability = randomBytes(32).toString('hex');
+      const environment = this.apiEnv(instanceCapability);
+      const ingestCredential = environment['SKYTWIN_SERVICE_TOKEN'];
+      const apiProcess = fork(apiEntry, [], {
+        env: environment,
         stdio: 'pipe',
       });
-
-      this.api.process.stdout?.on('data', (data: Buffer) => {
+      this.api.process = apiProcess;
+      generation = {
+        generation: ++this.nextApiGeneration,
+        process: apiProcess,
+        instanceCapability,
+        ingestCredential,
+        workerAuthorityId: randomUUID(),
+        workerAuthoritySecret: randomBytes(32).toString('hex'),
+        controller: new AbortController(),
+      };
+      this.apiGeneration = generation;
+      apiProcess.stdout?.on('data', (data: Buffer) => {
         console.log(`[api] ${data.toString().trim()}`);
       });
-      this.api.process.stderr?.on('data', (data: Buffer) => {
+      apiProcess.stderr?.on('data', (data: Buffer) => {
         console.error(`[api] ${data.toString().trim()}`);
       });
 
-      this.api.process.on('exit', (code) => {
-        console.log(`[api] Process exited with code ${code}`);
+      const handleApiExit = (reason: string): void => {
+        if (this.api.process !== apiProcess) return;
+        if (this.terminatingProcesses.has(apiProcess)) return;
+        if (!generation || !this.claimApiGenerationRecovery(generation)) return;
+        this.revokeApiGeneration(generation);
         this.api.process = null;
         this.api.status = 'stopped';
         this.emitStatus();
-        if (code !== 0 && !this.paused) {
-          this.api.restartCount++;
-          this.recordFailure(this.api, 'api');
-          if (this.api.status as ProcessState !== 'error') {
-            const delay = this.getRestartDelay(this.api.restartCount);
-            console.log(`[api] Restarting in ${delay}ms (attempt ${this.api.restartCount})...`);
-            setTimeout(() => this.startApi(), delay);
+        this.scheduleApiRestart(startup, reason, generation);
+      };
+      apiProcess.on('error', (error) => {
+        console.error('[api] Child process error:', error);
+        if (!generation) return;
+        void this.recoverFromApiProcessError(apiProcess, generation, startup).catch((cleanupError) => {
+          console.error('[api] Child process termination could not be proven:', cleanupError);
+        });
+      });
+      apiProcess.on('exit', (code) => {
+        console.log(`[api] Process exited with code ${code}`);
+        handleApiExit(`process exited with code ${code}`);
+      });
+
+      // User grants are populated by the authenticated broker client in the
+      // source-migration slice. An empty set is deliberately fail closed.
+      let brokerAttached = !this.keyBroker;
+      let attachmentThrew = false;
+      let attachmentError: unknown;
+      if (this.keyBroker) {
+        try {
+          brokerAttached = await this.keyBroker.attachChild(
+            apiProcess,
+            'api',
+            new Set(),
+            {
+              verifySession: async (input) =>
+                await (await this.sourceKeyRegistryPort())
+                  .revalidateSessionAuthority(input),
+            },
+          );
+        } catch (error) {
+          attachmentThrew = true;
+          attachmentError = error;
+        }
+      }
+      if (
+        !brokerAttached
+        || childHasExited(apiProcess)
+        || this.api.process !== apiProcess
+        || !this.isApiGenerationCurrent(generation)
+      ) {
+        if (this.api.process === apiProcess) {
+          try {
+            await this.stopProcess(this.api, 'api');
+          } catch (containmentError) {
+            if (attachmentThrew) {
+              throw new AggregateError(
+                [attachmentError, containmentError],
+                'API broker attachment and child containment failed',
+              );
+            }
+            throw containmentError;
           }
         }
-      });
+        if (attachmentThrew) throw attachmentError;
+        throw new Error('API source-key broker attachment failed');
+      }
 
       this.api.status = 'running';
       this.emitStatus();
+      if (!this.guardServiceDatabase(startup, 'after API spawn')) {
+        void this.stopProcess(this.api, 'api');
+        return null;
+      }
+      return generation;
     } catch (err) {
+      if (generation) this.revokeApiGeneration(generation);
       console.error('[api] Failed to start:', err);
       this.api.status = 'error';
       this.emitStatus();
+      if (hasChildTerminationError(err)) throw err;
+      return null;
     }
   }
 
-  private async startWeb(): Promise<void> {
+  private scheduleApiRestart(
+    startup: CockroachStartResult | null,
+    reason: string,
+    failedGeneration: ApiGeneration | null = null,
+  ): void {
+    if (!this.guardServiceDatabase(startup, 'before API restart')) return;
+    if (this.paused) {
+      if (app.isPackaged) {
+        // Pausing suppresses replacement work, not containment. The web and
+        // durable worker authority must not survive the API generation whose
+        // service credential they were bound to.
+        void this.runServiceLifecycle(async () => {
+          if (failedGeneration) {
+            await this.stopDataServicesForApiGeneration(failedGeneration, startup);
+          } else {
+            await this.stopDataServicesOwned();
+          }
+          if (startup) this.guardServiceDatabase(startup, 'after paused API exit containment');
+        }).catch((error) => {
+          console.error('[api] Failed to contain services after paused API exit:', error);
+        });
+      }
+      return;
+    }
+    this.api.restartCount++;
+    this.recordFailure(this.api, 'api');
+    if (this.api.failureTimestamps.length >= MAX_RESTARTS) {
+      if (app.isPackaged) {
+        void this.runServiceLifecycle(async () => {
+          if (failedGeneration) {
+            await this.stopDataServicesForApiGeneration(failedGeneration, startup);
+          } else {
+            await this.stopDataServicesOwned();
+          }
+          if (startup) this.guardServiceDatabase(startup, 'after API restart budget exhaustion');
+        }).catch((error) => {
+          console.error('[api] Failed to contain services after restart budget exhaustion:', error);
+        });
+      }
+      return;
+    }
+    const delay = this.getRestartDelay(this.api.restartCount);
+    console.log(`[api] ${reason}; restarting in ${delay}ms (attempt ${this.api.restartCount})...`);
+    void this.restartDataServicesAfterApiExit(startup, delay, failedGeneration).catch((error) => {
+      console.error('[api] Safe restart failed:', error);
+    });
+  }
+
+  private async recoverFromApiProcessError(
+    apiProcess: ChildProcess,
+    generation: ApiGeneration,
+    startup: CockroachStartResult | null,
+  ): Promise<void> {
+    if (this.api.process !== apiProcess || this.terminatingProcesses.has(apiProcess)) return;
+    if (!this.claimApiGenerationRecovery(generation)) return;
+    this.revokeApiGeneration(generation);
+    this.api.status = 'error';
+    this.emitStatus();
+    // An `error` event is not proof that the OS process exited. Request the
+    // worker's abortable admission shutdown immediately, but do not assume
+    // signal delivery ran synchronously: retain each exact handle and start no
+    // replacement until every child yields exit/close proof.
+    await this.stopDataServicesForApiGeneration(generation, startup);
+    this.scheduleApiRestart(startup, 'child process error', generation);
+  }
+
+  private restartDataServicesAfterApiExit(
+    startup: CockroachStartResult | null,
+    delayMs: number,
+    failedGeneration: ApiGeneration | null = null,
+  ): Promise<void> {
+    return this.runServiceLifecycle(async () => {
+      if (!app.isPackaged) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        await this.startApi(startup);
+        return;
+      }
+      // An explicit lifecycle operation may have established a successor
+      // before this queued recovery reaches the barrier. Cleanup and retry
+      // authority belong only to the failed generation.
+      if (
+        failedGeneration &&
+        this.apiGeneration &&
+        this.apiGeneration !== failedGeneration
+      ) {
+        return;
+      }
+      const restartCountAtAttempt = this.api.restartCount;
+      let generation: ApiGeneration | null = null;
+      try {
+        if (failedGeneration) {
+          await this.stopDataServicesForApiGeneration(failedGeneration, startup);
+        } else {
+          await this.stopDataServicesOwned();
+        }
+        if (this.paused) return;
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (this.paused) return;
+        if (!this.guardServiceDatabase(startup, 'before API generation restart')) return;
+        generation = await this.startApi(startup);
+        if (this.paused) {
+          if (generation) await this.stopDataServicesForApiGeneration(generation, startup);
+          return;
+        }
+        if (startup && generation) {
+          await this.registerWorkerGenerationAuthority(generation, startup);
+        }
+        if (this.paused) {
+          if (generation) await this.stopDataServicesForApiGeneration(generation, startup);
+          return;
+        }
+        if (!generation || !(await this.waitForApi(10_000, startup, generation))) {
+          throw new Error('Replacement API generation could not prove listener ownership');
+        }
+        if (this.paused) {
+          await this.stopDataServicesForApiGeneration(generation, startup);
+          return;
+        }
+        if (!this.markApiGenerationReady(generation)) {
+          throw new Error('Replacement API generation changed after proving listener ownership');
+        }
+        await this.startWeb(startup, generation);
+        if (this.paused) {
+          await this.stopDataServicesForApiGeneration(generation, startup);
+          return;
+        }
+        if (startup) await this.requireServiceDatabaseCurrent(startup, 'during replacement web startup');
+        if (
+          !this.isApiGenerationReady(generation) ||
+          !this.web.process ||
+          this.webApiGeneration !== generation
+        ) {
+          throw new Error('Replacement web service did not retain exact API generation authority');
+        }
+        await this.startWorker(startup, generation);
+        if (this.paused) {
+          await this.stopDataServicesForApiGeneration(generation, startup);
+          return;
+        }
+        if (startup) await this.requireServiceDatabaseCurrent(startup, 'during replacement worker startup');
+        if (
+          !this.isApiGenerationReady(generation) ||
+          !this.worker.process ||
+          this.workerApiGeneration !== generation
+        ) {
+          throw new Error('Replacement worker did not retain exact API generation authority');
+        }
+        this.startHealthMonitoring(startup);
+        const sampleSignal = this.sampleAbortController?.signal;
+        if (
+          startup?.ownership === 'managed-child' &&
+          sampleSignal &&
+          this.isSampleAuthorityCurrent(this.sampleLaunchEpoch, sampleSignal, startup)
+        ) {
+          this.startPackagedSampleIngest(startup, this.sampleLaunchEpoch, sampleSignal);
+        }
+      } catch (error) {
+        if (generation) {
+          await this.stopDataServicesForApiGeneration(generation, startup);
+        } else if (!failedGeneration) {
+          await this.stopDataServicesOwned();
+        }
+        if (this.paused) return;
+        // A replacement child that exits on its own schedules the next attempt
+        // from its exit handler. Deliberate cleanup is fenced by
+        // terminatingProcesses, so only schedule here when that handler did
+        // not already advance the budget.
+        const ownsRecovery = generation
+          ? this.claimApiGenerationRecovery(generation)
+          : this.api.restartCount === restartCountAtAttempt;
+        if (ownsRecovery && this.api.restartCount === restartCountAtAttempt) {
+          this.scheduleApiRestart(
+            startup,
+            error instanceof Error ? error.message : 'replacement API startup failed',
+            generation ?? failedGeneration,
+          );
+        }
+        throw error;
+      }
+    });
+  }
+
+  private async startWeb(
+    startup: CockroachStartResult | null = null,
+    apiGeneration: ApiGeneration | null = null,
+  ): Promise<void> {
+    if (!this.guardServiceDatabase(startup, 'before web spawn')) return;
+    if (app.isPackaged && (!apiGeneration || !this.isApiGenerationReady(apiGeneration))) return;
     this.web.status = 'starting';
     this.emitStatus();
 
@@ -747,41 +1884,63 @@ export class ServiceManager {
 
     const base = this.getResourcePath();
     const embeddedRoot = await this.ensureEmbeddedRoot();
+    if (!this.guardServiceDatabase(startup, 'while resolving the web bundle')) return;
+    if (app.isPackaged && (!apiGeneration || !this.isApiGenerationReady(apiGeneration))) return;
     const webEntry = app.isPackaged
       ? join(embeddedRoot, 'web', 'dist', 'index.js')
       : join(base, 'apps', 'web', 'dist', 'index.js');
 
     try {
-      this.web.process = fork(webEntry, [], {
-        env: { ...this.getEnv(), WEB_PORT: '3200' },
+      const webProcess = fork(webEntry, [], {
+        env: { ...this.webEnv(), WEB_PORT: '3200' },
         stdio: 'pipe',
       });
+      this.web.process = webProcess;
+      this.webApiGeneration = apiGeneration;
 
-      this.web.process.stdout?.on('data', (data: Buffer) => {
+      webProcess.stdout?.on('data', (data: Buffer) => {
         console.log(`[web] ${data.toString().trim()}`);
       });
-      this.web.process.stderr?.on('data', (data: Buffer) => {
+      webProcess.stderr?.on('data', (data: Buffer) => {
         console.error(`[web] ${data.toString().trim()}`);
       });
 
-      this.web.process.on('exit', (code) => {
+      webProcess.on('exit', (code) => {
         console.log(`[web] Process exited with code ${code}`);
+        if (this.web.process !== webProcess) return;
+        if (this.terminatingProcesses.has(webProcess)) return;
         this.web.process = null;
+        if (this.webApiGeneration === apiGeneration) this.webApiGeneration = null;
         this.web.status = 'stopped';
         this.emitStatus();
-        if (code !== 0 && !this.paused) {
+        if (
+          code !== 0 &&
+          !this.paused &&
+          this.guardServiceDatabase(startup, 'before web restart') &&
+          (!app.isPackaged || (apiGeneration && this.isApiGenerationReady(apiGeneration)))
+        ) {
           this.web.restartCount++;
           this.recordFailure(this.web, 'web');
-          if (this.web.status as ProcessState !== 'error') {
+          if ((this.web.status as ProcessState) !== 'error') {
             const delay = this.getRestartDelay(this.web.restartCount);
             console.log(`[web] Restarting in ${delay}ms (attempt ${this.web.restartCount})...`);
-            setTimeout(() => this.startWeb(), delay);
+            setTimeout(() => {
+              if (this.guardServiceDatabase(startup, 'before delayed web restart')) {
+                void this.startWeb(startup, apiGeneration);
+              }
+            }, delay);
           }
         }
       });
 
       this.web.status = 'running';
       this.emitStatus();
+      if (
+        !this.guardServiceDatabase(startup, 'after web spawn') ||
+        (app.isPackaged && (!apiGeneration || !this.isApiGenerationReady(apiGeneration)))
+      ) {
+        void this.stopProcess(this.web, 'web');
+      }
     } catch (err) {
       console.error('[web] Failed to start:', err);
       this.web.status = 'error';
@@ -789,7 +1948,64 @@ export class ServiceManager {
     }
   }
 
-  private async startWorker(): Promise<void> {
+  private startWorker(
+    startup: CockroachStartResult | null = null,
+    apiGeneration: ApiGeneration | null = null,
+  ): Promise<void> {
+    if (this.workerStartInFlight) return this.workerStartInFlight;
+
+    let resolveStart!: () => void;
+    let rejectStart!: (reason: unknown) => void;
+    const latched = new Promise<void>((resolve, reject) => {
+      resolveStart = resolve;
+      rejectStart = reject;
+    });
+    // Publish the operation before startWorkerOwned executes any synchronous
+    // precheck or status callback. A status listener may reenter startWorker;
+    // it must observe and join this exact operation.
+    this.workerStartInFlight = latched;
+    const clearLatch = (): void => {
+      if (this.workerStartInFlight === latched) {
+        this.workerStartInFlight = null;
+      }
+    };
+    try {
+      void this.startWorkerOwned(startup, apiGeneration).then(
+        () => {
+          clearLatch();
+          resolveStart();
+        },
+        (error: unknown) => {
+          clearLatch();
+          rejectStart(error);
+        },
+      );
+    } catch (error) {
+      clearLatch();
+      rejectStart(error);
+    }
+    return latched;
+  }
+
+  private async startWorkerOwned(
+    startup: CockroachStartResult | null,
+    apiGeneration: ApiGeneration | null,
+  ): Promise<void> {
+    if (this.worker.process) {
+      throw new ChildTerminationError('worker');
+    }
+    if (this.paused) return;
+    if (!this.guardServiceDatabase(startup, 'before worker spawn')) return;
+    if (app.isPackaged && (!apiGeneration || !this.isApiGenerationReady(apiGeneration))) return;
+    if (app.isPackaged) {
+      if (!startup || !apiGeneration) {
+        throw new Error('Packaged worker startup requires database and API generation authority');
+      }
+      if (this.registeredWorkerGeneration !== apiGeneration) {
+        await this.registerWorkerGenerationAuthority(apiGeneration, startup);
+      }
+    }
+    if (this.paused) return;
     this.worker.status = 'starting';
     this.emitStatus();
 
@@ -807,46 +2023,111 @@ export class ServiceManager {
 
     const base = this.getResourcePath();
     const embeddedRoot = await this.ensureEmbeddedRoot();
+    if (this.paused) return;
+    if (!this.guardServiceDatabase(startup, 'while resolving the worker bundle')) return;
+    if (app.isPackaged && (!apiGeneration || !this.isApiGenerationReady(apiGeneration))) return;
     // See apiEntry comment above — same reasoning for worker.
     const workerEntry = app.isPackaged
       ? join(embeddedRoot, 'worker', 'dist', 'index.js')
       : join(base, 'apps', 'worker', 'dist', 'index.js');
 
     try {
-      this.worker.process = fork(workerEntry, [], {
-        env: this.getEnv(),
+      const workerProcess = fork(workerEntry, [], {
+        env: this.workerEnv(apiGeneration),
         stdio: 'pipe',
       });
-
-      this.worker.process.stdout?.on('data', (data: Buffer) => {
+      this.worker.process = workerProcess;
+      this.workerApiGeneration = apiGeneration;
+      workerProcess.stdout?.on('data', (data: Buffer) => {
         console.log(`[worker] ${data.toString().trim()}`);
       });
-      this.worker.process.stderr?.on('data', (data: Buffer) => {
+      workerProcess.stderr?.on('data', (data: Buffer) => {
         console.error(`[worker] ${data.toString().trim()}`);
       });
 
-      this.worker.process.on('exit', (code) => {
+      workerProcess.on('exit', (code) => {
         console.log(`[worker] Process exited with code ${code}`);
+        if (this.worker.process !== workerProcess) return;
+        if (this.terminatingProcesses.has(workerProcess)) return;
         this.worker.process = null;
+        if (this.workerApiGeneration === apiGeneration) this.workerApiGeneration = null;
         this.worker.status = 'stopped';
         this.emitStatus();
-        if (code !== 0 && !this.paused) {
+        if (
+          code !== 0 &&
+          !this.paused &&
+          this.guardServiceDatabase(startup, 'before worker restart') &&
+          (!app.isPackaged || (apiGeneration && this.isApiGenerationReady(apiGeneration)))
+        ) {
           this.worker.restartCount++;
           this.recordFailure(this.worker, 'worker');
-          if (this.worker.status as ProcessState !== 'error') {
+          if ((this.worker.status as ProcessState) !== 'error') {
             const delay = this.getRestartDelay(this.worker.restartCount);
             console.log(`[worker] Restarting in ${delay}ms (attempt ${this.worker.restartCount})...`);
-            setTimeout(() => this.startWorker(), delay);
+            setTimeout(() => {
+              if (this.guardServiceDatabase(startup, 'before delayed worker restart')) {
+                void this.startWorker(startup, apiGeneration).catch((error) => {
+                  if (error instanceof ChildTerminationError && error.serviceName === 'worker') {
+                    console.info('[worker] Delayed restart skipped because a worker child is already retained.');
+                    return;
+                  }
+                  console.error('[worker] Delayed restart failed:', error);
+                  this.worker.status = 'error';
+                  this.emitStatus();
+                });
+              }
+            }, delay);
           }
         }
       });
 
+      let brokerAttached = !this.keyBroker;
+      let attachmentThrew = false;
+      let attachmentError: unknown;
+      if (this.keyBroker) {
+        try {
+          brokerAttached = await this.keyBroker.attachChild(workerProcess, 'worker', new Set());
+        } catch (error) {
+          attachmentThrew = true;
+          attachmentError = error;
+        }
+      }
+      if (
+        !brokerAttached
+        || childHasExited(workerProcess)
+        || this.worker.process !== workerProcess
+        || this.workerApiGeneration !== apiGeneration
+      ) {
+        if (this.worker.process === workerProcess) {
+          try {
+            await this.stopProcess(this.worker, 'worker');
+          } catch (containmentError) {
+            if (attachmentThrew) {
+              throw new AggregateError(
+                [attachmentError, containmentError],
+                'Worker broker attachment and child containment failed',
+              );
+            }
+            throw containmentError;
+          }
+        }
+        if (attachmentThrew) throw attachmentError;
+        throw new Error('Worker source-key broker attachment failed');
+      }
+
       this.worker.status = 'running';
       this.emitStatus();
+      if (
+        !this.guardServiceDatabase(startup, 'after worker spawn') ||
+        (app.isPackaged && (!apiGeneration || !this.isApiGenerationReady(apiGeneration)))
+      ) {
+        void this.stopProcess(this.worker, 'worker');
+      }
     } catch (err) {
       console.error('[worker] Failed to start:', err);
       this.worker.status = 'error';
       this.emitStatus();
+      if (hasChildTerminationError(err)) throw err;
     }
   }
 
@@ -854,8 +2135,26 @@ export class ServiceManager {
    * Pause the twin — stops the worker (no new signals) but keeps API running.
    */
   async pause(): Promise<void> {
+    ++this.pauseIntentEpoch;
     this.paused = true;
-    await this.stopProcess(this.worker, 'worker');
+    try {
+      await this.stopProcess(this.worker, 'worker');
+    } catch (error) {
+      this.worker.status = 'error';
+      this.emitStatus();
+      try {
+        // A worker whose exit cannot be proven may still know the live API
+        // ingest credential. Contain it by revoking durable DB authority and
+        // stopping the API/web generation before reporting the pause failure.
+        await this.stopDataServicesOwned();
+      } catch (containmentError) {
+        throw new AggregateError(
+          [error, containmentError],
+          'Worker pause and generation containment both failed',
+        );
+      }
+      throw error;
+    }
     this.worker.status = 'paused';
     this.emitStatus();
   }
@@ -863,69 +2162,221 @@ export class ServiceManager {
   /**
    * Resume the twin — restarts the worker.
    */
-  async resume(): Promise<void> {
-    this.paused = false;
-    this.worker.restartCount = 0;
-    this.worker.failureTimestamps = [];
-    await this.startWorker();
+  resume(): Promise<void> {
+    const resumeEpoch = this.pauseIntentEpoch;
+    return this.runServiceLifecycle(() => this.resumeOwned(resumeEpoch));
+  }
+
+  private async preparePackagedResume(
+    startup: CockroachStartResult,
+    resumeEpoch: number,
+    attempt: { generation: ApiGeneration | null },
+  ): Promise<ApiGeneration> {
+    let generation = this.apiGeneration;
+    attempt.generation = generation;
+    const reusableGeneration =
+      generation !== null &&
+      this.isApiGenerationReady(generation) &&
+      this.registeredWorkerGeneration === generation &&
+      (!this.web.process ||
+        (this.webApiGeneration === generation &&
+          this.web.status === 'running' &&
+          !childHasExited(this.web.process)));
+
+    if (!reusableGeneration) {
+      await this.stopDataServicesOwned();
+      this.requireResumeIntentCurrent(resumeEpoch, 'after prior generation containment');
+      generation = null;
+      attempt.generation = null;
+      await this.requireServiceDatabaseCurrent(startup, 'before explicit resume recovery');
+      this.requireResumeIntentCurrent(resumeEpoch, 'before API recovery');
+      generation = await this.startApi(startup);
+      attempt.generation = generation;
+      this.requireResumeIntentCurrent(resumeEpoch, 'after API recovery');
+      if (!generation || !this.isApiGenerationCurrent(generation)) {
+        throw new Error('Packaged resume could not establish an owned API generation');
+      }
+      await this.registerWorkerGenerationAuthority(generation, startup);
+      this.requireResumeIntentCurrent(resumeEpoch, 'after worker authority registration');
+      const apiReady = await this.waitForApi(10_000, startup, generation);
+      this.requireResumeIntentCurrent(resumeEpoch, 'after API readiness');
+      if (!apiReady) {
+        throw new Error('Packaged resume API generation could not prove listener ownership');
+      }
+      await this.requireServiceDatabaseCurrent(startup, 'during explicit resume readiness');
+      this.requireResumeIntentCurrent(resumeEpoch, 'after database readiness validation');
+      if (!this.markApiGenerationReady(generation)) {
+        throw new Error('Packaged resume API generation changed after proving listener ownership');
+      }
+    }
+
+    if (!generation || !this.isApiGenerationReady(generation)) {
+      throw new Error('Packaged resume requires a ready API generation');
+    }
+    if (!this.web.process) {
+      await this.startWeb(startup, generation);
+      this.requireResumeIntentCurrent(resumeEpoch, 'after web startup');
+    }
+    await this.requireServiceDatabaseCurrent(startup, 'during explicit resume web startup');
+    this.requireResumeIntentCurrent(resumeEpoch, 'after web database validation');
+    if (
+      !this.isApiGenerationReady(generation) ||
+      !this.web.process ||
+      this.web.status !== 'running' ||
+      childHasExited(this.web.process) ||
+      this.webApiGeneration !== generation
+    ) {
+      await this.stopDataServicesForApiGeneration(generation, startup);
+      throw new Error('Packaged resume could not establish the generation web service');
+    }
+    return generation;
+  }
+
+  private async resumeOwned(resumeEpoch: number): Promise<void> {
+    if (this.worker.process) throw new ChildTerminationError('worker');
+    let generation = this.apiGeneration;
+    const startup = this.activeDatabaseStartup;
+    const attempt = { generation };
+    try {
+      this.requireResumeIntentCurrent(resumeEpoch, 'before recovery');
+      if (app.isPackaged) {
+        this.paused = true;
+        if (!startup || !this.isServiceDatabaseCurrent(startup)) {
+          throw new Error('Packaged resume requires the current owned database generation');
+        }
+        // Explicit resume is the sole authority to rebuild services while
+        // paused. Keep worker execution paused until API readiness, durable
+        // authority, and the web proxy are all bound to one exact generation.
+        generation = await this.preparePackagedResume(startup, resumeEpoch, attempt);
+        this.requireResumeIntentCurrent(resumeEpoch, 'after service preparation');
+        this.api.restartCount = 0;
+        this.api.failureTimestamps = [];
+      }
+      this.worker.restartCount = 0;
+      this.worker.failureTimestamps = [];
+      this.requireResumeIntentCurrent(resumeEpoch, 'before worker enablement');
+      this.paused = false;
+      await this.startWorker(startup, generation);
+      this.requireResumeIntentCurrent(resumeEpoch, 'after worker startup');
+      if (
+        app.isPackaged &&
+        (!generation ||
+          !this.isApiGenerationReady(generation) ||
+          !this.worker.process ||
+          childHasExited(this.worker.process) ||
+          this.workerApiGeneration !== generation)
+      ) {
+        throw new Error('Packaged worker did not establish a managed child');
+      }
+    } catch (error) {
+      this.paused = true;
+      let containmentError: unknown;
+      const attemptedGeneration = attempt.generation ?? generation;
+      if (app.isPackaged && attemptedGeneration) {
+        try {
+          await this.stopDataServicesForApiGeneration(attemptedGeneration, startup);
+        } catch (cleanupError) {
+          containmentError = cleanupError;
+        }
+      }
+      const cancelled =
+        error instanceof ResumeCancelledError || this.pauseIntentEpoch !== resumeEpoch;
+      this.worker.status = cancelled ? 'paused' : 'error';
+      this.emitStatus();
+      if (containmentError !== undefined) {
+        throw new AggregateError(
+          [error, containmentError],
+          'Service resume and generation containment both failed',
+        );
+      }
+      throw error;
+    }
   }
 
   isPaused(): boolean {
     return this.paused;
   }
 
-  private async stopProcess(managed: ManagedProcess, name: string): Promise<void> {
-    if (!managed.process) return;
+  private stopProcess(managed: ManagedProcess, name: string): Promise<void> {
+    if (!managed.process) return Promise.resolve();
 
     const proc = managed.process;
-    managed.process = null;
+    const existing = this.terminatingProcesses.get(proc);
+    if (existing) return existing;
+    if (managed === this.api && this.apiGeneration?.process === proc) {
+      this.revokeApiGeneration(this.apiGeneration);
+    }
+    let termination!: Promise<void>;
+    termination = this.stopProcessOwned(managed, name, proc).finally(() => {
+      if (this.terminatingProcesses.get(proc) === termination) {
+        this.terminatingProcesses.delete(proc);
+      }
+    });
+    this.terminatingProcesses.set(proc, termination);
+    return termination;
+  }
 
+  private async stopProcessOwned(
+    managed: ManagedProcess,
+    name: string,
+    proc: ChildProcess,
+  ): Promise<void> {
     if (process.platform === 'win32') {
       // Windows: SIGTERM is unreliable, use taskkill for force termination
-      try {
-        if (proc.pid) {
-          execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: 'ignore' });
+        try {
+          if (proc.pid) {
+            execSync(`taskkill /F /T /PID ${proc.pid}`, {
+              stdio: 'ignore',
+              timeout: SERVICE_KILL_TIMEOUT_MS,
+            });
           console.log(`[${name}] Terminated via taskkill (PID ${proc.pid})`);
         }
       } catch {
-        // Process may already be dead
-        console.warn(`[${name}] taskkill failed — process may have already exited`);
+        // The final exit check below remains authoritative.
+        console.warn(`[${name}] taskkill failed — awaiting process exit proof`);
       }
 
-      // Wait briefly for the exit event to propagate
-      await new Promise<void>((resolve) => {
-        const exitTimer = setTimeout(() => resolve(), 2000);
-        proc.on('exit', () => {
-          clearTimeout(exitTimer);
-          resolve();
-        });
-      });
+      if (!(await waitForChildExit(proc, SERVICE_KILL_TIMEOUT_MS))) {
+        managed.status = 'error';
+        this.emitStatus();
+        throw new ChildTerminationError(name);
+      }
     } else {
       // Unix (macOS/Linux): graceful SIGTERM then force SIGKILL
-      proc.kill('SIGTERM');
-
-      await new Promise<void>((resolve) => {
-        const forceKillTimer = setTimeout(() => {
-          try {
-            proc.kill('SIGKILL');
-            console.warn(`[${name}] Force-killed after 5s timeout`);
-          } catch {
-            // Already dead
-          }
-          resolve();
-        }, 5000);
-
-        proc.on('exit', () => {
-          clearTimeout(forceKillTimer);
-          resolve();
-        });
-      });
+      try {
+        proc.kill('SIGTERM');
+      } catch {
+        // The final exit check below remains authoritative.
+      }
+      if (!(await waitForChildExit(proc, SERVICE_TERM_TIMEOUT_MS))) {
+        try {
+          proc.kill('SIGKILL');
+          console.warn(`[${name}] Force-killed after 5s timeout`);
+        } catch {
+          // The final exit check below remains authoritative.
+        }
+        if (!(await waitForChildExit(proc, SERVICE_KILL_TIMEOUT_MS))) {
+          managed.status = 'error';
+          this.emitStatus();
+          throw new ChildTerminationError(name);
+        }
+      }
     }
 
+    if (managed.process === proc) {
+      managed.process = null;
+      if (managed === this.web) this.webApiGeneration = null;
+      if (managed === this.worker) this.workerApiGeneration = null;
+    }
     managed.status = 'stopped';
   }
 
-  async stopAll(): Promise<void> {
+  stopAll(): Promise<void> {
+    this.revokeSampleLaunch();
+    return this.runServiceLifecycle(() => this.stopAllOwned());
+  }
+
+  private async stopAllOwned(): Promise<void> {
     if (this.healthCheckTimer) {
       clearInterval(this.healthCheckTimer);
       this.healthCheckTimer = null;
@@ -935,18 +2386,36 @@ export class ServiceManager {
     // we bring down CockroachDB — otherwise CRDB logs a flurry of "client
     // disconnected" messages and the API logs "connection reset" on the
     // last in-flight query, both of which are noise for the user.
-    await Promise.all([
-      this.stopProcess(this.api, 'api'),
-      this.stopProcess(this.worker, 'worker'),
-      this.stopProcess(this.web, 'web'),
-    ]);
+    try {
+      await this.stopDataServicesOwned();
+    } catch (error) {
+      // Keep the database endpoint occupied by its proven child while an API
+      // or worker may still be alive. Releasing the SQL port here could let a
+      // replacement listener receive reconnects from that unproven process.
+      this.emitStatus();
+      throw error;
+    }
     try {
       await this.cockroach.stop();
       this.cockroachStatus = 'stopped';
     } catch (err) {
       console.error('[crdb] stop failed:', err);
+      this.cockroachStatus = 'error';
+      this.emitStatus();
+      throw err;
     }
+    this.activeDatabaseStartup = null;
+    this.invalidatedDatabaseStartup = null;
     this.emitStatus();
+  }
+
+  private runServiceLifecycle(operation: () => Promise<void>): Promise<void> {
+    const run = this.serviceLifecycleTail.then(operation, operation);
+    this.serviceLifecycleTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   getStatus(): ServiceStatus {
@@ -970,7 +2439,12 @@ export class ServiceManager {
       overall = 'degraded';
     }
 
-    return { api: apiState, worker: workerState, cockroach: cockroachState, overall };
+    return {
+      api: apiState,
+      worker: workerState,
+      cockroach: cockroachState,
+      overall,
+    };
   }
 
   getUptime(): number {
@@ -981,18 +2455,44 @@ export class ServiceManager {
     this.onStatusChange?.(this.getStatus());
   }
 
-  private async waitForApi(timeoutMs: number): Promise<boolean> {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      try {
-        const response = await fetch('http://localhost:3100/api/health');
-        if (response.ok) return true;
-      } catch {
-        // API not ready yet
+  private async waitForApi(
+    timeoutMs: number,
+    startup: CockroachStartResult | null = null,
+    expectedGeneration: ApiGeneration | null = null,
+  ): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (!this.guardServiceDatabase(startup, 'during API readiness')) return false;
+      const remainingMs = Math.max(1, deadline - Date.now());
+      if (app.isPackaged) {
+        if (!expectedGeneration || !this.isApiGenerationCurrent(expectedGeneration)) return false;
+        if (
+          await this.verifyOwnedApi(
+            expectedGeneration,
+            undefined,
+            undefined,
+            Math.min(HEALTH_REQUEST_TIMEOUT_MS, remainingMs),
+          )
+        ) {
+          return true;
+        }
+      } else {
+        try {
+          const response = await fetchBounded(
+            'http://localhost:3100/api/health',
+            {},
+            Math.min(HEALTH_REQUEST_TIMEOUT_MS, remainingMs),
+          );
+          if (!this.guardServiceDatabase(startup, 'during API readiness')) return false;
+          if (response.ok) return true;
+        } catch {
+          // API not ready yet
+        }
       }
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((resolve) => setTimeout(resolve, Math.min(500, Math.max(0, deadline - Date.now()))));
+      if (!this.guardServiceDatabase(startup, 'during API readiness')) return false;
     }
-    console.warn('[api] Health check timed out, starting worker anyway');
+    console.warn('[api] Authenticated readiness check timed out');
     return false;
   }
 }

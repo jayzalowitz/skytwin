@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { CircuitBreaker } from '@skytwin/core';
-import { recordPermanentOAuthFailure } from '../oauth-circuit.js';
+import { MicrosoftOAuthRefreshError, OAuthRefreshError } from '@skytwin/connectors';
+import { isPermanentOAuthRefreshError, recordPermanentOAuthFailure } from '../oauth-circuit.js';
 
 function makeBreaker(): CircuitBreaker {
   return new CircuitBreaker('oauth-test', {
@@ -57,5 +58,18 @@ describe('recordPermanentOAuthFailure', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('isPermanentOAuthRefreshError', () => {
+  it('recognizes permanent Google and Microsoft refresh failures', () => {
+    expect(isPermanentOAuthRefreshError(new OAuthRefreshError(401, 'invalid_grant'))).toBe(true);
+    expect(isPermanentOAuthRefreshError(new MicrosoftOAuthRefreshError(400, 'invalid_grant'))).toBe(true);
+  });
+
+  it('rejects transient and unrelated failures', () => {
+    expect(isPermanentOAuthRefreshError(new OAuthRefreshError(500, 'unavailable'))).toBe(false);
+    expect(isPermanentOAuthRefreshError(new MicrosoftOAuthRefreshError(429, 'slow_down'))).toBe(false);
+    expect(isPermanentOAuthRefreshError(new Error('invalid_grant'))).toBe(false);
   });
 });

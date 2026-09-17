@@ -1,5 +1,6 @@
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 export type NodeEnv = 'development' | 'production' | 'test';
+export type GoogleConnectionMode = 'disabled' | 'experimental';
 
 export interface SkyTwinConfig {
   /** Database connection string (postgresql:// or sqlite:// or .sqlite file path) */
@@ -71,6 +72,9 @@ export interface SkyTwinConfig {
   /** Google OAuth redirect URI */
   googleRedirectUri: string;
 
+  /** Google/Microsoft account connection availability; experimental requires an exact source opt-in */
+  googleConnectionMode: GoogleConnectionMode;
+
   /** Directory to scan for adapter plugins (empty = no discovery) */
   adapterPluginDir: string;
 }
@@ -121,6 +125,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     googleClientId: env['GOOGLE_CLIENT_ID'] ?? '',
     googleClientSecret: env['GOOGLE_CLIENT_SECRET'] ?? '',
     googleRedirectUri: env['GOOGLE_REDIRECT_URI'] ?? 'http://localhost:3100/api/oauth/google/callback',
+    googleConnectionMode:
+      env['SKYTWIN_GOOGLE_CONNECTION_MODE'] === 'experimental' ? 'experimental' : 'disabled',
     adapterPluginDir: env['ADAPTER_PLUGIN_DIR'] ?? '',
   };
 }

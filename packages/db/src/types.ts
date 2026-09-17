@@ -13,6 +13,7 @@ export interface UserRow {
   name: string;
   trust_tier: string;
   autonomy_settings: Record<string, unknown>;
+  execution_authority_revision: string;
   ironclaw_channel: string | null;
   /** BCP-47-ish language tag from the connector identity (#486). Null until synced. */
   language: string | null;
@@ -30,6 +31,11 @@ export interface ConnectedAccountRow {
   scopes: string[];
   is_active: boolean;
   connected_at: Date;
+  provider_subject_digest: string | null;
+  account_display: string | null;
+  identity_verified: boolean;
+  disconnected_at: Date | null;
+  updated_at: Date;
 }
 
 // ============================================================================
@@ -69,6 +75,19 @@ export interface TwinProfileVersionRow {
   changed_fields: string[];
   reason: string | null;
   created_at: Date;
+}
+
+export interface TwinFeedbackApplicationRow {
+  id: string;
+  feedback_event_id: string;
+  user_id: string;
+  decision_id: string;
+  profile_id: string;
+  input_profile_version: number;
+  output_profile_version: number;
+  changed: boolean;
+  output_digest: string;
+  applied_at: Date;
 }
 
 // ============================================================================
@@ -194,6 +213,10 @@ export interface ApprovalRequestRow {
   /** One-time token issued on the first confirmation of a dual request;
    *  the second confirmation must present it. NULL until then. */
   confirmation_token: string | null;
+  /** Terminal current-policy refusal after the user's approval response. */
+  execution_denied_at: Date | null;
+  /** Explanation-first evidence linked to the terminal refusal. */
+  execution_denial_explanation_id: string | null;
 }
 
 // ============================================================================
@@ -206,6 +229,7 @@ export interface ExecutionPlanRow {
   action_id: string | null;
   status: string;
   steps: unknown[];
+  evidence_schema_version: number;
   created_at: Date;
   updated_at: Date;
 }
@@ -217,6 +241,7 @@ export interface ExecutionResultRow {
   outputs: Record<string, unknown>;
   error: string | null;
   rollback_available: boolean;
+  evidence_schema_version: number;
   completed_at: Date;
 }
 
@@ -226,6 +251,7 @@ export interface ExecutionEventRow {
   step_id: string | null;
   event_type: string;
   payload: Record<string, unknown>;
+  evidence_schema_version: number;
   created_at: Date;
 }
 
@@ -258,6 +284,7 @@ export interface MemoryActionOpportunityRow {
   policy_reason: string | null;
   route_reason: string | null;
   next_step: string | null;
+  evidence_schema_version: number;
   created_at: Date;
   updated_at: Date;
 }
@@ -269,6 +296,8 @@ export interface MemoryActionOpportunityRow {
 export interface ExplanationRecordRow {
   id: string;
   decision_id: string;
+  /** Durable explanation classification; denial records must survive backup. */
+  type: string;
   what_happened: string;
   evidence_used: unknown[];
   preferences_invoked: string[];
@@ -285,6 +314,50 @@ export interface ExplanationRecordRow {
   created_at: Date;
 }
 
+export interface InferenceReceiptRow {
+  id: string;
+  version: number;
+  decision_id: string;
+  explanation_id: string;
+  /** Zero-based provider-call order within one atomic decision capture. */
+  capture_ordinal: number;
+  status: string;
+  receipt: unknown;
+  trusted: boolean;
+  created_at: Date;
+}
+
+export interface DecisionReceiptRow {
+  id: string;
+  user_id: string;
+  decision_id: string;
+  created_at: Date;
+}
+
+export interface DecisionReceiptRevisionRow {
+  id: string;
+  receipt_id: string;
+  /** Repository APIs normalize Cockroach INT8 strings to a safe integer. */
+  sequence: number;
+  event_key: import('@skytwin/shared-types').DecisionReceiptEventKey;
+  previous_digest: string | null;
+  content_digest: string;
+  revision_digest: string;
+  stage: import('@skytwin/shared-types').DecisionReceiptStage;
+  disposition: import('@skytwin/shared-types').DecisionReceiptDisposition;
+  content: import('@skytwin/shared-types').JoinedDecisionReceiptContent;
+  trusted: boolean;
+  candidate_action_id: string | null;
+  barrier_id: string | null;
+  explanation_id: string | null;
+  approval_request_id: string | null;
+  execution_plan_id: string | null;
+  execution_result_id: string | null;
+  execution_disposition: 'succeeded' | 'failed' | 'unknown' | null;
+  correction_of_revision_id: string | null;
+  created_at: Date;
+}
+
 // ============================================================================
 // Feedback
 // ============================================================================
@@ -293,6 +366,8 @@ export interface FeedbackEventRow {
   id: string;
   user_id: string;
   decision_id: string;
+  /** Dedicated approval source; null for historical and generic feedback. */
+  approval_request_id: string | null;
   type: string;
   data: Record<string, unknown>;
   created_at: Date;
@@ -310,6 +385,8 @@ export interface OAuthTokenRow {
   account_email: string;
   /** Provider's stable account id (Google `sub`); null for legacy rows. */
   account_provider_id: string | null;
+  /** Stable, non-secret connector identity that owns this credential row. */
+  connector_account_id: string;
   /**
    * Plaintext access token. Null after credential-vault lazy migration
    * (migration 032) — encrypted_access_token holds the value.
@@ -324,6 +401,11 @@ export interface OAuthTokenRow {
   scopes: string[];
   created_at: Date;
   updated_at: Date;
+  /** Exact OAuth grant revision; changes on every credential mutation. */
+  credential_revision: string;
+  /** Generation used to fence dispatch when disconnect begins. */
+  dispatch_generation: string;
+  dispatch_state: 'active' | 'disconnecting';
 }
 
 /**
@@ -339,6 +421,55 @@ export interface OAuthTokenRowWithEncrypted extends OAuthTokenRow {
   encryption_key_version: number;
 }
 
+export interface CredentialDispatchLeaseRow {
+  id: string;
+  user_id: string;
+  oauth_token_id: string | null;
+  provider: string | null;
+  account_email: string | null;
+  credential_revision: string | null;
+  credential_generation: string | null;
+  vault_generation: string | null;
+  adapter_name: string;
+  risk_snapshot: Record<string, unknown>;
+  execution_channel: string | null;
+  mcp_server_id: string | null;
+  mcp_tool_name: string | null;
+  execution_authority_revision: string;
+  policy_authority_revision: string;
+  action_id: string;
+  decision_id: string;
+  execution_plan_id: string;
+  authority_kind: 'admission' | 'receipt';
+  authority_id: string;
+  authority_updated_at: Date;
+  capability_hash: string;
+  lease_generation: string;
+  state: 'request_started' | 'completed' | 'failed' | 'ambiguous';
+  acquired_at: Date;
+  request_started_at: Date;
+  expires_at: Date;
+  terminal_at: Date | null;
+}
+
+export interface ExecutionDispatchAmbiguityRow {
+  dispatch_lease_id: string;
+  decision_id: string;
+  explanation_id: string;
+  phase: 'adapter_execute' | 'adapter_stream' | 'lease_expiry' | 'lease_recovery';
+  reason_code:
+    | 'adapter_result_unbound'
+    | 'adapter_exception'
+    | 'stream_protocol_invalid'
+    | 'stream_incomplete'
+    | 'stream_exception'
+    | 'lease_expired'
+    | 'legacy_ambiguous';
+  observation: Record<string, unknown>;
+  evidence_schema_version: number;
+  created_at: Date;
+}
+
 // ============================================================================
 // Credential Vault Metadata
 // ============================================================================
@@ -348,6 +479,8 @@ export interface CredentialVaultMetaRow {
   passphrase_salt: Buffer;
   passphrase_hash: Buffer;
   current_key_version: number;
+  vault_state: 'locked' | 'unlocked';
+  vault_generation: string;
   created_at: Date;
   rotated_at: Date | null;
 }
@@ -366,6 +499,28 @@ export interface SignalRow {
   timestamp: Date;
   retention_until: Date;
   created_at: Date;
+  /** Connector-native idempotency key, scoped by source and account. */
+  source_signal_id: string | null;
+  /** Stable connector account that observed the signal. */
+  connector_account_id: string | null;
+  /** Durable resource reference; Gmail signals point to gmail_message_refs. */
+  resource_ref_id: string | null;
+}
+
+export interface GmailMessageRefRow {
+  id: string;
+  user_id: string;
+  connector_account_id: string;
+  provider: 'google';
+  provider_message_id: string;
+  provider_thread_id: string | null;
+  source_signal_id: string;
+  authoring_tier: string;
+  last_observed_inbox: boolean;
+  first_observed_at: Date;
+  last_observed_at: Date;
+  created_at: Date;
+  updated_at: Date;
 }
 
 // ============================================================================
@@ -733,6 +888,14 @@ export interface AIProviderSettingsRow {
   base_url: string | null;
   priority: number;
   enabled: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface ReasoningModeSettingsRow {
+  user_id: string;
+  mode: import('@skytwin/shared-types').ReasoningMode | null;
+  requires_confirmation: boolean;
   created_at: Date;
   updated_at: Date;
 }

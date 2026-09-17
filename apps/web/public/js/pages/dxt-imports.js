@@ -1,6 +1,6 @@
 import { fetchJSON, escapeHtml } from '../api-client.js';
 import { showToast } from '../toast.js';
-import { KEY_USER_ID } from '../storage-keys.js';
+import { getEffectiveUserId } from '../sample-session.js';
 
 // ─── Singleton delegator ───────────────────────────────────────────────────
 // Wired once on document. The SPA reuses #page-content across routes, so
@@ -83,7 +83,7 @@ function ensureDxtImportsListener() {
 }
 
 function getCurrentUserId() {
-  return localStorage.getItem(KEY_USER_ID) || '';
+  return getEffectiveUserId();
 }
 
 function statusBadge(status) {

@@ -17,7 +17,14 @@ import { DecisionMaker } from '@skytwin/decision-engine';
 import type { DecisionRepositoryPort } from '@skytwin/decision-engine';
 import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
-import { DEMO_USER_ID, issueDemoSession } from '../auth/demo-session.js';
+import {
+  canonicalLocalDemoAddress,
+  DEMO_USER_ID,
+  DemoSessionCapacityError,
+  isLocalDemoRequest,
+  issueDemoSession,
+  makeDemoFixtureIncarnation,
+} from '../auth/demo-session.js';
 
 /**
  * UUID of the seeded "Alex Thompson" demo user from
@@ -48,7 +55,9 @@ const PREVIEW_GLOBAL_LIMIT_PER_HOUR = (() => {
   const parsed = parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     // eslint-disable-next-line no-console
-    console.warn(`[demo] DEMO_PREVIEW_GLOBAL_LIMIT_PER_HOUR=${raw} is invalid; falling back to 500.`);
+    console.warn(
+      `[demo] DEMO_PREVIEW_GLOBAL_LIMIT_PER_HOUR=${raw} is invalid; falling back to 500.`,
+    );
     return 500;
   }
   return parsed;
@@ -57,14 +66,20 @@ const PREVIEW_GLOBAL_WINDOW_MS = 60 * 60 * 1000;
 
 const PREVIEW_MAX_INPUT_LEN = 600;
 
+/** The packaged tour should not mint unlimited credentials from one process. */
+const SAMPLE_SESSION_LIMIT = 12;
+const SAMPLE_SESSION_WINDOW_MS = 5 * 60 * 1000;
+
 /** Cache the demo user lookup so the hot path doesn't query DB every request. */
-let _cachedDemoUser: Awaited<ReturnType<typeof userRepository.findDemoById>> | null = null;
+let _cachedDemoUser: Awaited<
+  ReturnType<typeof userRepository.findDemoById>
+> | null = null;
 let _cachedDemoUserAt = 0;
 const DEMO_USER_CACHE_TTL_MS = 60 * 1000;
 
 async function getDemoUserCached() {
   const now = Date.now();
-  if (_cachedDemoUser && (now - _cachedDemoUserAt) < DEMO_USER_CACHE_TTL_MS) {
+  if (_cachedDemoUser && now - _cachedDemoUserAt < DEMO_USER_CACHE_TTL_MS) {
     return _cachedDemoUser;
   }
   const fresh = await userRepository.findDemoById(DEMO_USER_ID);
@@ -93,6 +108,36 @@ export function _resetDemoCacheForTests(): void {
  */
 export function createDemoRouter(): Router {
   const router = Router();
+  const sampleSessionBuckets = new Map<string, number[]>();
+
+  function checkSampleSessionRate(ip: string): {
+    allowed: boolean;
+    retryAfterMs: number;
+  } {
+    const now = Date.now();
+    const cutoff = now - SAMPLE_SESSION_WINDOW_MS;
+    for (const [key, values] of sampleSessionBuckets) {
+      if (values.every((timestamp) => timestamp <= cutoff)) {
+        sampleSessionBuckets.delete(key);
+      }
+    }
+    const timestamps = (sampleSessionBuckets.get(ip) ?? []).filter(
+      (timestamp) => timestamp > cutoff,
+    );
+    if (timestamps.length >= SAMPLE_SESSION_LIMIT) {
+      sampleSessionBuckets.set(ip, timestamps);
+      return {
+        allowed: false,
+        retryAfterMs: Math.max(
+          0,
+          timestamps[0]! + SAMPLE_SESSION_WINDOW_MS - now,
+        ),
+      };
+    }
+    timestamps.push(now);
+    sampleSessionBuckets.set(ip, timestamps);
+    return { allowed: true, retryAfterMs: 0 };
+  }
 
   /**
    * GET /api/demo/info
@@ -103,15 +148,28 @@ export function createDemoRouter(): Router {
    * and name are deliberately excluded so an operator who reuses the
    * DEMO_USER_ID slot for a real account can't accidentally leak PII.
    */
-  router.get('/info', async (_req, res, next) => {
+  router.get('/info', async (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
     try {
+      const ip = req.ip;
+      if (!isLocalDemoRequest(ip, req.socket.remoteAddress)) {
+        res.status(403).json({
+          error: 'The packaged sample is available from this device only.',
+        });
+        return;
+      }
       const user = await getDemoUserCached();
       if (!user) {
         const unavailable: DemoInfoResponse = { available: false };
         res.json(unavailable);
         return;
       }
-      const ok: DemoInfoResponse = { available: true, userId: user.id };
+      const evidenceNonce = process.env['SKYTWIN_RELEASE_EVIDENCE_NONCE'];
+      const ok: DemoInfoResponse = {
+        available: true,
+        userId: user.id,
+        ...(evidenceNonce ? { instanceNonce: evidenceNonce } : {}),
+      };
       res.json(ok);
     } catch (error) {
       next(error);
@@ -125,14 +183,62 @@ export function createDemoRouter(): Router {
    * short-lived, fixed to DEMO_USER_ID, and restricted by sessionAuth to an
    * explicit set of read routes. It cannot mutate sample data or access users.
    */
-  router.post('/session', async (_req, res, next) => {
+  router.post('/session', async (req, res, next) => {
     try {
-      const user = await getDemoUserCached();
-      if (!user) {
-        res.status(404).json({ error: 'Demo profile not available on this server.' });
+      const ip = req.ip;
+      if (!isLocalDemoRequest(ip, req.socket.remoteAddress)) {
+        res.status(403).json({
+          error: 'The packaged sample is available from this device only.',
+        });
         return;
       }
-      const session = issueDemoSession();
+      // Credential issuance is also the readiness revocation boundary. Do not
+      // use the informational cache here: provisioning may have just marked a
+      // previously complete fixture unavailable for repair.
+      const user = await userRepository.findDemoById(DEMO_USER_ID);
+      if (!user) {
+        res
+          .status(404)
+          .json({ error: 'Demo profile not available on this server.' });
+        return;
+      }
+      const fixtureIncarnation = makeDemoFixtureIncarnation(user);
+      if (!fixtureIncarnation) {
+        res.status(503).json({ error: 'Demo profile authority is unavailable.' });
+        return;
+      }
+      // isLocalDemoRequest above proved this address is loopback. Collapse all
+      // accepted IPv4/IPv6 spellings and zone suffixes into one rate bucket.
+      const rateIdentity = canonicalLocalDemoAddress(ip);
+      if (!rateIdentity) {
+        res.status(403).json({
+          error: 'The packaged sample is available from this device only.',
+        });
+        return;
+      }
+      const limit = checkSampleSessionRate(rateIdentity);
+      if (!limit.allowed) {
+        res.set(
+          'Retry-After',
+          String(Math.max(1, Math.ceil(limit.retryAfterMs / 1000))),
+        );
+        res.status(429).json({
+          error: 'Too many sample sessions. Reuse or reset the current sample.',
+        });
+        return;
+      }
+      const presented = req.headers.authorization;
+      const replacedToken = presented?.startsWith('Bearer ')
+        ? presented.slice(7)
+        : undefined;
+      // Browser renewal presents the credential it is replacing. Retire that
+      // exact authority before minting the successor so delayed requests from
+      // the previous session cannot recreate disposable state.
+      const session = issueDemoSession(
+        fixtureIncarnation,
+        Date.now(),
+        replacedToken,
+      );
       const response: DemoSessionResponse = {
         token: session.token,
         userId: DEMO_USER_ID,
@@ -140,6 +246,13 @@ export function createDemoRouter(): Router {
       };
       res.status(201).json(response);
     } catch (error) {
+      if (error instanceof DemoSessionCapacityError) {
+        res.set('Retry-After', '60');
+        res.status(429).json({
+          error: 'Too many active sample sessions. Try again after older sessions expire.',
+        });
+        return;
+      }
       next(error);
     }
   });
@@ -177,16 +290,26 @@ export function createDemoRouter(): Router {
     getRiskAssessment: async () => null,
     getRecentDecisions: async () => [],
   };
-  const twinService = new TwinService(new TwinRepositoryAdapter(), new PatternRepositoryAdapter());
+  const twinService = new TwinService(
+    new TwinRepositoryAdapter(),
+    new PatternRepositoryAdapter(),
+  );
   const policyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
-  const decisionMaker = new DecisionMaker(twinService, policyEvaluator, noOpRepo);
+  const decisionMaker = new DecisionMaker(
+    twinService,
+    policyEvaluator,
+    noOpRepo,
+  );
 
   // Per-IP rate buckets. NOTE: req.ip resolves through Express's trust-proxy
   // setting; deployments fronted by a reverse proxy must call
   // app.set('trust proxy', N) for this to work as a real per-client limit.
   // The global cap below is the backstop for misconfigured deploys.
   const previewBuckets = new Map<string, number[]>();
-  function checkPreviewRate(ip: string): { allowed: boolean; remaining: number } {
+  function checkPreviewRate(ip: string): {
+    allowed: boolean;
+    remaining: number;
+  } {
     const now = Date.now();
     const cutoff = now - PREVIEW_WINDOW_MS;
     const arr = (previewBuckets.get(ip) ?? []).filter((t) => t > cutoff);
@@ -217,7 +340,10 @@ export function createDemoRouter(): Router {
   function checkGlobalRate(): { allowed: boolean; resetMs: number } {
     const now = Date.now();
     const cutoff = now - PREVIEW_GLOBAL_WINDOW_MS;
-    while (globalPreviewTimestamps.length > 0 && globalPreviewTimestamps[0]! <= cutoff) {
+    while (
+      globalPreviewTimestamps.length > 0 &&
+      globalPreviewTimestamps[0]! <= cutoff
+    ) {
       globalPreviewTimestamps.shift();
     }
     if (globalPreviewTimestamps.length >= PREVIEW_GLOBAL_LIMIT_PER_HOUR) {
@@ -248,7 +374,9 @@ export function createDemoRouter(): Router {
   router.post('/preview', async (req, res, next) => {
     try {
       if (isPreviewDisabled()) {
-        res.status(503).json({ error: 'Demo preview is disabled on this server.' });
+        res
+          .status(503)
+          .json({ error: 'Demo preview is disabled on this server.' });
         return;
       }
 
@@ -274,7 +402,9 @@ export function createDemoRouter(): Router {
       // reason. Cheap because the demo user is memoized.
       const user = await getDemoUserCached();
       if (!user) {
-        res.status(404).json({ error: 'Demo profile not available on this server.' });
+        res
+          .status(404)
+          .json({ error: 'Demo profile not available on this server.' });
         return;
       }
 
@@ -325,7 +455,10 @@ export function createDemoRouter(): Router {
 
       const previewResponse: DemoPreviewResponse = {
         ...response,
-        previewRateLimit: { remaining: limit.remaining, windowMs: PREVIEW_WINDOW_MS },
+        previewRateLimit: {
+          remaining: limit.remaining,
+          windowMs: PREVIEW_WINDOW_MS,
+        },
       };
       res.json(previewResponse);
     } catch (error) {
