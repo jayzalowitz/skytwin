@@ -484,9 +484,10 @@
       "owner": "user",
       "boundary": {
         "current": "mixed_repository_and_direct_sql",
-        "target": "user_broker_gateway",
-        "auditedCallsites": [
-          "apps/api/src/services/live-digest.ts",
+      "target": "user_broker_gateway",
+      "auditedCallsites": [
+        "apps/api/src/routes/oauth.ts",
+        "apps/api/src/services/live-digest.ts",
           "apps/worker/src/jobs/memory-suggestions.ts",
           "packages/db/src/seeds/demo-showcase.ts",
           "packages/memory-gbrain-crdb-adapter/src/repository.ts"
@@ -3573,10 +3574,11 @@
       "table": "service_credentials",
       "owner": "installation",
       "boundary": {
-        "current": "repository_sql",
-        "target": "installation_broker_gateway",
-        "auditedCallsites": [
-          "packages/db/src/repositories/service-credential-repository.ts"
+      "current": "mixed_repository_and_direct_sql",
+      "target": "installation_broker_gateway",
+      "auditedCallsites": [
+        "apps/api/src/routes/oauth.ts",
+        "packages/db/src/repositories/service-credential-repository.ts"
         ]
       },
       "groups": [
@@ -4163,10 +4165,11 @@
       "owner": "user",
       "boundary": {
         "current": "mixed_repository_and_direct_sql",
-        "target": "user_broker_gateway",
-        "auditedCallsites": [
-          "apps/api/src/routes/credential-vault.ts",
-          "packages/db/src/backup/backup.ts",
+      "target": "user_broker_gateway",
+      "auditedCallsites": [
+        "apps/api/src/routes/credential-vault.ts",
+        "apps/api/src/routes/oauth.ts",
+        "packages/db/src/backup/backup.ts",
           "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
           "packages/db/src/repositories/execution-admission-repository.ts",
           "packages/db/src/repositories/gmail-archive-claim-repository.ts",
