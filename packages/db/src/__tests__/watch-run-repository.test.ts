@@ -11,7 +11,11 @@ vi.mock("../connection.js", () => ({
   ) => fn({ query: mockClientQuery }),
 }));
 
-const { watchRunRepository, watchRunEvidenceSha256 } =
+const {
+  createWatchRunEvidenceCommitment,
+  watchRunRepository,
+  watchRunEvidenceSha256,
+} =
   await import("../repositories/watch-run-repository.js");
 const { signalRepository } =
   await import("../repositories/signal-repository.js");
@@ -83,6 +87,7 @@ function slotRow(overrides: Record<string, unknown> = {}) {
     summary: "",
     matched_refs: [],
     evidence_sha256: null,
+    evidence_commitment_version: null,
     evidence_snapshot: [],
     schedule_revision: dueWatch().schedule_revision,
     scheduled_for: SCHEDULED_FOR,
@@ -347,10 +352,14 @@ describe("watchRunRepository durable slots", () => {
   it("fences completion by token and an unexpired DB-time lease, bounding output", async () => {
     mockQuery.mockResolvedValue({ rows: [{ id: "slot" }] });
     const refs = Array.from({ length: 250 }, (_, i) => `signal-${i}`);
-    const evidenceSnapshot = refs.slice(0, 200).map((signalId) => ({
+    const allEvidence = refs.map((signalId) => ({
       signalId, source: "gmail", timestamp: DB_NOW.toISOString(), title: "Invoice", from: "",
       matchTextSha256: "c".repeat(64),
     }));
+    const evidenceSnapshot = allEvidence.slice(0, 200);
+    const commitment = createWatchRunEvidenceCommitment();
+    for (const item of allEvidence) commitment.add(item);
+    const evidenceSha256 = commitment.digest(allEvidence.length);
     await expect(
       watchRunRepository.completeSlot({
         id: "slot",
@@ -359,6 +368,7 @@ describe("watchRunRepository durable slots", () => {
         summary: "x".repeat(5_000),
         matchedRefs: refs,
         evidenceSnapshot,
+        evidenceSha256,
         synthesisMetadata: null,
       }),
     ).resolves.toBe(true);
@@ -367,8 +377,28 @@ describe("watchRunRepository durable slots", () => {
     expect(args[2]).toBe(250);
     expect(args[3]).toHaveLength(4_000);
     expect(JSON.parse(args[4])).toHaveLength(200);
-    expect(args[5]).toBe(watchRunEvidenceSha256(250, evidenceSnapshot));
+    expect(args[5]).toBe(evidenceSha256);
     expect(JSON.parse(args[6])).toHaveLength(200);
+    expect(sql).toContain("evidence_commitment_version = 2");
+  });
+
+  it("commits every evidence item even when the retained samples are identical", () => {
+    const retained = Array.from({ length: 200 }, (_, index) => ({
+      signalId: `signal-${index}`, source: "gmail", timestamp: DB_NOW.toISOString(),
+      title: "Invoice", from: "", matchTextSha256: "c".repeat(64),
+    }));
+    const digestWith = (omittedSignalId: string) => {
+      const commitment = createWatchRunEvidenceCommitment();
+      for (const item of retained) commitment.add(item);
+      commitment.add({
+        ...retained[0]!,
+        signalId: omittedSignalId,
+        matchTextSha256: omittedSignalId === "omitted-a" ? "a".repeat(64) : "b".repeat(64),
+      });
+      return commitment.digest(201);
+    };
+
+    expect(digestWith("omitted-a")).not.toBe(digestWith("omitted-b"));
   });
 
   it("releases a failed attempt as pending without retaining its fence token", async () => {
@@ -412,6 +442,14 @@ describe("watchRunRepository durable slots", () => {
           signalId: "signal", source: "gmail", timestamp: DB_NOW.toISOString(), title: "Invoice", from: "",
           matchTextSha256: "d".repeat(64),
         }],
+        evidenceSha256: (() => {
+          const commitment = createWatchRunEvidenceCommitment();
+          commitment.add({
+            signalId: "signal", source: "gmail", timestamp: DB_NOW.toISOString(), title: "Invoice", from: "",
+            matchTextSha256: "d".repeat(64),
+          });
+          return commitment.digest(1);
+        })(),
         synthesisMetadata: null,
       }),
     ).resolves.toBe(false);
@@ -423,6 +461,7 @@ describe("watchRunRepository durable slots", () => {
       matched_count: "1",
       matched_refs: ["signal"],
       evidence_sha256: "a".repeat(64),
+      evidence_commitment_version: 1,
       evidence_snapshot: [{
         signalId: "signal", source: "gmail", timestamp: DB_NOW.toISOString(), title: "Invoice", from: "",
         matchTextSha256: "d".repeat(64),
@@ -431,6 +470,65 @@ describe("watchRunRepository durable slots", () => {
 
     await expect(watchRunRepository.listForWatch("watch", "owner", 1))
       .rejects.toThrow(/commitment does not match/);
+  });
+
+  it("keeps v1 retained-snapshot commitments verifiable", async () => {
+    const evidenceSnapshot = [{
+      signalId: "signal", source: "gmail", timestamp: DB_NOW.toISOString(), title: "Invoice", from: "",
+      matchTextSha256: "d".repeat(64),
+    }];
+    mockQuery.mockResolvedValue({ rows: [slotRow({
+      slot_status: "completed",
+      matched_count: "1",
+      matched_refs: ["signal"],
+      evidence_sha256: watchRunEvidenceSha256(1, evidenceSnapshot),
+      evidence_commitment_version: 1,
+      evidence_snapshot: evidenceSnapshot,
+    })] });
+
+    await expect(watchRunRepository.listForWatch("watch", "owner", 1))
+      .resolves.toEqual([expect.objectContaining({ evidence_commitment_version: 1 })]);
+  });
+
+  it("rejects a v2 commitment that does not bind a complete retained set", async () => {
+    mockQuery.mockResolvedValue({ rows: [slotRow({
+      slot_status: "completed",
+      matched_count: "1",
+      matched_refs: ["signal"],
+      evidence_sha256: "a".repeat(64),
+      evidence_commitment_version: 2,
+      evidence_snapshot: [{
+        signalId: "signal", source: "gmail", timestamp: DB_NOW.toISOString(), title: "Invoice", from: "",
+        matchTextSha256: "d".repeat(64),
+      }],
+    })] });
+
+    await expect(watchRunRepository.listForWatch("watch", "owner", 1))
+      .rejects.toThrow(/commitment does not match/);
+  });
+
+  it("keeps a bounded v2 display snapshot readable with its full-set commitment", async () => {
+    const allEvidence = Array.from({ length: 201 }, (_, index) => ({
+      signalId: `signal-${index}`, source: "gmail", timestamp: DB_NOW.toISOString(), title: "Invoice", from: "",
+      matchTextSha256: index.toString(16).padStart(64, "0"),
+    }));
+    const commitment = createWatchRunEvidenceCommitment();
+    for (const item of allEvidence) commitment.add(item);
+    mockQuery.mockResolvedValue({ rows: [slotRow({
+      slot_status: "completed",
+      matched_count: "201",
+      matched_refs: allEvidence.slice(0, 200).map((item) => item.signalId),
+      evidence_sha256: commitment.digest(allEvidence.length),
+      evidence_commitment_version: 2,
+      evidence_snapshot: allEvidence.slice(0, 200),
+    })] });
+
+    await expect(watchRunRepository.listForWatch("watch", "owner", 1))
+      .resolves.toEqual([expect.objectContaining({
+        matched_count: 201,
+        evidence_commitment_version: 2,
+        evidence_snapshot: expect.arrayContaining([expect.objectContaining({ signalId: "signal-199" })]),
+      })]);
   });
 
   it("keeps pre-migration legacy history readable without weakening adaptive evidence", async () => {

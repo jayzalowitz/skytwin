@@ -112,6 +112,26 @@ describe('evaluateWatch', () => {
     const r = evaluateWatch(watch(), many, windowStart, windowEnd);
     expect(r.matchedCount).toBe(250);
     expect(r.matchedRefs).toHaveLength(200);
+    expect(r.evidenceSha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('commits omitted matches so equal samples and counts cannot collide', () => {
+    const retained = Array.from({ length: 200 }, (_, index) => signal({
+      id: `kept-${String(index).padStart(3, '0')}`,
+      timestamp: new Date(windowEnd.getTime() - index),
+    }));
+    const left = evaluateWatch(watch(), [
+      ...retained,
+      signal({ id: 'omitted-left', timestamp: new Date(windowStart.getTime() + 1) }),
+    ], windowStart, windowEnd);
+    const right = evaluateWatch(watch(), [
+      ...retained,
+      signal({ id: 'omitted-right', timestamp: new Date(windowStart.getTime() + 1) }),
+    ], windowStart, windowEnd);
+
+    expect(left.matchedCount).toBe(201);
+    expect(left.evidenceSnapshot).toEqual(right.evidenceSnapshot);
+    expect(left.evidenceSha256).not.toBe(right.evidenceSha256);
   });
 
   it('a notify watch summarizes tersely', () => {
@@ -148,18 +168,21 @@ describe('embeddedRuntimeIdentityMatches', () => {
       modelName: 'managed.gguf',
       artifactSha256: 'a'.repeat(64),
       runtimeVersion: 'llama.cpp-b5000',
+      workflowAuthoringQualified: true,
     })).toBe(true);
     expect(embeddedRuntimeIdentityMatches(pinned, {
       state: 'ready',
       modelName: 'managed.gguf',
       artifactSha256: 'b'.repeat(64),
       runtimeVersion: 'llama.cpp-b5000',
+      workflowAuthoringQualified: true,
     })).toBe(false);
     expect(embeddedRuntimeIdentityMatches(pinned, {
       state: 'ready',
       modelName: 'managed.gguf',
       artifactSha256: 'a'.repeat(64),
       runtimeVersion: 'llama.cpp-b5001',
+      workflowAuthoringQualified: true,
     })).toBe(false);
     expect(embeddedRuntimeIdentityMatches(pinned, {
       state: 'runtime_unavailable',
@@ -173,6 +196,7 @@ describe('embeddedRuntimeIdentityMatches', () => {
       modelName: 'managed.gguf',
       artifactSha256: 'a'.repeat(64),
       runtimeVersion: 'llama.cpp-b5000',
+      workflowAuthoringQualified: true,
     } as const;
 
     expect(embeddedRuntimeIdentityMatches({
@@ -270,6 +294,7 @@ describe('runWatchSchedulerJob', () => {
       summary: expect.stringContaining('Q3 budget'),
       matchedRefs: ['a'],
       evidenceSnapshot: [expect.objectContaining({ signalId: 'a', title: 'Q3 budget' })],
+      evidenceSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
       synthesisMetadata: null,
     });
     expect(runRepo.pruneZeroMatchSlots).toHaveBeenCalledWith(30, 100);
@@ -303,6 +328,7 @@ describe('runWatchSchedulerJob', () => {
       matchedCount: 250,
       matchedRefs: expect.any(Array),
       evidenceSnapshot: expect.any(Array),
+      evidenceSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
       summary: expect.stringMatching(/^250 updates:/),
     }));
     const completion = runRepo.completeSlot.mock.calls[0]![0];

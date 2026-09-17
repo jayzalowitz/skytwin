@@ -245,6 +245,8 @@ export {
   ActiveExecutionAdmissionError,
   accessLogRepository,
   watchRepository,
+  createWatchRunEvidenceCommitment,
+  watchRunEvidenceSha256,
   watchRunRepository,
   workflowRepository,
   WorkflowProposalIdempotencyConflictError,

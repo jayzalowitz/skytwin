@@ -35,6 +35,7 @@ export interface WatchRunRow {
   summary: string;
   matched_refs: string[];
   evidence_sha256: string | null;
+  evidence_commitment_version: number | null;
   evidence_snapshot: WatchRunEvidenceSnapshot[];
   schedule_revision: string;
   scheduled_for: Date;
@@ -61,11 +62,12 @@ export interface WatchRunRow {
 
 interface DatabaseWatchRunRow extends Omit<
   WatchRunRow,
-  "matched_count" | "attempt_count" | "projection_version"
+  "matched_count" | "attempt_count" | "projection_version" | "evidence_commitment_version"
 > {
   matched_count: number | string;
   attempt_count: number | string;
   projection_version: number | string | null;
+  evidence_commitment_version: number | string | null;
 }
 
 interface DueWatchRow extends WatchRow {
@@ -108,6 +110,8 @@ export interface CompleteWatchSlotInput {
   summary: string;
   matchedRefs: string[];
   evidenceSnapshot: WatchRunEvidenceSnapshot[];
+  /** v2 commitment over every matched evidence item, including omitted display items. */
+  evidenceSha256: string;
   synthesisMetadata: WatchRunSynthesisMetadata | null;
 }
 
@@ -132,11 +136,7 @@ const MAX_SUMMARY_LENGTH = 4_000;
 const DEFAULT_ZERO_MATCH_RETENTION_DAYS = 30;
 const MAX_QUARANTINES_PER_CLAIM = 100;
 
-/**
- * Commit the complete retained-evidence envelope in a fixed key order. The
- * total match count and truncation bit are included so a bounded snapshot
- * cannot be transplanted onto a run with different overflow semantics.
- */
+/** Legacy v1 commitment over only the retained evidence snapshot. */
 export function watchRunEvidenceSha256(
   matchedCount: number,
   evidenceSnapshot: readonly WatchRunEvidenceSnapshot[],
@@ -158,6 +158,61 @@ export function watchRunEvidenceSha256(
   return createHash("sha256").update(JSON.stringify(canonical), "utf8").digest("hex");
 }
 
+export interface WatchRunEvidenceCommitment {
+  add(item: WatchRunEvidenceSnapshot): void;
+  digest(matchedCount: number): string;
+}
+
+function validEvidenceItem(item: WatchRunEvidenceSnapshot): boolean {
+  return typeof item.signalId === "string" && item.signalId.length >= 1 && item.signalId.length <= 256 &&
+    typeof item.source === "string" && item.source.length >= 1 && item.source.length <= 128 &&
+    typeof item.timestamp === "string" && !Number.isNaN(Date.parse(item.timestamp)) &&
+    new Date(item.timestamp).toISOString() === item.timestamp &&
+    typeof item.title === "string" && item.title.length <= 240 &&
+    typeof item.from === "string" && item.from.length <= 240 &&
+    SHA256_PATTERN.test(item.matchTextSha256);
+}
+
+function canonicalEvidenceItem(item: WatchRunEvidenceSnapshot): string {
+  return JSON.stringify({
+    signalId: item.signalId,
+    source: item.source,
+    timestamp: item.timestamp,
+    title: item.title,
+    from: item.from,
+    matchTextSha256: item.matchTextSha256,
+  });
+}
+
+/**
+ * Build the v2 commitment incrementally so callers retain only a bounded
+ * display sample while every matched evidence identity remains committed.
+ */
+export function createWatchRunEvidenceCommitment(): WatchRunEvidenceCommitment {
+  const hash = createHash("sha256").update("watch_run_evidence.v2\0", "utf8");
+  let itemCount = 0;
+  let finalized = false;
+  return {
+    add(item) {
+      if (finalized) throw new Error("Watch evidence commitment is already finalized");
+      if (!validEvidenceItem(item)) throw new TypeError("Watch evidence item has an invalid shape");
+      const canonical = canonicalEvidenceItem(item);
+      hash.update(`${Buffer.byteLength(canonical, "utf8")}:`, "utf8");
+      hash.update(canonical, "utf8");
+      itemCount += 1;
+    },
+    digest(matchedCount) {
+      if (finalized) throw new Error("Watch evidence commitment is already finalized");
+      if (!Number.isSafeInteger(matchedCount) || matchedCount < 0 || matchedCount !== itemCount) {
+        throw new TypeError("Watch evidence commitment count does not match its evidence items");
+      }
+      finalized = true;
+      hash.update(`\0matchedCount:${matchedCount}\0`, "utf8");
+      return hash.digest("hex");
+    },
+  };
+}
+
 function validateEvidenceSnapshot(
   matchedCount: number,
   matchedRefs: readonly string[],
@@ -166,14 +221,7 @@ function validateEvidenceSnapshot(
   if (
     evidenceSnapshot.length > matchedCount ||
     evidenceSnapshot.length > MAX_STORED_REFS ||
-    evidenceSnapshot.some((item) =>
-      typeof item.signalId !== "string" || item.signalId.length < 1 || item.signalId.length > 256 ||
-      typeof item.source !== "string" || item.source.length < 1 || item.source.length > 128 ||
-      typeof item.timestamp !== "string" || Number.isNaN(Date.parse(item.timestamp)) ||
-      new Date(item.timestamp).toISOString() !== item.timestamp ||
-      typeof item.title !== "string" || item.title.length > 240 ||
-      typeof item.from !== "string" || item.from.length > 240 ||
-      !SHA256_PATTERN.test(item.matchTextSha256)) ||
+    evidenceSnapshot.some((item) => !validEvidenceItem(item)) ||
     matchedRefs.length !== evidenceSnapshot.length ||
     matchedRefs.some((ref, index) => ref !== evidenceSnapshot[index]!.signalId)
   ) {
@@ -253,13 +301,18 @@ function normalizeWatchRunRow(row: DatabaseWatchRunRow): WatchRunRow {
       row.projection_version,
       "watch_runs.projection_version",
     ),
+    evidence_commitment_version: databaseNullableSafeInteger(
+      row.evidence_commitment_version,
+      "watch_runs.evidence_commitment_version",
+    ),
   };
   if (normalized.slot_status === "completed") {
     // Migration 096 adds null/empty evidence columns to pre-feature legacy
     // history. Keep those rows readable, but never let an adaptive run or a
     // row with retained evidence downgrade itself to an uncommitted state.
     if (normalized.evidence_sha256 === null) {
-      if (normalized.workflow_version_id !== null || normalized.evidence_snapshot.length > 0) {
+      if (normalized.evidence_commitment_version !== null ||
+          normalized.workflow_version_id !== null || normalized.evidence_snapshot.length > 0) {
         throw new Error("Stored Watch evidence is missing its required commitment");
       }
       return normalized;
@@ -269,12 +322,24 @@ function normalizeWatchRunRow(row: DatabaseWatchRunRow): WatchRunRow {
       normalized.matched_refs,
       normalized.evidence_snapshot,
     );
-    const expected = watchRunEvidenceSha256(
-      normalized.matched_count,
-      normalized.evidence_snapshot,
-    );
-    if (normalized.evidence_sha256 !== expected) {
-      throw new Error("Stored Watch evidence commitment does not match its canonical snapshot");
+    if (normalized.evidence_commitment_version === 1) {
+      const expected = watchRunEvidenceSha256(
+        normalized.matched_count,
+        normalized.evidence_snapshot,
+      );
+      if (normalized.evidence_sha256 !== expected) {
+        throw new Error("Stored Watch evidence commitment does not match its canonical snapshot");
+      }
+    } else if (normalized.evidence_commitment_version === 2) {
+      if (normalized.matched_count === normalized.evidence_snapshot.length) {
+        const commitment = createWatchRunEvidenceCommitment();
+        for (const item of normalized.evidence_snapshot) commitment.add(item);
+        if (normalized.evidence_sha256 !== commitment.digest(normalized.matched_count)) {
+          throw new Error("Stored Watch evidence commitment does not match its canonical snapshot");
+        }
+      }
+    } else {
+      throw new Error("Stored Watch evidence commitment has an unsupported version");
     }
   }
   return normalized;
@@ -683,11 +748,21 @@ export const watchRunRepository = {
       .slice(0, MAX_STORED_REFS);
     const evidenceSnapshot = input.evidenceSnapshot;
     validateEvidenceSnapshot(matchedCount, matchedRefs, evidenceSnapshot);
-    const evidenceSha256 = watchRunEvidenceSha256(matchedCount, evidenceSnapshot);
+    if (!SHA256_PATTERN.test(input.evidenceSha256)) {
+      throw new TypeError("Watch evidence commitment must be a SHA-256 digest");
+    }
+    if (matchedCount === evidenceSnapshot.length) {
+      const commitment = createWatchRunEvidenceCommitment();
+      for (const item of evidenceSnapshot) commitment.add(item);
+      if (input.evidenceSha256 !== commitment.digest(matchedCount)) {
+        throw new TypeError("Watch evidence commitment does not match its complete evidence set");
+      }
+    }
     const result = await query<{ id: string }>(
       `UPDATE watch_runs
           SET slot_status = 'completed', ran_at = now(), matched_count = $3,
               summary = $4, matched_refs = $5, evidence_sha256 = $6,
+              evidence_commitment_version = 2,
               evidence_snapshot = $7, synthesis_metadata = $8, completed_at = now(),
               lease_token = NULL, lease_expires_at = NULL, last_error = NULL
         WHERE id = $1 AND slot_status = 'processing' AND lease_token = $2
@@ -699,7 +774,7 @@ export const watchRunRepository = {
         matchedCount,
         input.summary.slice(0, MAX_SUMMARY_LENGTH),
         JSON.stringify(matchedRefs),
-        evidenceSha256,
+        input.evidenceSha256,
         JSON.stringify(evidenceSnapshot),
         input.synthesisMetadata === null ? null : JSON.stringify(input.synthesisMetadata),
       ],

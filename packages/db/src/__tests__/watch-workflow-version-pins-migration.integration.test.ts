@@ -14,6 +14,10 @@ const pinMigration = readFileSync(
   new URL('../migrations/096-watch-workflow-version-pins.sql', import.meta.url),
   'utf8',
 );
+const evidenceCommitmentMigration = readFileSync(
+  new URL('../migrations/098-watch-full-evidence-commitments.sql', import.meta.url),
+  'utf8',
+);
 
 async function availablePorts(): Promise<[number, number]> {
   const reserve = (start: number) =>
@@ -183,5 +187,36 @@ describe.runIf(cockroachAvailable)('096 Watch workflow-version pins on Cockroach
     const result = await runCockroachDemo(`${setup}\n${exercise}`);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/foreign key|violates/i);
+  }, 30_000);
+});
+
+describe.runIf(cockroachAvailable)('098 full Watch evidence commitments on CockroachDB', () => {
+  it('is rerunnable and marks existing retained-only commitments as v1', async () => {
+    const exercise = `
+      ${pinMigration}
+      UPDATE watch_runs SET evidence_sha256 = '${'c'.repeat(64)}';
+      ${evidenceCommitmentMigration}
+      ${evidenceCommitmentMigration}
+      SELECT
+        (SELECT evidence_commitment_version = 1 FROM watch_runs LIMIT 1) AS legacy_marked_v1,
+        EXISTS (
+          SELECT 1 FROM [SHOW CONSTRAINTS FROM watch_runs]
+           WHERE constraint_name = 'watch_runs_evidence_commitment_version_chk'
+        ) AS version_shape_enforced;
+    `;
+    const result = await runCockroachDemo(`${setup}\n${exercise}`);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('t,t');
+  }, 30_000);
+
+  it('rejects a commitment version without a digest', async () => {
+    const exercise = `
+      ${pinMigration}
+      ${evidenceCommitmentMigration}
+      UPDATE watch_runs SET evidence_commitment_version = 2;
+    `;
+    const result = await runCockroachDemo(`${setup}\n${exercise}`);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/check constraint|violates/i);
   }, 30_000);
 });

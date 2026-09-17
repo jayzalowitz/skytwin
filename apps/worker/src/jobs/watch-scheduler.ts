@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
 import { createLogger } from '@skytwin/core';
 import { requireJobAdmission, runAdmitted } from './job-admission.js';
-import { aiProviderRepository, watchRunRepository, signalRepository } from '@skytwin/db';
+import {
+  aiProviderRepository,
+  createWatchRunEvidenceCommitment,
+  watchRunRepository,
+  signalRepository,
+} from '@skytwin/db';
 import type { AIProviderSettingsRow, ClaimedWatchSlot, SignalRow } from '@skytwin/db';
 import type {
   AIProviderName,
@@ -79,6 +84,7 @@ export interface WatchEvaluation {
   matchedCount: number;
   matchedRefs: string[];
   evidenceSnapshot: WatchRunEvidenceSnapshot[];
+  evidenceSha256: string;
   summary: string;
 }
 
@@ -86,6 +92,7 @@ interface WatchEvaluationState {
   matchedCount: number;
   evidenceSnapshot: WatchRunEvidenceSnapshot[];
   summaryTitles: string[];
+  evidenceCommitment: ReturnType<typeof createWatchRunEvidenceCommitment>;
 }
 
 const WATCH_SIGNAL_PAGE_SIZE = 500;
@@ -112,6 +119,7 @@ export function evaluateWatch(
     matchedCount: 0,
     evidenceSnapshot: [],
     summaryTitles: [],
+    evidenceCommitment: createWatchRunEvidenceCommitment(),
   };
   accumulateWatchEvaluation(
     state,
@@ -140,16 +148,19 @@ function accumulateWatchEvaluation(
   for (const row of matched) {
     state.matchedCount += 1;
     if (state.summaryTitles.length < 5) state.summaryTitles.push(titleOf(row));
-    if (state.evidenceSnapshot.length >= MAX_STORED_REFS) continue;
     const matchable = toMatchable(row);
-    state.evidenceSnapshot.push({
+    const evidence = {
       signalId: row.id,
       source: row.source,
       timestamp: row.timestamp.toISOString(),
       title: titleOf(row).slice(0, 240),
       from: matchable.from.slice(0, 240),
       matchTextSha256: createHash('sha256').update(matchable.text, 'utf8').digest('hex'),
-    });
+    };
+    state.evidenceCommitment.add(evidence);
+    if (state.evidenceSnapshot.length < MAX_STORED_REFS) {
+      state.evidenceSnapshot.push(evidence);
+    }
   }
 }
 
@@ -173,6 +184,7 @@ function finishWatchEvaluation(
     matchedCount: n,
     matchedRefs: state.evidenceSnapshot.map((item) => item.signalId),
     evidenceSnapshot: state.evidenceSnapshot,
+    evidenceSha256: state.evidenceCommitment.digest(n),
     summary,
   };
 }
@@ -392,6 +404,7 @@ export async function runWatchSchedulerJob(deps: WatchSchedulerDeps = {}): Promi
         matchedCount: 0,
         evidenceSnapshot: [],
         summaryTitles: [],
+        evidenceCommitment: createWatchRunEvidenceCommitment(),
       };
       await runAdmitted(deps.signal, () => signalRepo.visitInWindowPages(
         slot.userId,
@@ -443,6 +456,7 @@ export async function runWatchSchedulerJob(deps: WatchSchedulerDeps = {}): Promi
           summary,
           matchedRefs: evalResult.matchedRefs,
           evidenceSnapshot: evalResult.evidenceSnapshot,
+          evidenceSha256: evalResult.evidenceSha256,
           synthesisMetadata: synthesis?.metadata ?? null,
         }),
       );
