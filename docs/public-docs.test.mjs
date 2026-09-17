@@ -158,6 +158,12 @@ describe("public developer-preview documentation", () => {
     expect(agents).toContain(
       "A failed audit write is logged but does not replace the tool's own result or error",
     );
+    expect(read("docs/twin-mcp-protocol.md")).toContain(
+      "Every tool call attempts a provenance write",
+    );
+    expect(read("docs/twin-mcp-protocol.md")).not.toContain(
+      "Every tool call writes a provenance node",
+    );
     expect(howToUse).toContain("fictional sample data");
     expect(normalized(howToUse)).toContain(
       "Settings and Watches are deliberately outside its narrow authority",

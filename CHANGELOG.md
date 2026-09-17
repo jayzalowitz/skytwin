@@ -38,6 +38,11 @@ All notable changes to SkyTwin will be documented in this file.
   malformed shell terminator was corrected, backup v6 no longer claims to carry
   exact Watch run evidence, and README describes the admitted interactive
   TrustedRouter path instead of declaring every attested route unavailable.
+- **Twin MCP guidance no longer promises an audit row that the runtime cannot
+  guarantee.** Every successful or failed tool call still attempts its
+  provenance write, but a write failure is logged without replacing the tool's
+  own result or error; the protocol now tells operators to treat that log as an
+  audit-integrity alert.
 
 ## [0.6.104.0] - 2026-09-16
 

@@ -171,7 +171,7 @@ Polls for recent signals matching a filter. v1 is a polling endpoint — call ag
 
 1. **Tokens hashed at rest.** Only SHA-256(token) is stored. Plaintext is never logged or persisted.
 2. **`propose_action` never auto-executes.** The DB row always has `auto_executed=false, requires_approval=true`.
-3. **Every tool call writes a provenance node.** `capability_provenance_nodes` row with `node_type='external_agent'` is written after every successful invocation.
+3. **Every tool call attempts a provenance write.** The server attempts to write a `capability_provenance_nodes` row with `node_type='external_agent'` after successful and failed invocations. If that audit write fails, the server logs the failure without replacing the tool's own result or error; operators must treat the log as an audit-integrity alert rather than assuming a row exists.
 4. **Scope is strictly enforced.** A `read` token cannot call `propose_action` or `subscribe_signals`. Tools outside the token's scope are not registered on the per-request McpServer instance.
 5. **Revocation is immediate.** `DELETE /api/external-agents/tokens/:id` sets `revoked_at` and subsequent `lookup()` calls return `null`.
 

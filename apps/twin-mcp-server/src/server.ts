@@ -29,7 +29,7 @@ function extractBearerToken(authHeader: string | undefined): string | null {
 /**
  * Build a per-request McpServer instance with tools filtered to the token's scope.
  *
- * We create a fresh McpServer per request (stateless mode) so scope filtering
+   * We create a fresh McpServer per request (stateless mode) so scope filtering
  * is applied at tool-registration time — no stale capabilities from prior requests.
  */
 function buildMcpServer(tokenCtx: ExternalAgentToken): McpServer {
@@ -48,9 +48,9 @@ function buildMcpServer(tokenCtx: ExternalAgentToken): McpServer {
 
   /**
    * Wrap each tool handler in try/finally so the provenance write fires for
-   * BOTH successful and failed calls. Per safety invariant, every external-
-   * agent tool call must produce an audit row — silently dropping audit on
-   * failure was the bug Copilot caught (#209).
+   * BOTH successful and failed calls. Every call attempts an audit write;
+   * failure is surfaced in the server log without replacing the tool's own
+   * result or error.
    */
   async function withProvenance<T>(toolName: string, args: Record<string, unknown>, run: () => Promise<T>): Promise<T> {
     try {
