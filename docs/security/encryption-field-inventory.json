@@ -486,7 +486,6 @@
         "current": "mixed_repository_and_direct_sql",
       "target": "user_broker_gateway",
       "auditedCallsites": [
-        "apps/api/src/routes/oauth.ts",
         "apps/api/src/services/live-digest.ts",
           "apps/worker/src/jobs/memory-suggestions.ts",
           "packages/db/src/seeds/demo-showcase.ts",
@@ -706,6 +705,7 @@
         "current": "mixed_repository_and_direct_sql",
         "target": "user_broker_gateway",
         "auditedCallsites": [
+          "apps/api/src/routes/oauth.ts",
           "apps/api/src/services/live-digest.ts",
           "packages/db/src/adapters/decision-repository-adapter.ts",
           "packages/db/src/backup/backup.ts",
@@ -3193,6 +3193,7 @@
         "current": "mixed_repository_and_direct_sql",
         "target": "user_broker_gateway",
         "auditedCallsites": [
+          "apps/api/src/routes/oauth.ts",
           "apps/api/src/services/live-digest.ts",
           "packages/db/src/repositories/connected-account-repository.ts",
           "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
