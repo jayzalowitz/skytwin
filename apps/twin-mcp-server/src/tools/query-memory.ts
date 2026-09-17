@@ -1,9 +1,11 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { redactPromptPii } from '@skytwin/llm-client';
 
 /** PII-adjacent fields we strip from semantic search results before returning. */
 const REDACT_KEYS = new Set(['email', 'phone', 'ssn', 'password', 'token', 'secret', 'api_key']);
 
 function redactObject(obj: unknown): unknown {
+  if (typeof obj === 'string') return redactPromptPii(obj);
   if (obj === null || typeof obj !== 'object') return obj;
   if (Array.isArray(obj)) return obj.map(redactObject);
   const result: Record<string, unknown> = {};

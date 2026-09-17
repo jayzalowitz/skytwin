@@ -125,7 +125,7 @@ describe('get_preferences', () => {
 
 // ─── propose_action ──────────────────────────────────────────────────────────
 describe('propose_action', () => {
-  it('creates a decision with pending_approval status — NEVER auto-executes', async () => {
+  it('records a non-executing decision without claiming it entered the approval queue', async () => {
     const { decisionRepository } = await import('@skytwin/db');
     const result = await proposeAction(USER_ID, {
       action: {
@@ -137,8 +137,9 @@ describe('propose_action', () => {
     });
 
     const data = parseResult(result) as Record<string, unknown>;
-    expect(data['status']).toBe('pending_approval');
+    expect(data['status']).toBe('recorded_non_executing');
     expect(data['decisionId']).toBeDefined();
+    expect(data['message']).toContain('does not yet create an actionable approval request');
 
     // Verify auto_executed is ALWAYS false (hard rail)
     expect(decisionRepository.recordOutcome).toHaveBeenCalledWith(
@@ -179,6 +180,32 @@ describe('propose_action', () => {
     expect(decisionRepository.create).toHaveBeenCalledWith(
       expect.objectContaining({ userId: USER_ID }),
     );
+  });
+});
+
+// ─── query_memory ───────────────────────────────────────────────────────────
+describe('query_memory', () => {
+  it('redacts named PII fields and email addresses embedded in returned text', async () => {
+    const { mempalaceRepository } = await import('@skytwin/db');
+    vi.mocked(mempalaceRepository.searchDrawers).mockResolvedValueOnce([
+      {
+        content: 'Email alex@example.com about the launch',
+        metadata: { email: 'alex@example.com', note: 'Backup is pat@example.net' },
+      },
+    ] as never);
+    vi.mocked(mempalaceRepository.searchEpisodes).mockResolvedValueOnce([
+      { situation_summary: 'Called owner@example.org', domain: 'work' },
+    ] as never);
+
+    const result = await queryMemory(USER_ID, { question: 'launch owner' });
+    const data = parseResult(result) as { results: Array<Record<string, unknown>> };
+    const serialized = JSON.stringify(data.results);
+
+    expect(serialized).not.toContain('alex@example.com');
+    expect(serialized).not.toContain('pat@example.net');
+    expect(serialized).not.toContain('owner@example.org');
+    expect(serialized).toContain('[REDACTED]');
+    expect(serialized).toContain('[redacted:email]');
   });
 });
 

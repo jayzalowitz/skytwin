@@ -110,7 +110,7 @@ Semantically searches the user's MemoryPort for relevant information.
 
 **Output:** `{ results: SemanticHit[], question, limit }`
 
-PII fields (`email`, `phone`, `password`, `token`, `secret`, `api_key`) are redacted from results before returning.
+Values under exact structured keys (`email`, `phone`, `ssn`, `password`, `token`, `secret`, `api_key`) are replaced before results return. Email addresses embedded in free-text values are also masked. Other sensitive content inside free text is returned as stored; this is not a general PII or secret scanner.
 
 ---
 
@@ -134,7 +134,7 @@ Returns the user's preference vectors from their twin model.
 
 **Scope:** `propose`
 
-Proposes an action for the user to review and approve. **This tool NEVER auto-executes.** The proposed action lands in the SkyTwin approvals queue with `requires_approval: true, auto_executed: false` — the user must explicitly approve it before any execution occurs.
+Records an action proposal as a non-executing decision. **This tool NEVER auto-executes.** The outcome records `requires_approval: true, auto_executed: false`, but the current MCP path does not run policy evaluation or create an `approval_requests` row. It therefore does not place actionable work in the Approvals queue; a caller must treat the record as inspection-only until that composition is implemented.
 
 **Input:**
 
@@ -145,7 +145,7 @@ Proposes an action for the user to review and approve. **This tool NEVER auto-ex
 | `action.reasoning` | string (required) | Why this action is being proposed |
 | `sourceAgent` | string (required) | Identifier of the proposing agent |
 
-**Output:** `{ decisionId: string, status: "pending_approval", message: string }`
+**Output:** `{ decisionId: string, status: "recorded_non_executing", message: string }`
 
 ---
 
@@ -171,7 +171,7 @@ Polls for recent signals matching a filter. v1 is a polling endpoint — call ag
 
 1. **Tokens hashed at rest.** Only SHA-256(token) is stored. Plaintext is never logged or persisted.
 2. **`propose_action` never auto-executes.** The DB row always has `auto_executed=false, requires_approval=true`.
-3. **Every tool call attempts a provenance write.** The server attempts to write a `capability_provenance_nodes` row with `node_type='external_agent'` after successful and failed invocations. If that audit write fails, the server logs the failure without replacing the tool's own result or error; operators must treat the log as an audit-integrity alert rather than assuming a row exists.
+3. **Every dispatched registered handler attempts a provenance write.** The server attempts to write a `capability_provenance_nodes` row with `node_type='external_agent'` after successful and failed handler invocations. Schema-invalid calls and unknown or scope-hidden tools fail before a registered handler dispatches, so this hook does not audit them. If the write fails, the server logs the failure without replacing the tool's own result or error; operators must treat that log as an audit-integrity alert rather than assuming a row exists.
 4. **Scope is strictly enforced.** A `read` token cannot call `propose_action` or `subscribe_signals`. Tools outside the token's scope are not registered on the per-request McpServer instance.
 5. **Revocation is immediate.** `DELETE /api/external-agents/tokens/:id` sets `revoked_at` and subsequent `lookup()` calls return `null`.
 

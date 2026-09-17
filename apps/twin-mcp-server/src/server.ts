@@ -39,7 +39,7 @@ function buildMcpServer(tokenCtx: ExternalAgentToken): McpServer {
       capabilities: { tools: {} },
       instructions:
         'SkyTwin Twin MCP server. Tools are filtered by your token scope. ' +
-        'Call whoami to see your identity. Every tool call attempts a provenance audit write; ' +
+        'Call whoami to see your identity. Every dispatched registered tool handler attempts a provenance audit write; ' +
         'an audit failure is logged without replacing the tool result.',
     },
   );
@@ -48,7 +48,9 @@ function buildMcpServer(tokenCtx: ExternalAgentToken): McpServer {
 
   /**
    * Wrap each tool handler in try/finally so the provenance write fires for
-   * BOTH successful and failed calls. Every call attempts an audit write;
+   * BOTH successful and failed handler calls. Schema-invalid, unknown, and
+   * scope-hidden calls never dispatch a registered handler. A dispatched call
+   * attempts an audit write;
    * failure is surfaced in the server log without replacing the tool's own
    * result or error.
    */
@@ -110,7 +112,7 @@ function buildMcpServer(tokenCtx: ExternalAgentToken): McpServer {
   if (scopeAllows(scope, 'propose_action')) {
     server.tool(
       'propose_action',
-      'Propose an action for the user to review and approve. NEVER auto-executes.',
+      'Record a non-executing action proposal for inspection. This v1 path does not create an actionable approval request.',
       {
         action: z
           .object({

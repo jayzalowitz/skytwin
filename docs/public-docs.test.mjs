@@ -158,11 +158,20 @@ describe("public developer-preview documentation", () => {
     expect(agents).toContain(
       "A failed audit write is logged but does not replace the tool's own result or error",
     );
+    expect(agents).toContain(
+      "does not run policy evaluation or create an actionable approval request",
+    );
+    expect(agents).toContain(
+      "other sensitive free text is returned as stored",
+    );
     expect(read("docs/twin-mcp-protocol.md")).toContain(
-      "Every tool call attempts a provenance write",
+      "Every dispatched registered handler attempts a provenance write",
     );
     expect(read("docs/twin-mcp-protocol.md")).not.toContain(
       "Every tool call writes a provenance node",
+    );
+    expect(read("docs/twin-mcp-protocol.md")).toContain(
+      'status: "recorded_non_executing"',
     );
     expect(howToUse).toContain("fictional sample data");
     expect(normalized(howToUse)).toContain(

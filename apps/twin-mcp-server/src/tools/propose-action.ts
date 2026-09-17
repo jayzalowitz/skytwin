@@ -11,12 +11,13 @@ export interface ProposeActionArgs {
 }
 
 /**
- * Insert a proposed action from an external agent as a pending decision.
+ * Insert a proposed action from an external agent as a non-executing decision.
  * Requires scope: propose.
  *
  * HARD RAIL: This NEVER auto-executes. The decision is always set to
- * requires_approval=true, auto_executed=false. The user must approve it
- * through the SkyTwin web UI or API.
+ * requires_approval=true, auto_executed=false. This v1 MCP path does not yet
+ * run policy evaluation or create an approval_requests row, so callers must
+ * not represent the record as actionable approval-queue work.
  *
  * The decision is flagged with origin=external_agent in its metadata so
  * the approval UI can surface the source agent prominently.
@@ -90,7 +91,8 @@ export async function proposeAction(
     reversible: false, // conservative — external proposals assumed irreversible until proven
   });
 
-  // Record outcome: never auto-execute — always pending_approval (HARD RAIL)
+  // Record a non-executing outcome. This does not create an approval_requests
+  // row or grant execution authority (HARD RAIL).
   await decisionRepository.recordOutcome({
     decisionId: decision.id,
     selectedActionId: candidateAction.id,
@@ -107,8 +109,8 @@ export async function proposeAction(
         type: 'text',
         text: JSON.stringify({
           decisionId: decision.id,
-          status: 'pending_approval',
-          message: `Action proposal from "${sourceAgent}" created. The user must approve it before execution.`,
+          status: 'recorded_non_executing',
+          message: `Action proposal from "${sourceAgent}" was recorded for inspection. This MCP path does not yet create an actionable approval request or execute the action.`,
         }),
       },
     ],

@@ -104,10 +104,11 @@
         <h2 id="mcp">Local MCP is scoped, not delegated autonomy</h2>
         <p>
           The Twin MCP server is a local, token-scoped surface for agents. A
-          safe agent reads context, proposes an action with source and
-          reasoning, and waits for normal policy and approval processing. It
-          must not bypass policy, fabricate provenance, or reinterpret a tool
-          result as permission.
+          safe agent reads context and may record an action proposal with
+          source and reasoning. The current proposal path is inspection-only:
+          it neither runs policy evaluation nor creates an actionable approval
+          request. An agent must not bypass policy, fabricate provenance, or
+          reinterpret that record as permission.
         </p>
         <p>
           The <a href="agents.html">agent guide</a> covers setup, scopes, tool
