@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ClaimedWatchSlot, SignalRow } from '@skytwin/db';
-import type { Watch } from '@skytwin/shared-types';
+import type { Watch, WatchRunEvidenceSnapshot } from '@skytwin/shared-types';
 import {
   shouldRunWatchScheduler,
   toMatchable,
@@ -309,7 +309,7 @@ describe('runWatchSchedulerJob', () => {
     expect(completion.matchedRefs).toHaveLength(200);
     expect(completion.evidenceSnapshot).toHaveLength(200);
     expect(completion.matchedRefs).toEqual(
-      completion.evidenceSnapshot.map((item) => item.signalId),
+      completion.evidenceSnapshot.map((item: WatchRunEvidenceSnapshot) => item.signalId),
     );
   });
 

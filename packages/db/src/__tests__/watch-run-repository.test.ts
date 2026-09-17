@@ -433,6 +433,32 @@ describe("watchRunRepository durable slots", () => {
       .rejects.toThrow(/commitment does not match/);
   });
 
+  it("keeps pre-migration legacy history readable without weakening adaptive evidence", async () => {
+    const legacy = slotRow({
+      slot_status: "completed",
+      matched_count: "1",
+      matched_refs: ["historical-signal"],
+      evidence_sha256: null,
+      evidence_snapshot: [],
+      workflow_id: null,
+      workflow_version_id: null,
+      workflow_provider_key: null,
+      workflow_provider_schema_version: null,
+      content_hash: null,
+      projection_version: null,
+    });
+    mockQuery.mockResolvedValueOnce({ rows: [legacy] });
+    await expect(watchRunRepository.listForWatch("watch", "owner", 1))
+      .resolves.toEqual([expect.objectContaining({ id: legacy.id })]);
+
+    mockQuery.mockResolvedValueOnce({ rows: [{
+      ...legacy,
+      workflow_version_id: WORKFLOW_VERSION_ID,
+    }] });
+    await expect(watchRunRepository.listForWatch("watch", "owner", 1))
+      .rejects.toThrow(/missing its required commitment/);
+  });
+
   it("prunes only bounded, expired, completed zero-match slots", async () => {
     mockQuery.mockResolvedValue({ rows: [{ id: "one" }, { id: "two" }] });
     await expect(watchRunRepository.pruneZeroMatchSlots(30, 100)).resolves.toBe(

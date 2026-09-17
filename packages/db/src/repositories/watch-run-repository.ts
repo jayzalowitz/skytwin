@@ -255,6 +255,15 @@ function normalizeWatchRunRow(row: DatabaseWatchRunRow): WatchRunRow {
     ),
   };
   if (normalized.slot_status === "completed") {
+    // Migration 096 adds null/empty evidence columns to pre-feature legacy
+    // history. Keep those rows readable, but never let an adaptive run or a
+    // row with retained evidence downgrade itself to an uncommitted state.
+    if (normalized.evidence_sha256 === null) {
+      if (normalized.workflow_version_id !== null || normalized.evidence_snapshot.length > 0) {
+        throw new Error("Stored Watch evidence is missing its required commitment");
+      }
+      return normalized;
+    }
     validateEvidenceSnapshot(
       normalized.matched_count,
       normalized.matched_refs,
