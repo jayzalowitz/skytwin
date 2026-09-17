@@ -71,7 +71,7 @@ export async function probeEmbeddedProviderReadiness(
 
 /**
  * Render a `ChatMessage[]` to the single-string prompt format that
- * llama.cpp expects when invoked via `llama-cli -p ...`. Mirrors the
+ * llama.cpp expects when invoked via `llama-completion -p ...`. Mirrors the
  * loose structure most chat models recognize: `system:` / `user:` /
  * `assistant:` line prefixes.
  *

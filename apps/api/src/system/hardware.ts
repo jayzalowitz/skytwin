@@ -101,14 +101,18 @@ function modelDir(): string {
   );
 }
 
-/** True if a llama.cpp CLI binary is resolvable via env or on PATH. Never throws. */
+/** True if a non-interactive llama.cpp generation binary is resolvable. Never throws. */
 export function hasLlamaBinary(): boolean {
   const envBin = process.env["SKYTWIN_LLAMACPP_BIN"];
-  if (envBin && fs.existsSync(envBin)) return true;
+  if (envBin && fs.existsSync(envBin)) {
+    if (!/^llama-cli(?:\.exe)?$/iu.test(path.basename(envBin))) return true;
+    const extension = path.basename(envBin).toLowerCase().endsWith('.exe') ? '.exe' : '';
+    return fs.existsSync(path.join(path.dirname(envBin), `llama-completion${extension}`));
+  }
   const names =
     process.platform === "win32"
-      ? ["llama-cli.exe", "llama.exe"]
-      : ["llama-cli", "llama"];
+      ? ["llama-completion.exe"]
+      : ["llama-completion"];
   const pathDirs = (process.env["PATH"] ?? "")
     .split(path.delimiter)
     .filter(Boolean);

@@ -76,7 +76,7 @@ describe("createEmbeddedTextPort", () => {
     mockDetect.mockResolvedValue({
       llamaCpp: {
         available: true,
-        binaryPath: "/usr/bin/llama-cli",
+        binaryPath: "/usr/bin/llama-completion",
         modelDir: null,
       },
       whisper: { available: false, binaryPath: null, modelDir: null },
@@ -91,7 +91,7 @@ describe("createEmbeddedTextPort", () => {
     mockDetect.mockResolvedValue({
       llamaCpp: {
         available: true,
-        binaryPath: "/usr/bin/llama-cli",
+        binaryPath: "/usr/bin/llama-completion",
         modelDir: "/some/dir",
       },
       whisper: { available: false, binaryPath: null, modelDir: null },
@@ -115,7 +115,7 @@ describe("createEmbeddedTextPort", () => {
     mockDetect.mockResolvedValue({
       llamaCpp: {
         available: true,
-        binaryPath: "/usr/bin/llama-cli",
+        binaryPath: "/usr/bin/llama-completion",
         modelDir: "/models",
       },
       whisper: { available: false, binaryPath: null, modelDir: null },
@@ -155,9 +155,52 @@ describe("createEmbeddedTextPort", () => {
     }
   });
 
+  it("uses the sibling non-interactive generation binary for a llama-cli override", async () => {
+    mockDetect.mockResolvedValue({
+      llamaCpp: { available: false, binaryPath: null, modelDir: null },
+      whisper: { available: false, binaryPath: null, modelDir: null },
+      piper: { available: false, binaryPath: null, modelDir: null },
+    });
+    const directory = mkdtempSync(join(tmpdir(), "skytwin-factory-"));
+    const cliPath = join(directory, "llama-cli");
+    const completionPath = join(directory, "llama-completion");
+    const modelPath = join(directory, "m.gguf");
+    writeFileSync(cliPath, "");
+    writeFileSync(completionPath, "");
+    writeFileSync(modelPath, "test");
+    try {
+      const port = await createEmbeddedTextPort({ binaryPath: cliPath, modelPath });
+      expect(port).toBeInstanceOf(LlamaCppTextBackend);
+      expect(mockRuntimeBuild).toHaveBeenCalledWith(completionPath);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when a llama-cli override has no completion companion", async () => {
+    mockDetect.mockResolvedValue({
+      llamaCpp: { available: false, binaryPath: null, modelDir: null },
+      whisper: { available: false, binaryPath: null, modelDir: null },
+      piper: { available: false, binaryPath: null, modelDir: null },
+    });
+    const directory = mkdtempSync(join(tmpdir(), "skytwin-factory-"));
+    const cliPath = join(directory, "llama-cli");
+    const modelPath = join(directory, "m.gguf");
+    writeFileSync(cliPath, "");
+    writeFileSync(modelPath, "test");
+    try {
+      const port = await createEmbeddedTextPort({ binaryPath: cliPath, modelPath });
+      expect(port).toBeInstanceOf(NullEmbeddedTextPort);
+      expect(port.capabilities.unavailableReason).toBe("runtime_binary_missing");
+      expect(mockRuntimeBuild).not.toHaveBeenCalled();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("reports a missing explicit model path as an artifact problem", async () => {
     mockDetect.mockResolvedValue({
-      llamaCpp: { available: true, binaryPath: "/usr/bin/llama-cli", modelDir: null },
+      llamaCpp: { available: true, binaryPath: "/usr/bin/llama-completion", modelDir: null },
       whisper: { available: false, binaryPath: null, modelDir: null },
       piper: { available: false, binaryPath: null, modelDir: null },
     });
@@ -174,7 +217,7 @@ describe("createEmbeddedTextPort", () => {
     mockDetect.mockResolvedValue({
       llamaCpp: {
         available: true,
-        binaryPath: "/usr/bin/llama-cli",
+        binaryPath: "/usr/bin/llama-completion",
         modelDir: "/models",
       },
       whisper: { available: false, binaryPath: null, modelDir: null },
@@ -196,7 +239,7 @@ describe("createEmbeddedTextPort", () => {
     mockDetect.mockResolvedValue({
       llamaCpp: {
         available: true,
-        binaryPath: "/usr/bin/llama-cli",
+        binaryPath: "/usr/bin/llama-completion",
         modelDir: "/models",
       },
       whisper: { available: false, binaryPath: null, modelDir: null },

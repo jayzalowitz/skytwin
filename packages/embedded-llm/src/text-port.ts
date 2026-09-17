@@ -24,7 +24,7 @@ export type EmbeddedTextUnavailableReason =
 /**
  * Port interface for embedded text generation (llama.cpp).
  *
- * Real implementations back this with the llama-cli binary. The Null
+ * Real implementations back this with the non-interactive llama-completion binary. The Null
  * implementation is the current default — it allows the rest of the codebase
  * to import and reference the port without requiring the binary to be present.
  */

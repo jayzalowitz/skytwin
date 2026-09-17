@@ -69,7 +69,11 @@ function resolveModelDir(envVar: string): string | null {
  * (e.g. probing a socket) without breaking the contract.
  */
 export async function detectEmbeddedRuntimes(): Promise<EmbeddedRuntimeInfo> {
-  const llamaBin = resolveBinary('SKYTWIN_LLAMACPP_BIN', 'llama-cli');
+  // llama-cli enables an interactive conversation UI in current llama.cpp
+  // builds and writes banners/prompts/timings into stdout. llama-completion
+  // supports the same one-shot generation arguments without contaminating the
+  // model response, which is required by strict structured-output callers.
+  const llamaBin = resolveBinary('SKYTWIN_LLAMACPP_BIN', 'llama-completion');
   const whisperBin = resolveBinary('SKYTWIN_WHISPER_BIN', 'whisper-cli');
   const piperBin = resolveBinary('SKYTWIN_PIPER_BIN', 'piper');
 

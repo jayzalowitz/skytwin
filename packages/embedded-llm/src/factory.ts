@@ -1,7 +1,7 @@
 import { LlamaCppTextBackend } from "./llama-cpp-backend.js";
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   computeFileSha256Async,
   inspectManagedActiveModelAsync,
@@ -22,11 +22,19 @@ export interface CreatePortOverrides {
   modelPath?: string;
 }
 
+function generationBinaryPath(detectedPath: string | null): string | null {
+  if (!detectedPath) return null;
+  if (!/^llama-cli(?:\.exe)?$/iu.test(basename(detectedPath))) return detectedPath;
+  const extension = basename(detectedPath).toLowerCase().endsWith('.exe') ? '.exe' : '';
+  const completion = join(dirname(detectedPath), `llama-completion${extension}`);
+  return existsSync(completion) ? completion : null;
+}
+
 export async function createEmbeddedTextPort(
   overrides: CreatePortOverrides = {},
 ): Promise<EmbeddedTextPort> {
   const info = await detectEmbeddedRuntimes();
-  const binaryPath = overrides.binaryPath ?? info.llamaCpp.binaryPath;
+  const binaryPath = generationBinaryPath(overrides.binaryPath ?? info.llamaCpp.binaryPath);
   // Explicit paths are user-managed and remain a separate, opt-in trust path.
   // Automatic discovery only returns the digest-verified managed artifact.
   const manualPath = overrides.modelPath ?? process.env["SKYTWIN_LLAMA_MODEL"];
