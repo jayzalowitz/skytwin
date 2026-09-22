@@ -23,7 +23,7 @@
     "@skytwin/embedded-llm": "workspace:*",
     "@skytwin/shared-types": "workspace:*",
     "ipaddr.js": "^2.5.0",
-    "undici": "^6.28.0"
+    "undici": "^8.10.2"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
