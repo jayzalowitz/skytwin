@@ -582,47 +582,47 @@ jobs:
           CREATED_UTC="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
           printf 'CREATED_UTC=%s\n' "$CREATED_UTC" >> "$GITHUB_ENV"
       - name: Download SkyTwin-macOS-dmg
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: SkyTwin-macOS-dmg
           path: artifacts/SkyTwin-macOS-dmg
       - name: Download SkyTwin-macOS-zip
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: SkyTwin-macOS-zip
           path: artifacts/SkyTwin-macOS-zip
       - name: Download SkyTwin-macOS-update-manifest
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: SkyTwin-macOS-update-manifest
           path: artifacts/SkyTwin-macOS-update-manifest
       - name: Download SkyTwin-Windows-installer
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: SkyTwin-Windows-installer
           path: artifacts/SkyTwin-Windows-installer
       - name: Download SkyTwin-Windows-update-manifest
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: SkyTwin-Windows-update-manifest
           path: artifacts/SkyTwin-Windows-update-manifest
       - name: Download SkyTwin-Linux-AppImage
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: SkyTwin-Linux-AppImage
           path: artifacts/SkyTwin-Linux-AppImage
       - name: Download SkyTwin-Linux-deb
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: SkyTwin-Linux-deb
           path: artifacts/SkyTwin-Linux-deb
       - name: Download SkyTwin-Linux-rpm
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: SkyTwin-Linux-rpm
           path: artifacts/SkyTwin-Linux-rpm
       - name: Download SkyTwin-Linux-update-manifest
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: SkyTwin-Linux-update-manifest
           path: artifacts/SkyTwin-Linux-update-manifest
@@ -856,7 +856,7 @@ jobs:
           persist-credentials: false
       - name: Download release artifacts for non-model verifiers
         if: matrix.claimId != 'models.verified-delivery'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           path: artifacts
       - name: Prepare private model delivery subject directory
@@ -866,14 +866,14 @@ jobs:
       - name: Download exact Linux AppImage for model delivery
         id: download-model-appimage
         if: matrix.claimId == 'models.verified-delivery'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           artifact-ids: ${{ needs.desktop-linux.outputs.appimage-artifact-id }}
           path: .release-evidence/model-delivery-subject
           digest-mismatch: error
       - name: Download release artifact verification materials
         if: matrix.claimId == 'release.artifact-verification'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: release-artifact-materials
           path: .release-evidence/artifact-verification
@@ -909,7 +909,7 @@ jobs:
           compression-level: 0
       - name: Download exact uploaded signing report
         if: matrix.claimId == 'release.signing'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           artifact-ids: ${{ steps.upload-machine-evidence.outputs.artifact-id }}
           path: .release-evidence/upload-confirmation
@@ -943,7 +943,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Download signing report source bindings for this run attempt
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           pattern: release-signing-binding-*-attempt-${{ github.run_attempt }}
           path: .release-evidence/upload-bindings
@@ -952,7 +952,7 @@ jobs:
         id: signing-report-bindings
         run: node scripts/release-claims/verifiers/release.signing.mjs --resolve-upload-bindings --bindings .release-evidence/upload-bindings
       - name: Download exact source signing reports
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           artifact-ids: ${{ steps.signing-report-bindings.outputs.artifact_ids }}
           path: .release-evidence/reports
@@ -960,13 +960,13 @@ jobs:
       - name: Verify aggregated source signing report bindings
         run: node scripts/release-claims/verifiers/release.signing.mjs --verify-aggregated-uploads --bindings .release-evidence/upload-bindings --reports .release-evidence/reports
       - name: Download non-signing machine evidence reports for this run attempt
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           pattern: release-machine-evidence-*-attempt-${{ github.run_attempt }}
           path: .release-evidence/reports
           merge-multiple: true
       - name: Download release artifact verification materials
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: release-artifact-materials
           path: .release-evidence/artifact-verification
@@ -1041,7 +1041,7 @@ jobs:
       # Checkout must precede download: checkout's default clean would remove
       # the untracked artifacts directory if these steps were reversed.
       - name: Download all artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           path: artifacts
 
